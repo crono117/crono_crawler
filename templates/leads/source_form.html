@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block title %}Configure source{% endblock %}{% block location %}Sources / Configure{% endblock %}{% block content %}
+<header class="page-heading"><div><div class="eyebrow">SOURCE SETTINGS</div><h1>{% if source %}Edit source{% else %}Add a source{% endif %}</h1><p>Start small. A specific team or representative directory is a useful first source.</p></div></header>
+<form method="post" class="panel form-panel">{% csrf_token %}{{ form.non_field_errors }}
+<div class="form-grid">{% for field in form %}<div class="field {% if field.name == 'recipe' or field.name == 'approval_notes' or field.name == 'allowed_paths' %}wide{% endif %} {% if field.field.widget.input_type == 'checkbox' %}checkbox-field{% endif %}">
+{% if field.field.widget.input_type == 'checkbox' %}<label>{{ field }} {{ field.label }}</label>{% else %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% endif %}{{ field.errors }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}</div>{% endfor %}</div>
+<div class="form-footer"><p class="small muted">Saving leaves the source paused. Editing cancels any unfinished run using the previous settings.</p><button class="button primary" type="submit">Save source</button></div></form>{% endblock %}

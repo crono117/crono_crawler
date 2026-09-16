@@ -1,0 +1,46 @@
+name: clearpay-leads
+x-app: &app
+  build:
+    context: .
+    args:
+      INSTALL_BROWSER: ${INSTALL_BROWSER:-0}
+  env_file: .env
+  environment:
+    DJANGO_DEBUG: "0"
+    DATABASE_URL: postgresql://clearpay:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/clearpay
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 5m
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: clearpay
+      POSTGRES_USER: clearpay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clearpay -d clearpay"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+  web:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/login/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  worker:
+    <<: *app
+    command: ["python", "manage.py", "worker"]
+    depends_on:
+      web: {condition: service_healthy}
+
+volumes:
+  postgres_data:

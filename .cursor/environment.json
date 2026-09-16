@@ -1,0 +1,9 @@
+{
+  "name": "ClearPay Lead Engine",
+  "install": "python3 setup.py --no-user",
+  "start": ".venv/bin/python manage.py migrate --noinput",
+  "terminals": [
+    {"name": "Web console", "command": ".venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload"},
+    {"name": "Collector", "command": ".venv/bin/python manage.py worker"}
+  ]
+}

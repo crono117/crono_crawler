@@ -1,0 +1,8 @@
+{
+  "row": ".team-member",
+  "name": ".name, h3",
+  "title": ".role, .title",
+  "email": "a[href^='mailto:']",
+  "phone": "a[href^='tel:']",
+  "company": ".company"
+}

@@ -1,0 +1,20 @@
+{% load static %}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Lead Console{% endblock %} · ClearPay</title>
+<link rel="stylesheet" href="{% static 'console.css' %}"><script src="{% static 'console.js' %}" defer></script></head>
+<body>{% if user.is_authenticated %}
+<aside class="sidebar"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-symbol">c</span>clear<span class="brand-light">pay</span></a><div class="product-label">LEAD CONSOLE</div>
+<nav aria-label="Main navigation">
+<a class="{% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Overview</a>
+<a class="{% if '/leads/' in request.path %}active{% endif %}" href="{% url 'leads' %}"><span>◉</span> Lead database</a>
+<a class="{% if '/sources/' in request.path %}active{% endif %}" href="{% url 'sources' %}"><span>▤</span> Sources</a>
+<a class="{% if '/discovery/' in request.path %}active{% endif %}" href="{% url 'candidates' %}"><span>⌕</span> Discovery</a>
+<a class="{% if '/runs/' in request.path %}active{% endif %}" href="{% url 'runs' %}"><span>↻</span> Collection runs</a>
+</nav>
+<div class="sidebar-bottom"><div class="worker"><i class="dot {% if worker_online %}online{% endif %}"></i>{% if worker_online %}Worker connected{% else %}Worker offline{% endif %}</div>
+<p>{% if worker_heartbeat %}Last signal {{ worker_heartbeat|timesince }} ago{% else %}Start the local worker{% endif %}</p>
+<div class="account">{{ user.username }}<form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="text-button" type="submit">Sign out</button></form></div></div></aside>
+<main class="main"><div class="topline"><span>Workspace / <strong>{% block location %}Overview{% endblock %}</strong></span><span class="pill">LOCAL FIRST · PILOT</span></div>
+{% else %}<main class="login-main">{% endif %}
+{% for message in messages %}<div role="status" class="notice {{ message.tags }}">{{ message }}</div>{% endfor %}
+{% block content %}{% endblock %}</main></body></html>
