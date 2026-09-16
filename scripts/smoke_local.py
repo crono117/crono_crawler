@@ -132,6 +132,40 @@ def main():
                 assert lead.status == "suppressed" and Lead.objects.count() == 3
                 assert "Lead overview" in client.get("/").text
                 print("PASS: full process restart resumes a queued job and retains the login session and review decisions.")
+
+                from discovery.models import Campaign, DiscoveryRun, DiscoveredURL
+                from discovery.services import start as start_discovery
+                call_command("init_discovery_demo", stdout=io.StringIO())
+                campaign = Campaign.objects.get(name="Offline discovery demo")
+                wait_for(lambda: campaign.runs.filter(status="completed").exists(), "Discovery demo did not finish.")
+                assert Lead.objects.count() == 6
+                discovered = campaign.urls.get(url="https://new-vendor.example.org/reps/")
+                assert discovered.decision == "pending" and not discovered.jobs.exists()
+                for path in ("/discovery/", "/discovery/campaigns/new/", f"/discovery/campaigns/{campaign.pk}/",
+                             "/discovery/candidates/", f"/discovery/candidates/{discovered.pk}/",
+                             f"/discovery/runs/{campaign.runs.first().pk}/"):
+                    assert client.get(path).status_code == 200, path
+                detail = client.get(f"/discovery/candidates/{discovered.pk}/")
+                client.post(f"/discovery/candidates/{discovered.pk}/", data={"action": "dismiss", "csrfmiddlewaretoken": csrf(detail)})
+                discovered.refresh_from_db()
+                assert discovered.decision == "dismissed"
+                detail = client.get(f"/discovery/campaigns/{campaign.pk}/")
+                client.post(f"/discovery/campaigns/{campaign.pk}/action/", data={"action": "pause", "csrfmiddlewaretoken": csrf(detail)})
+                campaign.refresh_from_db()
+                assert not campaign.active
+                print("PASS: discovery dashboard, link paths, sitemap-only page, three new fictional contacts and source review controls.")
+
+                stop()
+                pending_discovery = start_discovery(campaign)
+                start()
+                wait_for(ready, "The discovery test web process did not restart.")
+                wait_for(lambda: DiscoveryRun.objects.get(pk=pending_discovery.pk).status == "completed", "Discovery did not resume after process restart.")
+                pending_discovery.refresh_from_db()
+                discovered.refresh_from_db()
+                lead.refresh_from_db()
+                assert pending_discovery.new_contacts == 0 and Lead.objects.count() == 6
+                assert discovered.decision == "dismissed" and lead.status == "suppressed"
+                print("PASS: discovery queue restart, deduplication, URL dismissal and existing lead suppression all persist.")
         except Exception:
             stop()
             output.seek(0)

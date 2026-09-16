@@ -84,7 +84,7 @@ class Response:
         except LookupError:
             return self.body.decode("utf-8", errors="replace")
 
-def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25):
+def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True):
     """Resolve once per hop; connect to that exact public IP with hostname TLS."""
     for _ in range(6):
         try:
@@ -102,10 +102,13 @@ def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25):
             connection = klass(p.hostname, addresses[0], port, timeout)
             connection.request("GET", urlunsplit(("", "", p.path, p.query, "")), headers={
                 "User-Agent": user_agent, "Accept-Encoding": "identity", "Accept": "*/*", "Connection": "close",
+                **(request_headers or {}),
             })
             response = connection.getresponse()
             headers = {key.lower(): value for key, value in response.getheaders()}
             if response.status in (301, 302, 303, 307, 308):
+                if not allow_redirects:
+                    raise FetchError("Redirects are disabled for this API request.")
                 if not headers.get("location"):
                     raise FetchError("Redirect has no destination.")
                 url = urljoin(url, headers["location"])

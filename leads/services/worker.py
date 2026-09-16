@@ -47,11 +47,14 @@ def enqueue(source):
 
 @transaction.atomic
 def pause_source(source, message="Paused by operator."):
+    from discovery.services import pause_for_source
     Source.objects.filter(pk=source.pk).update(active=False, last_error=message)
     Run.objects.filter(source=source, status__in=("queued", "running")).update(status="paused", message=message)
+    pause_for_source(source, message)
 
 @transaction.atomic
 def acquire_lease():
+    from discovery.models import DiscoveryJob
     now = timezone.now()
     lease, _ = WorkerLease.objects.get_or_create(key="collector", defaults={"heartbeat_at": now - timedelta(days=1)})
     lease = WorkerLease.objects.select_for_update().get(pk=lease.pk)
@@ -62,6 +65,7 @@ def acquire_lease():
     lease.save()
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
     return lease.token
 
 def heartbeat(token):
@@ -143,8 +147,8 @@ def collect_links(source, job, html, base_url):
                 _, created = PageJob.objects.get_or_create(run=job.run, url=url, defaults={"depth": job.depth + 1})
                 remaining -= int(created)
         elif source.discover_external and origin(url) != origin(source.url) and len(seen) <= 300:
-            # Save only the external homepage, without fetching it or automatically approving it.
-            candidate = origin(url) + "/"
+            # Preserve the actual useful path without fetching or approving it.
+            candidate = url
             if not Source.objects.filter(url=candidate).exists():
                 SourceCandidate.objects.get_or_create(url=candidate, defaults={
                     "label": link.get_text(" ", strip=True)[:200], "discovered_from": source, "evidence_url": base_url,
@@ -195,8 +199,14 @@ def process(job):
     source = job.run.source
     try:
         if source.collector == "demo":
-            html = (Path(settings.BASE_DIR) / "examples" / "demo-team.html").read_text()
-            response = Response(source.url, 200, {"content-type": "text/html"}, html.encode())
+            from discovery.services import DEMO_ORIGIN, demo_response
+            if source.url.startswith(DEMO_ORIGIN + "/"):
+                response = demo_response(job.url)
+                require_success(response)
+                html = response.text
+            else:
+                html = (Path(settings.BASE_DIR) / "examples" / "demo-team.html").read_text()
+                response = Response(source.url, 200, {"content-type": "text/html"}, html.encode())
         else:
             guard = prepare_domain(source, job)
             if guard is None:
@@ -236,17 +246,26 @@ def process(job):
         logger.warning("Page %s: %s", job.pk, exc)
         handle_error(job, source, exc)
 
-def tick(token):
+def tick(token, prefer_discovery=False):
+    from discovery import services as discovery
     heartbeat(token)
     schedule_due()
+    discovery.schedule_due()
+    if prefer_discovery and discovery.tick():
+        heartbeat(token)
+        return True
     with transaction.atomic():
         job = PageJob.objects.select_related("run__source").filter(status="queued", available_at__lte=timezone.now(),
             run__status__in=("queued", "running"), run__source__active=True, run__source__approved=True).order_by("available_at", "id").first()
-        if not job:
-            return False
-        job.status = "processing"
-        job.save()
-        Run.objects.filter(pk=job.run_id, status="queued").update(status="running", started_at=timezone.now())
-    process(job)
+        if job:
+            job.status = "processing"
+            job.save()
+            Run.objects.filter(pk=job.run_id, status="queued").update(status="running", started_at=timezone.now())
+    if job:
+        process(job)
+    else:
+        worked = discovery.tick()
+        heartbeat(token)
+        return worked
     heartbeat(token)
     return True

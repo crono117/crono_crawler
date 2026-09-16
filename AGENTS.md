@@ -38,6 +38,8 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 `leads/models.py`: persistent data model. Commit migrations for schema changes.
 `leads/forms.py`, `views.py`, `templates/`, `static/`: authenticated operator console.
 
+`discovery/`: campaign scheduling, exact-URL ranking and review, bounded XML/gzip sitemaps, optional Brave search, and persistent discovery jobs. Read `docs/DISCOVERY.md` before changing this app. The existing collector lease owns both queues; do not launch an independent discovery worker. Search results are metadata only until covered by an approved source. Preserve shared request throttling, daily quotas across restarts, source pause propagation, and the separation of discovery hints from contact evidence. `manage.py init_discovery_demo` is a fixed offline fixture.
+
 ## Change verification
 
 Run the tests and Django checks after code changes. Add a regression test when fixing a meaningful collection, privacy, authentication, or persistence defect. Keep network tests deterministic; no third-party websites or hosted LLMs are required. Run actual browser/Ollama integration checks only when those optional services are available, and distinguish mock tests from real integration results.

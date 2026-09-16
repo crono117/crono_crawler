@@ -28,6 +28,8 @@ The source category is operator context. Person tags come from the selected pers
 
 ## Known boundaries
 
+The discovery app extends this pipeline with `Campaign`, `DiscoveryRun`, `DiscoveredURL`, `DiscoveryJob` and `DailyUsage`. One collector lease covers both job queues; the worker alternates queue preference and rotates runnable campaigns. Discovery uses the same transport, robots preparation, source scope, throttles, extraction/evidence validation and lead storage. Its additive migration leaves the existing lead/source tables unchanged. Full workflow and limits: [Discovery](DISCOVERY.md).
+
 - Exactly one worker per database; this is not a distributed crawling fleet.
 - Scope is an exact HTTP(S) origin plus path prefixes. No wildcard domain permissions.
 - Public DNS addresses are required for collected sites. Localhost is allowed only for the administrator-configured Ollama endpoint and the fixed offline demo never uses the network.

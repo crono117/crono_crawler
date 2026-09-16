@@ -16,6 +16,18 @@ Initial build: September 16, 2026. Reference environment: Linux, Python 3.12.14,
 
 The test suite uses synthetic HTML, mocked third-party model responses, and controlled local HTTP fixtures. It does not make requests to real lead sources. These checks validate application behavior, not real-site extraction coverage or public-network connectivity.
 
+## Discovery branch verification
+
+The `feat/discovery-v1` extension passed **72 Django tests** (the original 40 plus 32 discovery tests), Django system checks, and the migration-drift check. Two existing assertions now expect an external link's exact path rather than only its homepage.
+
+Discovery coverage includes the offline graph and sitemap-only contact page, source approval/revocation, source/campaign pause propagation, recurring schedules and queue coalescing, bounded URL/domain/job budgets, persistent daily quotas, ranking and tracking-parameter removal, dismissal/review, evidence preservation on extraction errors, XML/gzip limits and entity rejection, optional search contracts and shared quota/backoff, staff access, CSRF, server-side form limits and all new templates.
+
+Four integration tests use real local HTTP sockets with only fixture DNS/socket routing substituted. They validate robots-first behavior and throttling, nested sitemaps (including a map without an XML filename), preservation of exact external URLs without fetching them, explicit approval before fetching a second domain, lead extraction, HTTP 403 pauses, disallowed robots, and blocked private redirects. Invalid/private sitemap entries are skipped without weakening network guards.
+
+The extended `scripts/smoke_local.py` passed with actual separate web and worker processes. It creates a temporary database, runs the existing collection/review/export checks, exercises the discovery dashboard, follows the fixed offline graph into three additional fictional contacts, dismisses a discovered URL, pauses the campaign, and restarts both processes with discovery work queued. The repeated run adds no duplicates, preserves URL dismissal, and retains existing lead suppression. Processes and the temporary database are cleaned up.
+
+No real lead website, live Brave API request, or visual browser screenshot was used to validate this feature. Discovery's HTML-first path does not establish that JavaScript-only sources work. The existing optional browser/Ollama/Docker/Cursor validation gaps below remain separate.
+
 ## Still to validate on the user's environment
 
 - **Chromium rendering:** Playwright was installed in a separate build environment, but full Chromium and a subsequent headless-shell download timed out. The browser collector has not been exercised with a real browser. The separate browser-control service rejected navigation to the local application with `ERR_BLOCKED_BY_CLIENT`, so no visual screenshot QA was completed; templates were exercised through Django and real HTTP.

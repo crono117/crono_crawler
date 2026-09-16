@@ -8,7 +8,7 @@
 <a class="{% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Overview</a>
 <a class="{% if '/leads/' in request.path %}active{% endif %}" href="{% url 'leads' %}"><span>◉</span> Lead database</a>
 <a class="{% if '/sources/' in request.path %}active{% endif %}" href="{% url 'sources' %}"><span>▤</span> Sources</a>
-<a class="{% if '/discovery/' in request.path %}active{% endif %}" href="{% url 'candidates' %}"><span>⌕</span> Discovery</a>
+<a class="{% if '/discovery/' in request.path %}active{% endif %}" href="{% url 'discovery:home' %}"><span>⌕</span> Discovery</a>
 <a class="{% if '/runs/' in request.path %}active{% endif %}" href="{% url 'runs' %}"><span>↻</span> Collection runs</a>
 </nav>
 <div class="sidebar-bottom"><div class="worker"><i class="dot {% if worker_online %}online{% endif %}"></i>{% if worker_online %}Worker connected{% else %}Worker offline{% endif %}</div>
