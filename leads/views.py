@@ -68,10 +68,16 @@ def source_form(request, pk=None):
             source = form.save(commit=False)
             # Editing configuration stops the old crawl so new limits apply consistently.
             if source.pk:
+                from automation.models import SiteAutomationJob
+                from automation.services import pause_job
+                setup_job = SiteAutomationJob.objects.filter(source=source).first()
+                if setup_job:
+                    pause_job(setup_job, "Source settings changed; review and re-probe before release.", rollback=False)
                 pause_for_source(source)
                 Run.objects.filter(source=source, status__in=("queued", "running", "paused")).update(
                     status="cancelled", finished_at=timezone.now(), message="Source configuration changed.")
             source.active = False
+            source.approval_kind = "operator"
             source.save()
             if candidate:
                 candidate.status = "added"

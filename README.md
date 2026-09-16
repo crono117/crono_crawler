@@ -6,6 +6,8 @@ Repository: [crono117/crono_crawler](https://github.com/crono117/crono_crawler).
 
 **Zero-contact pilot follow-up:** dashboard recipe-review warnings, precise path/domain filters and an offline `inspect_recipe` command help diagnose successful crawls that yield no contacts. See [the Host Merchant / Hermes handoff](docs/HOST_MERCHANT_PILOT.md) for the controlled update and test sequence.
 
+**Autonomous setup:** enable a campaign policy once to let qualifying new sites progress through scoped probes, deterministic recipe generation, local evidence validation, versioned release and a bounded canary automatically. Healthy sites join normal discovery collection; ambiguity, blocks and evidence failures produce visible exceptions. There is no per-site approval click for sites that satisfy the policy, and no model dependency. See [automation controls and the updated Hermes handoff](docs/AUTOMATION.md). Existing sources retain their current mode until explicitly enrolled.
+
 A self-hosted Python application that continuously collects, reviews and refreshes published professional contacts from sources you select. The initial focus is merchant-services sales representatives, with separate tags for POS, payroll, business funding, telecom, IT and commercial insurance.
 
 **Local pilot:** Django + SQLite + a persistent background worker. Optional Playwright handles JavaScript pages. Optional Ollama extracts less structured pages with a model running on your own machine. There is no OpenAI integration or paid AI API requirement.
@@ -40,7 +42,7 @@ If you have already created an administrator, rerun setup with `--no-user` to av
 5. Supply a CSS recipe if the default common team-card selectors do not match the page. The example in `examples/css-recipe.json` shows the supported fields. A zero-contact run can mean that the page has no suitable named contacts or needs a different recipe.
 6. Save, then choose **Start / resume**. Inspect **Collection runs** and review each resulting lead's evidence.
 
-The regular collector follows in-scope links up to the run's page/depth limits and can save exact external URLs under **Discovery → Links from regular collection**. For ongoing exploration, create a **Discovery campaign** using approved starting sources. Campaigns rank links, read in-scope sitemaps, save new domains for review, and collect contacts from eligible pages. Optional Brave web search can find additional domains; it is disabled by default. See [Discovery](docs/DISCOVERY.md) for controls, limits and the offline demo.
+The regular collector follows in-scope links up to the run's page/depth limits and can save exact external URLs under **Discovery → Links from regular collection**. For ongoing exploration, create a **Discovery campaign** using approved starting sources. Campaigns rank links, read in-scope sitemaps, and collect contacts from eligible pages. New domains enter the configured automatic setup policy, or remain pending when that policy is disabled or does not cover them. Optional Brave web search can find additional domains; it is disabled by default. See [Discovery](docs/DISCOVERY.md) for controls, limits and the offline demo.
 
 Collection is scheduled while sources are active. **Pause** disables recurring collection and stops additional pages; an in-flight page may finish saving. Editing a source cancels its unfinished run and leaves it paused so the new configuration starts consistently.
 

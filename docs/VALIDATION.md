@@ -36,6 +36,20 @@ The actual web/worker smoke test also passed with the added zero-contact fixture
 
 The user's desktop report establishes a successful 10-page Host Merchant crawl with zero validated contacts; it is operator-reported, not a crawl performed in this workspace. Official public-page text was inspected for suitability. Direct fetching could not resolve the domain here, and the separate cloud browser encountered the site's security verification, so no Host Merchant HTML selectors or production extraction recipe were validated. See [the Hermes handoff](HOST_MERCHANT_PILOT.md) for the local inspection and 5–10-page rerun. The update must still be downloaded and exercised against the user's actual campaign before claiming improved real-contact yield.
 
+## Autonomous setup verification
+
+The automatic setup extension passed **124 Django tests** (92 existing plus 32 new), Django system checks, the migration-drift check and the complete real-process smoke test on Linux/Python 3.12. No hosted model or third-party website was used.
+
+Coverage includes campaign policy authorization without per-site clicks, score/scope/domain exclusions, explicit dismissals, rotation past excluded pending candidates, daily new-site and shared request budgets, exact homepage scope, depth-one probing/canaries, metadata without extracted contact values, deterministic candidate selection, evidence containment, global/shared contact rejection, zero-result diagnostics, version preservation, rollback and retention. Tests also cover source changes during requests, setup generations, stale worker successes/failures, lease restart, normal-page drift, observed robots changes, staff/CSRF controls, campaign-scoped credentials, HTTPS enforcement, signed-bundle tampering/scope checks and remote proposals requiring local validation.
+
+Three new HTTP integration tests use a real local server and socket transport with fixture DNS/connection routing substituted. They exercise the global worker through robots, probing, recipe validation and a canary, plus robots denial and private-redirect rejection. Production network guards are unchanged.
+
+The actual web/worker smoke starts the offline automatic-setup fixture, waits for its recipe and canary to pass, verifies two additional fictional contacts and all automation dashboard pages, then stops both processes, queues another setup generation and restarts. It verifies activation without duplicate people and retains the existing suppression decision. The older collection, discovery, zero-contact alert, export and restart checks still pass. The smoke database and processes are removed afterward.
+
+Applying the additive migrations to the existing local sample database preserved every original column for its one source, three contacts and three evidence observations. Existing sources retained operator-configured rules mode; no campaign policy was silently enabled. This was a local sample upgrade, not an upgrade of the user's desktop database.
+
+The optional API is an authenticated integration surface in this application. A separate remote coordinator/desktop-client deployment, asymmetric signing, raw-HTML transfer, calibrated recipe accuracy, real-site extraction yield and visual screenshot QA have not been established. The new workflow does not claim to validate a Host Merchant recipe until tested against that site's actual local HTML. The operational limits and Hermes update steps are in [Automation](AUTOMATION.md).
+
 ## Still to validate on the user's environment
 
 - **Chromium rendering:** Playwright was installed in a separate build environment, but full Chromium and a subsequent headless-shell download timed out. The browser collector has not been exercised with a real browser. The separate browser-control service rejected navigation to the local application with `ERR_BLOCKED_BY_CLIENT`, so no visual screenshot QA was completed; templates were exercised through Django and real HTTP.

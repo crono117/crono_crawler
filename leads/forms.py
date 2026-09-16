@@ -8,8 +8,8 @@ from urllib.parse import urlsplit
 class SourceForm(forms.ModelForm):
     class Meta:
         model = Source
-        fields = ["name", "url", "company", "category", "collector", "extractor", "require_sales_role", "recipe",
-                  "allowed_paths", "follow_links", "discover_external", "interval_hours", "delay_seconds",
+        fields = ["name", "url", "company", "category", "collector", "extractor", "require_sales_role", "recipe", "setup_mode",
+                  "allowed_paths", "allow_homepage", "follow_links", "discover_external", "interval_hours", "delay_seconds",
                   "max_pages", "max_depth", "approved", "approval_notes"]
         labels = {"category": "Source business type", "recipe": "CSS recipe (optional JSON)",
                   "approved": "I have reviewed this source for collection", "require_sales_role": "Require a sales-related role or description",
@@ -18,11 +18,13 @@ class SourceForm(forms.ModelForm):
                    "approval_notes": forms.Textarea(attrs={"rows": 3}), "allowed_paths": forms.Textarea(attrs={"rows": 3})}
         help_texts = {"company": "Optional source company name. This is your supplied context, not an extracted fact.",
                       "approval_notes": "Record why collection is appropriate, any source terms, and restrictions.",
-                      "recipe": "Leave blank for common team cards. Field selectors are relative to each person row. Optional evidence selects a smaller container inside that row; it must contain the name and contact evidence. Never use a page-wide footer contact as a person's contact.",
+                      "recipe": "Leave blank for common team cards. Field selectors are relative to each person row. Optional evidence selects the row itself or a smaller container inside it; it must contain the name and contact evidence. Never use a page-wide footer contact as a person's contact.",
+                      "setup_mode": "Operator-configured rules use this recipe directly. Automated setup runs through a campaign policy, validation and a canary first.",
                       "discover_external": "Candidates are saved for review; the collector does not fetch them automatically.",
                       "require_sales_role": "Turn off only when the selected page is already a curated directory of relevant representatives."}
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["setup_mode"].required = False
         self.fields["collector"].choices = [("http", "HTML"), ("browser", "Browser")]
         self.fields["interval_hours"].min_value = 1
         self.fields["interval_hours"].max_value = 8760
@@ -53,6 +55,7 @@ class SourceForm(forms.ModelForm):
             raise forms.ValidationError(str(exc)) from exc
     def clean(self):
         data = super().clean()
+        data["setup_mode"] = data.get("setup_mode") or self.instance.setup_mode or "rules_only"
         for field, bounds in {"interval_hours": (1, 8760), "delay_seconds": (2, 3600), "max_pages": (1, 500), "max_depth": (0, 5)}.items():
             value = data.get(field)
             if value is not None and not bounds[0] <= value <= bounds[1]:
@@ -60,7 +63,7 @@ class SourceForm(forms.ModelForm):
         if data.get("extractor") == "ollama" and not settings.OLLAMA_MODEL:
             self.add_error("extractor", "Configure OLLAMA_MODEL in .env before choosing local AI.")
         if data.get("url") and data.get("allowed_paths"):
-            candidate = Source(url=data["url"], allowed_paths=data["allowed_paths"])
+            candidate = Source(url=data["url"], allowed_paths=data["allowed_paths"], allow_homepage=data.get("allow_homepage", False))
             if not in_scope(candidate, candidate.url):
                 self.add_error("allowed_paths", "The starting URL must be within an allowed path.")
         if data.get("approved") and not data.get("approval_notes", "").strip():

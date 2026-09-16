@@ -179,6 +179,27 @@ def main():
                 assert "No person cards matched" in client.get(f"/discovery/runs/{empty_run.pk}/").text
                 assert Lead.objects.count() == 6
                 print("PASS: zero-contact worker diagnostics and recipe health alerts on all dashboard surfaces.")
+
+                from automation.models import SiteAutomationJob
+                call_command("init_automation_demo", stdout=io.StringIO())
+                automated = SiteAutomationJob.objects.get(campaign__name="Offline automation demo")
+                wait_for(lambda: SiteAutomationJob.objects.get(pk=automated.pk).state in ("active", "paused", "failed"),
+                         "Automatic setup did not finish.")
+                automated.refresh_from_db()
+                assert automated.state == "active", automated.message
+                assert Lead.objects.count() == 8
+                assert {"Robin Autonomy", "Morgan Pipeline"}.issubset(set(Lead.objects.values_list("name", flat=True)))
+                for path in ("/automation/", f"/automation/jobs/{automated.pk}/", f"/automation/policies/{automated.campaign_id}/"):
+                    assert client.get(path).status_code == 200, path
+                from automation.services import start_setup
+                stop()
+                start_setup(automated.source, automated.campaign)
+                start()
+                wait_for(ready, "Web process did not restart for automatic setup.")
+                wait_for(lambda: SiteAutomationJob.objects.get(pk=automated.pk).state == "active", "Setup did not resume after restart.")
+                assert Lead.objects.count() == 8
+                assert Lead.objects.get(name="Alex Example").status == "suppressed"
+                print("PASS: automatic recipe setup, local validation, canary, version history, controls and full process restart.")
         except Exception:
             stop()
             output.seek(0)

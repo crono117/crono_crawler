@@ -8,7 +8,7 @@ import httpx
 import soupsieve
 from django.conf import settings
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DEFAULT_SELECTORS = {
     "row": '[itemtype*="schema.org/Person"], .team-member, .team-card, .person-card, .staff-member, .agent-card, .sales-rep',
     "name": '[itemprop="name"], .name, .person-name, .team-name, h2, h3',
@@ -108,6 +108,12 @@ def contact_evidence(row):
             parts.append(unquote(node["href"].split(":", 1)[1].split("?", 1)[0]))
     return normalize(" ".join(parts))
 
+def evidence_node(row, selector):
+    # A recipe may name the card itself, or narrow to one of its descendants.
+    if not selector or soupsieve.match(selector, row):
+        return row
+    return row.select_one(selector)
+
 def validate_record(record, evidence, source, diagnostics=None):
     evidence = normalize(evidence)
     if len(evidence) > 12000:
@@ -152,7 +158,7 @@ def extract_rules(html, source, diagnostics=None):
     for row in rows[:500]:
         record = {key: selected_text(row, selectors[key]) for key in ("name", "title", "email", "phone", "company")}
         # Evidence can narrow a card, never escape it or fall back to the whole page.
-        evidence_row = row.select_one(selectors["evidence"]) if selectors["evidence"] else row
+        evidence_row = evidence_node(row, selectors["evidence"])
         if evidence_row is None:
             rejected(diagnostics, "missing_evidence_container")
             continue

@@ -83,14 +83,21 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
         candidate.source, candidate.decision = source, "approved"
         candidate.save(update_fields=["source", "decision"])
         queue_candidate(run, candidate, depth=depth, kind=candidate.kind, seed=seed)
+    elif candidate.decision == "pending":
+        from automation.policy import consider
+        consider(candidate)
+        candidate.refresh_from_db()
     return candidate
 
 
 def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False):
+    from automation.policy import collection_allowed
     campaign = run.campaign
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
         return
     if candidate.score < 0 or (not seed and kind == "page" and candidate.score < campaign.min_score):
+        return
+    if not collection_allowed(candidate.source):
         return
     if depth > (3 if kind == "sitemap" else campaign.max_depth):
         return
@@ -156,9 +163,13 @@ def approve(candidate, source):
     if not source.approved or not in_scope(source, candidate.url):
         raise ValueError("Choose a reviewed source whose approved scope contains this exact URL.")
     candidate.campaign.sources.add(source)
+    if source.setup_mode == "automatic":
+        from automation.services import start_setup
+        start_setup(source, candidate.campaign)
     # Approve the selected URL even if explicitly dismissed earlier. Other dismissals persist.
     candidate.decision, candidate.source = "approved", source
-    candidate.save(update_fields=["decision", "source"])
+    candidate.dismissal_scope = ""
+    candidate.save(update_fields=["decision", "source", "dismissal_scope"])
     run = candidate.campaign.runs.filter(status__in=("queued", "running")).first()
     for sibling in candidate.campaign.urls.filter(origin=origin(source.url)).exclude(decision="dismissed"):
         if in_scope(source, sibling.url):
@@ -185,7 +196,12 @@ def defer(job, until, message):
 @transaction.atomic
 def reserve(job, search=False):
     """Durable quotas; retries/crashes never refund a possibly executed request."""
-    campaign = job.run.campaign
+    return reserve_budget(job.run.campaign, job, search=search)
+
+
+@transaction.atomic
+def reserve_budget(campaign, job, search=False):
+    """Collection setup and discovery consume the same persisted request allowance."""
     usage, _ = DailyUsage.objects.get_or_create(campaign=campaign, day=timezone.now().date())
     usage = DailyUsage.objects.select_for_update().get(pk=usage.pk)
     if search:
@@ -251,8 +267,23 @@ def save_page(job, response):
     sig = signature(source)
     cached = PageSnapshot.objects.filter(source=source, url=response.url, content_hash=content_hash, extraction_signature=sig).exists()
     diagnostics = {}
-    records, tags = (None, None) if cached else extract(response.text, source, diagnostics=diagnostics)
+    if source.setup_mode == "automatic":
+        from automation.services import monitor_page
+        validated = monitor_page(source, response)
+        if validated is None:
+            done(job, "Source health requires recipe setup; previous contact evidence retained.", "skipped")
+            return
+        records, tags, metrics = validated
+        cached = False
+    else:
+        records, tags = (None, None) if cached else extract(response.text, source, diagnostics=diagnostics)
     with transaction.atomic():
+        if source.setup_mode == "automatic":
+            from automation.policy import collection_allowed
+            source.refresh_from_db()
+            if not collection_allowed(source):
+                done(job, "Source setup changed while fetching; no contacts stored.", "skipped")
+                return
         before = Lead.objects.count()
         count = touch_unchanged(source, response.url) if cached else save_records(source, response.url, content_hash, records, tags)
         created = Lead.objects.count() - before
@@ -310,6 +341,10 @@ def process(job):
         if not source or not source.approved or not campaign.sources.filter(pk=source.pk).exists() or not in_scope(source, job.url):
             done(job, "Source approval or scope changed; no request made.", "skipped")
             return
+        from automation.policy import collection_allowed
+        if not collection_allowed(source):
+            done(job, "Source awaits recipe setup or health review; no request made.", "skipped")
+            return
         if not job.candidate or job.candidate.decision != "approved":
             done(job, "URL was dismissed or is awaiting review.", "skipped")
             return
@@ -318,7 +353,8 @@ def process(job):
             done(job, "URL excluded by current campaign filters; no request made.", "skipped")
             return
         if source.collector == "demo":
-            response = demo_response(job.url)
+            from automation.fixtures import DEMO_ORIGIN as AUTO_DEMO_ORIGIN, demo_response as automation_demo
+            response = automation_demo(source, job.url) if origin(source.url) == AUTO_DEMO_ORIGIN else demo_response(job.url)
         else:
             state = DomainState.objects.filter(origin=origin(source.url)).first()
             if state and state.next_allowed_at > timezone.now():

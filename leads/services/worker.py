@@ -26,6 +26,8 @@ def enqueue(source):
     source = Source.objects.select_for_update().get(pk=source.pk)
     if not source.approved:
         raise ValueError("Review and approve the source before running it.")
+    if source.setup_mode == "automatic":
+        raise ValueError("This source is managed by Site automation. Use its campaign and setup controls.")
     run = Run.objects.filter(source=source, status__in=OPEN_STATUSES).first()
     if run:
         if run.status == "paused":
@@ -50,7 +52,14 @@ def pause_source(source, message="Paused by operator."):
     from discovery.services import pause_for_source
     Source.objects.filter(pk=source.pk).update(active=False, last_error=message)
     Run.objects.filter(source=source, status__in=("queued", "running")).update(status="paused", message=message)
-    pause_for_source(source, message)
+    if source.setup_mode == "automatic":
+        from automation.models import SiteAutomationJob
+        from automation.services import pause_job
+        job = SiteAutomationJob.objects.filter(source=source).first()
+        if job:
+            pause_job(job, message)
+    else:
+        pause_for_source(source, message)
 
 @transaction.atomic
 def acquire_lease():
@@ -66,6 +75,8 @@ def acquire_lease():
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
     DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    from automation.models import SiteAutomationJob
+    SiteAutomationJob.objects.filter(processing=True).update(processing=False)
     return lease.token
 
 def heartbeat(token):
@@ -76,7 +87,7 @@ def release_lease(token):
     WorkerLease.objects.filter(key="collector", token=token).update(token="", heartbeat_at=timezone.now())
 
 def schedule_due():
-    for source in Source.objects.filter(active=True, approved=True, next_due_at__lte=timezone.now()):
+    for source in Source.objects.filter(active=True, approved=True, setup_mode="rules_only", next_due_at__lte=timezone.now()):
         if not source.runs.filter(status__in=OPEN_STATUSES).exists():
             enqueue(source)
 
@@ -197,6 +208,11 @@ def handle_error(job, source, exc):
 
 def process(job):
     source = job.run.source
+    if source.setup_mode == "automatic":
+        job.status, job.message = "skipped", "Automatic setup owns this source; use its campaign."
+        job.save()
+        finish_run(job.run)
+        return
     try:
         if source.collector == "demo":
             from discovery.services import DEMO_ORIGIN, demo_response
@@ -253,9 +269,14 @@ def process(job):
 
 def tick(token, prefer_discovery=False):
     from discovery import services as discovery
+    from automation import services as automation
     heartbeat(token)
     schedule_due()
     discovery.schedule_due()
+    automation.maintenance()
+    if prefer_discovery and automation.tick(token):
+        heartbeat(token)
+        return True
     if prefer_discovery and discovery.tick():
         heartbeat(token)
         return True
@@ -269,7 +290,7 @@ def tick(token, prefer_discovery=False):
     if job:
         process(job)
     else:
-        worked = discovery.tick()
+        worked = discovery.tick() or automation.tick(token)
         heartbeat(token)
         return worked
     heartbeat(token)

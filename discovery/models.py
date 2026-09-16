@@ -78,6 +78,7 @@ class DiscoveredURL(models.Model):
     score = models.IntegerField(default=0)
     reasons = models.JSONField(default=list)
     decision = models.CharField(max_length=16, default="pending", choices=[("pending", "Needs review"), ("approved", "Approved scope"), ("dismissed", "Dismissed")])
+    dismissal_scope = models.CharField(max_length=8, blank=True, default="", choices=[("", "Automatic filter / none"), ("url", "Operator URL dismissal"), ("origin", "Operator origin dismissal")])
     source = models.ForeignKey("leads.Source", on_delete=models.SET_NULL, null=True, blank=True, related_name="discovered_urls")
     last_result = models.CharField(max_length=1000, blank=True)
     first_seen = models.DateTimeField(auto_now_add=True)
