@@ -13,6 +13,7 @@ from django.views.decorators.http import require_POST
 from .forms import LeadReviewForm, SourceForm
 from .models import CATEGORIES, Lead, Observation, PageJob, Run, Source, SourceCandidate, WorkerLease
 from .services.worker import enqueue, pause_source
+from .services.health import recipe_review_runs
 
 staff_required = user_passes_test(lambda u: u.is_authenticated and u.is_active and u.is_staff)
 
@@ -26,7 +27,7 @@ def console_context(request):
 
 @staff_required
 def dashboard(request):
-    from discovery.models import DiscoveredURL
+    from discovery.models import DiscoveredURL, DiscoveryRun
     return render(request, "leads/dashboard.html", {
         "lead_count": Lead.objects.exclude(status__in=("rejected", "suppressed")).count(),
         "review_count": Lead.objects.filter(status="new").count(),
@@ -35,6 +36,8 @@ def dashboard(request):
         "recent_leads": Lead.objects.prefetch_related("observations__source")[:5],
         "recent_runs": Run.objects.select_related("source")[:6],
         "source_count": Source.objects.count(),
+        "collection_alerts": recipe_review_runs(Run, "source")[:5],
+        "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign")[:5],
     })
 
 @staff_required
@@ -83,6 +86,7 @@ def source_form(request, pk=None):
 def source_detail(request, pk):
     source = get_object_or_404(Source, pk=pk)
     return render(request, "leads/source_detail.html", {"source": source, "runs": source.runs.all()[:15],
+        "collection_alerts": recipe_review_runs(Run, "source").filter(source=source),
         "observations": source.observations.select_related("lead")[:20]})
 
 @require_POST

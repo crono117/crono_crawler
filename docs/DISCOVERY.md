@@ -4,6 +4,8 @@ Trial branch: `feat/discovery-v1` in `crono117/crono_crawler`.
 
 Discovery is part of the same Django application and runs in the existing worker. No additional service, model, browser installation, database server, or API key is needed for link and sitemap discovery. Existing contacts, accounts, source settings, reviews and queues are retained by the additive migration.
 
+For the real Host Merchant zero-contact result, see the [controlled follow-up and Hermes handoff](HOST_MERCHANT_PILOT.md). The follow-up adds precise exclusion rules, an optional contact-discovery filter preset, local CSS recipe diagnostics and dashboard health warnings. It does not install an unverified site recipe or change existing campaign settings automatically.
+
 ## Upgrade an existing local installation
 
 These steps are suitable for Hermes on the home desktop. Use the existing checkout and its virtual environment. Preserve any local code changes; do not reset or overwrite them to switch branches. Inspect `git status` first and use a separate checkout if local development would conflict.
@@ -49,7 +51,7 @@ Check the campaign page, run details, scored URL list, source evidence, pause/re
 
 1. Add/review a starting source through **Sources**. A public industry directory or company team page is useful. Configure its exact origin, approved path scope, source business category, request delay and any required CSS recipe.
 2. In **Discovery → New campaign**, select one or more approved sources. Configure industry keywords, sales-role phrases and exclusions, one phrase per line. The region field adds a ranking hint; it does not verify geography.
-3. Keep search off initially. Start with 25–50 page/sitemap jobs per run, a small depth, and a bounded daily fetch allowance. Save, then **Start / resume**.
+3. Keep search off initially. Start with 5–10 page/sitemap jobs per run, a small depth, and a bounded daily fetch allowance. Save, then **Start / resume**. Inspect extraction yield before increasing the budget.
 4. Review run results and actual evidence in **Lead database**. A successful page with zero validated contacts is reported separately from a failed fetch/parser/extractor. Zero contacts can mean a CSS recipe is needed; it does not prove the site has no useful people.
 5. Open **Review discovered URLs**. Each URL has a priority score, explanation, last discovery context, provenance, and job history. Attach a reviewed source whose origin/path scope covers it, or choose **Configure a new source**, complete the source review, and save it as approved.
 
@@ -59,7 +61,8 @@ Campaigns use their own start/pause and page/depth limits; a source's regular co
 
 ## Ranking and boundaries
 
-- Team/contact/directory paths and local link context: +35; campaign industry phrase: +25; sales-role phrase: +20; region phrase: +10. Sources with human-reviewed contacts can receive a +10 preference when URLs are discovered. Editorial/legal/recruitment context reduces priority; configured exclusions prevent queueing. Scores are ordering hints, not confidence percentages or approval decisions.
+- Team/contact/sales/agent/partner/representative/executive/directory terms in the URL path or link label: +35; campaign industry phrase: +25; sales-role phrase: +20; region phrase: +10. Nearby context can support industry/role ranking but cannot give unrelated product links the team-page bonus. Navigation/header/footer links use their own labels as context. Editorial/legal/recruitment paths or labels reduce priority by 20; product/device/software paths or labels reduce it by 25. Sources with human-reviewed contacts can receive a +10 preference when URLs are discovered. Scores are ordering hints, not confidence percentages or approval decisions.
+- Exclusions accept plain phrases, `path:blog` for path-only matching, and `domain:x.com` for exact-host/subdomain matching. Simple plural and hyphen/space variants are supported. The optional contact-discovery preset appends common noise filters. Saving a campaign recalculates existing URL scores while preserving review decisions, cancels the previous unfinished run and leaves the campaign paused. Set priority around 35 only after reviewing filters and the resulting URL list. Scores never grant permission to fetch a new domain.
 - Exact page paths and meaningful query parameters are retained. Tracking parameters/fragments are removed, while obvious login, calendar, filter, session and asset URLs are excluded. Limits stop cyclic links and unbounded expansion.
 - New domains are recorded from links/search metadata without fetching or DNS-resolving them. A domain must be covered by a reviewed source attached to the campaign before it is fetched. Source approval is rechecked at execution time.
 - Sitemap URL sets, nested indexes, and gzip files are supported. Compressed and decompressed bodies are capped at 2 MiB, parsing disables DTD/entities/external references, each map considers at most 2,000 entries, and nested indexes are limited to depth 3. Sitemap and page URLs must remain in approved scope. A `/team`-only source does not authorize fetching `/sitemap.xml`; robots-listed maps outside scope are ignored.

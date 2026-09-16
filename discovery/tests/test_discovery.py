@@ -9,8 +9,8 @@ from leads.services.network import FetchError, Response
 from leads.services.worker import acquire_lease, enqueue, pause_source, release_lease, tick
 from discovery.models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, DiscoveryRun
 from discovery.providers import brave_search, sitemap_entries
-from discovery.ranking import clean_url, rank
-from discovery.services import DEMO_ORIGIN, approve, pause, register, start
+from discovery.ranking import CONTACT_EXCLUSIONS, clean_url, rank
+from discovery.services import DEMO_ORIGIN, approve, pause, record_links, register, start
 
 
 class DiscoveryTests(TestCase):
@@ -182,6 +182,48 @@ class DiscoveryTests(TestCase):
         self.assertEqual(run.status, "failed")
         self.assertEqual(Observation.objects.filter(present=True).count(), count)
 
+    def test_zero_contact_diagnostics_survive_worker_completion(self):
+        self.campaign.use_sitemaps, self.campaign.max_pages = False, 1
+        self.campaign.save()
+        run = start(self.campaign)
+        self.finish(run)
+        self.assertTrue(run.needs_recipe_review)
+        self.assertIn("No person cards matched", run.jobs.get().message)
+
+    def test_navigation_context_does_not_promote_product_links(self):
+        self.campaign.use_sitemaps, self.campaign.min_score = False, 35
+        self.campaign.save()
+        run = start(self.campaign)
+        html = '<nav><div>Merchant services sales team<a href="/terminal/">Terminal</a></div><a href="/executive-team/">Executive team</a></nav>'
+        record_links(run.jobs.get(), html, self.source.url)
+        product = self.campaign.urls.get(url=DEMO_ORIGIN + "/terminal/")
+        team = self.campaign.urls.get(url=DEMO_ORIGIN + "/executive-team/")
+        self.assertLess(product.score, 35)
+        self.assertFalse(product.jobs.exists())
+        self.assertTrue(team.jobs.exists())
+
+    def test_new_high_scoring_domain_still_requires_manual_review(self):
+        candidate = register(start(self.campaign), "https://other.example.org/sales/representatives/", label="Merchant services sales team")
+        self.assertGreaterEqual(candidate.score, 70)
+        self.assertEqual(candidate.decision, "pending")
+        self.assertIsNone(candidate.source)
+        self.assertFalse(candidate.jobs.exists())
+
+    def test_current_exclusions_stop_previously_queued_requests(self):
+        self.campaign.use_sitemaps = False
+        self.campaign.save()
+        run = start(self.campaign)
+        candidate = register(run, DEMO_ORIGIN + "/product/team/", label="Merchant services sales team")
+        self.assertTrue(candidate.jobs.exists())
+        self.campaign.refresh_from_db()
+        self.campaign.exclusions = "path:product"
+        self.campaign.save()
+        from discovery.services import demo_response
+        with patch("discovery.services.demo_response", wraps=demo_response) as fetch:
+            self.finish(run)
+        self.assertNotIn(candidate.url, [call.args[0] for call in fetch.call_args_list])
+        self.assertIn("excluded", candidate.jobs.get().message)
+
     def test_empty_excluded_campaign_finishes_without_stuck_run(self):
         self.campaign.exclusions, self.campaign.use_sitemaps = "fictional", False
         self.campaign.save()
@@ -197,6 +239,32 @@ class DiscoveryTests(TestCase):
 
 
 class RankingAndProviderTests(TestCase):
+    def test_contact_filters_match_plural_paths_and_social_hosts(self):
+        campaign = Campaign(exclusions="\n".join(CONTACT_EXCLUSIONS))
+        for path in ("/blog/", "/blogs/", "/articles/", "/products/", "/software/", "/emv-credit-card-machines/device/"):
+            with self.subTest(path=path):
+                self.assertLess(rank(campaign, "https://example.com" + path, "Sales team")[0], 0)
+        for url in ("https://www.facebook.com/", "https://linkedin.com/in/example", "https://x.com/company"):
+            with self.subTest(url=url):
+                self.assertLess(rank(campaign, url, "Sales team")[0], 0)
+        for path in ("/team/", "/sales/", "/agent/", "/partners/", "/representatives/", "/reps/", "/executive/", "/contact/"):
+            with self.subTest(path=path):
+                self.assertGreaterEqual(rank(campaign, "https://example.com" + path)[0], 35)
+
+    def test_path_exclusions_do_not_reject_team_context_about_software(self):
+        campaign = Campaign(exclusions="path:software\ndomain:x.com")
+        self.assertGreaterEqual(rank(campaign, "https://example.com/team/", "Sales representatives", "Our software product specialists")[0], 35)
+        self.assertGreaterEqual(rank(campaign, "https://notx.com/team/")[0], 35)
+        self.assertGreaterEqual(rank(campaign, "https://x.com.example.org/team/")[0], 35)
+        campaign.exclusions = "x.com"
+        self.assertLess(rank(campaign, "https://www.x.com/company")[0], 0)
+
+    def test_team_context_alone_does_not_award_team_page_bonus(self):
+        campaign = Campaign()
+        score, reasons = rank(campaign, "https://example.com/product/device/", "Terminal", "Merchant services sales team")
+        self.assertLess(score, 30)
+        self.assertFalse(any("(+35)" in reason for reason in reasons))
+
     def test_ranking_prefers_relevant_team_and_explains_exclusions(self):
         campaign = Campaign(name="Test", exclusions="casino")
         high, reasons = rank(campaign, "https://example.com/team/", "Merchant services sales representatives")

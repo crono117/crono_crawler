@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 from leads.models import DomainState, PageJob, PageSnapshot, Run, Source, SourceCandidate, WorkerLease
-from .extraction import extract, signature, soup_for
+from .extraction import diagnostic_message, extract, signature, soup_for
 from .network import FetchError, Response, canonical_url, fetch, fetch_browser, in_scope, origin, require_success
 from .storage import save_records, touch_unchanged
 
@@ -228,7 +228,8 @@ def process(job):
         sig = signature(source)
         cached = PageSnapshot.objects.filter(source=source, url=response.url,
                    content_hash=content_hash, extraction_signature=sig).exists()
-        records, company_tags = (None, None) if cached else extract(html, source)
+        diagnostics = {}
+        records, company_tags = (None, None) if cached else extract(html, source, diagnostics=diagnostics)
         with transaction.atomic():
             # A pause takes effect between pages. In-flight pages may still be saved.
             count = touch_unchanged(source, response.url) if cached else save_records(
@@ -239,6 +240,10 @@ def process(job):
             collect_links(source, job, html, response.url)
             job.status = "done"
             job.message = f"{count} contact(s)." + (" Content unchanged." if cached else "")
+            if not count:
+                job.message += " No validated contacts; review page suitability and CSS recipe."
+            if diagnostics:
+                job.message += " " + diagnostic_message(diagnostics)
             job.save()
             Run.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count)
         finish_run(job.run)

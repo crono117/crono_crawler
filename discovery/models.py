@@ -55,6 +55,10 @@ class DiscoveryRun(models.Model):
     duplicates_seen = models.PositiveIntegerField(default=0)
     message = models.CharField(max_length=1000, blank=True)
 
+    @property
+    def needs_recipe_review(self):
+        return self.status == "completed" and self.pages_done > 0 and self.contacts_seen == 0
+
     class Meta:
         ordering = ["-id"]
         constraints = [models.UniqueConstraint(fields=["campaign"], condition=Q(status__in=["queued", "running", "paused"]), name="one_open_discovery_run")]

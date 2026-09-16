@@ -9,7 +9,7 @@ from django.db import transaction
 from django.db.models import F, Sum
 from django.utils import timezone
 from leads.models import DomainState, Lead, Observation, PageSnapshot, Source
-from leads.services.extraction import extract, signature, soup_for
+from leads.services.extraction import diagnostic_message, extract, signature, soup_for
 from leads.services.network import FetchError, Response, fetch, in_scope, origin, require_success
 from leads.services.storage import save_records, touch_unchanged
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, DiscoveryRun
@@ -27,6 +27,15 @@ def tomorrow():
 
 def approved_source(campaign, url):
     return next((source for source in campaign.sources.filter(approved=True).order_by("id") if in_scope(source, url)), None)
+
+
+def refresh_priorities(campaign):
+    """Re-score saved URLs without changing operator approvals or dismissals."""
+    candidates = list(campaign.urls.select_related("source"))
+    for candidate in candidates:
+        candidate.score, candidate.reasons = rank(campaign, candidate.url, candidate.label, candidate.context)
+    DiscoveredURL.objects.bulk_update(candidates, ["score", "reasons"], batch_size=200)
+    return candidates
 
 
 @transaction.atomic
@@ -116,10 +125,8 @@ def start(campaign):
             if in_scope(source, sitemap):
                 register(run, sitemap, found_on=source.url, method="sitemap", kind="sitemap", seed=True)
     # Reviewed deeper paths remain useful even if their original directory disappears.
-    remembered = list(campaign.urls.filter(decision="approved").exclude(method="seed").select_related("source"))
-    for candidate in remembered:
-        candidate.score, candidate.reasons = rank(campaign, candidate.url, candidate.label, candidate.context)
-    DiscoveredURL.objects.bulk_update(remembered, ["score", "reasons"])
+    remembered = [candidate for candidate in refresh_priorities(campaign)
+                  if candidate.decision == "approved" and candidate.method != "seed"]
     selected_ids = set(campaign.sources.filter(approved=True).values_list("id", flat=True))
     for candidate in sorted(remembered, key=lambda item: item.score, reverse=True):
         if candidate.source_id in selected_ids and in_scope(candidate.source, candidate.url):
@@ -209,7 +216,8 @@ def record_links(job, html, base_url):
         # page. Use nearby card text only when the container is small and local.
         parent = node.parent
         context = label
-        if parent and parent.name in ("article", "li", "tr", "p", "div", "section") and len(parent.find_all("a", limit=3)) < 3:
+        navigation = node.find_parent(["nav", "header", "footer"]) or node.find_parent(attrs={"role": "navigation"})
+        if not navigation and parent and parent.name in ("article", "li", "tr", "p", "div", "section") and len(parent.find_all("a", limit=3)) < 3:
             parts, length = [], 0
             for value in parent.stripped_strings:
                 parts.append(value[:600 - length])
@@ -242,7 +250,8 @@ def save_page(job, response):
     content_hash = hashlib.sha256(response.body).hexdigest()
     sig = signature(source)
     cached = PageSnapshot.objects.filter(source=source, url=response.url, content_hash=content_hash, extraction_signature=sig).exists()
-    records, tags = (None, None) if cached else extract(response.text, source)
+    diagnostics = {}
+    records, tags = (None, None) if cached else extract(response.text, source, diagnostics=diagnostics)
     with transaction.atomic():
         before = Lead.objects.count()
         count = touch_unchanged(source, response.url) if cached else save_records(source, response.url, content_hash, records, tags)
@@ -252,7 +261,9 @@ def save_page(job, response):
         record_links(job, response.text, response.url)
         DiscoveryRun.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count, new_contacts=F("new_contacts") + created)
         job.contacts_seen = count
-        message = f"{count} contact(s); {created} new." if count else "No validated contacts; check whether this page needs a CSS recipe."
+        message = f"{count} contact(s); {created} new." if count else "No validated contacts; review page suitability and CSS recipe."
+        if diagnostics:
+            message += " " + diagnostic_message(diagnostics)
         if cached:
             message += " Content unchanged."
         done(job, message)
@@ -301,6 +312,10 @@ def process(job):
             return
         if not job.candidate or job.candidate.decision != "approved":
             done(job, "URL was dismissed or is awaiting review.", "skipped")
+            return
+        score, _ = rank(campaign, job.url, job.candidate.label, job.candidate.context)
+        if score < 0:
+            done(job, "URL excluded by current campaign filters; no request made.", "skipped")
             return
         if source.collector == "demo":
             response = demo_response(job.url)

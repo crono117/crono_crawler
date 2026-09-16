@@ -28,6 +28,14 @@ The extended `scripts/smoke_local.py` passed with actual separate web and worker
 
 No real lead website, live Brave API request, or visual browser screenshot was used to validate this feature. Discovery's HTML-first path does not establish that JavaScript-only sources work. The existing optional browser/Ollama/Docker/Cursor validation gaps below remain separate.
 
+## Host Merchant follow-up verification
+
+The follow-up passed **92 Django tests**, system checks and the migration-drift check. No database schema change is required. Twenty added tests cover scoped evidence selectors, unchanged strict contact/role validation, distinct rejection diagnostics, the read-only offline preview command, path/domain/plural exclusions, navigation noise, rescoring already saved URLs, skipping queued excluded URLs, manual approval for high-scoring new domains, retrospective zero-contact alerts and clearing current alerts on a refresh that sees existing contacts.
+
+The actual web/worker smoke test also passed with the added zero-contact fixture. Its worker completed a one-page run with no matching card selector; the lead overview, Discovery dashboard, campaign detail and run detail all displayed the recipe-review warning, and the page diagnostics identified the unmatched selector. Original collection, evidence, suppression, export, restart and discovery checks still passed. This used an isolated temporary database with fictional contacts only.
+
+The user's desktop report establishes a successful 10-page Host Merchant crawl with zero validated contacts; it is operator-reported, not a crawl performed in this workspace. Official public-page text was inspected for suitability. Direct fetching could not resolve the domain here, and the separate cloud browser encountered the site's security verification, so no Host Merchant HTML selectors or production extraction recipe were validated. See [the Hermes handoff](HOST_MERCHANT_PILOT.md) for the local inspection and 5–10-page rerun. The update must still be downloaded and exercised against the user's actual campaign before claiming improved real-contact yield.
+
 ## Still to validate on the user's environment
 
 - **Chromium rendering:** Playwright was installed in a separate build environment, but full Chromium and a subsequent headless-shell download timed out. The browser collector has not been exercised with a real browser. The separate browser-control service rejected navigation to the local application with `ERR_BLOCKED_BY_CLIENT`, so no visual screenshot QA was completed; templates were exercised through Django and real HTTP.

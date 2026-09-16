@@ -3,9 +3,9 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 from discovery.forms import CampaignForm
-from discovery.models import Campaign, DiscoveredURL
+from discovery.models import Campaign, DiscoveredURL, DiscoveryRun
 from discovery.services import DEMO_ORIGIN, register, start
-from leads.models import Source
+from leads.models import Run, Source
 
 
 class DiscoveryWebTests(TestCase):
@@ -68,6 +68,60 @@ class DiscoveryWebTests(TestCase):
         run.refresh_from_db()
         self.assertFalse(self.campaign.active)
         self.assertEqual(run.status, "cancelled")
+
+    def test_filter_preset_rescores_existing_urls_without_approving_domains(self):
+        self.client.force_login(self.user)
+        run = start(self.campaign)
+        product = register(run, DEMO_ORIGIN + "/products/team/", label="Sales team")
+        social = register(run, "https://x.com/example", label="Merchant services sales team")
+        self.assertEqual(social.decision, "pending")
+        response = self.client.post(reverse("discovery:edit", args=[self.campaign.pk]),
+            self.data(add_contact_exclusions="on", min_score=35, exclusions="path:careers"))
+        self.assertEqual(response.status_code, 302)
+        self.campaign.refresh_from_db()
+        self.assertIn("path:careers", self.campaign.exclusions)
+        self.assertIn("domain:x.com", self.campaign.exclusions)
+        self.assertFalse(self.campaign.active)
+        product.refresh_from_db()
+        social.refresh_from_db()
+        self.assertLess(product.score, 0)
+        self.assertLess(social.score, 0)
+        self.assertEqual(social.decision, "pending")
+        self.assertIsNone(social.source)
+        rerun = start(self.campaign)
+        self.assertFalse(rerun.jobs.filter(candidate__in=[product, social]).exists())
+
+    def test_invalid_filter_rules_are_form_errors(self):
+        for exclusions in ("path:", "domain:", "domain:https://x.com/", "domain:[invalid"):
+            with self.subTest(exclusions=exclusions):
+                form = CampaignForm(self.data(exclusions=exclusions))
+                self.assertFalse(form.is_valid())
+                self.assertIn("exclusions", form.errors)
+
+    def test_dashboard_alerts_cover_old_runs_and_clear_on_healthy_refresh(self):
+        self.client.force_login(self.user)
+        run = DiscoveryRun.objects.create(campaign=self.campaign, status="completed", pages_done=10, contacts_seen=0)
+        routes = [reverse("dashboard"), reverse("discovery:home"), reverse("discovery:campaign", args=[self.campaign.pk]), reverse("discovery:run", args=[run.pk])]
+        for url in routes:
+            self.assertContains(self.client.get(url), "Recipe review needed")
+        # Seeing existing contacts is healthy even when no new lead is inserted.
+        DiscoveryRun.objects.create(campaign=self.campaign, status="completed", pages_done=5, contacts_seen=3, new_contacts=0)
+        self.assertNotContains(self.client.get(reverse("dashboard")), "Recipe review needed")
+        self.assertEqual(list(self.client.get(reverse("discovery:home")).context["discovery_alerts"]), [])
+        self.assertTrue(run.needs_recipe_review)  # Historical detail still reports what happened.
+
+    def test_search_only_failed_and_in_progress_runs_do_not_raise_recipe_alert(self):
+        self.client.force_login(self.user)
+        DiscoveryRun.objects.create(campaign=self.campaign, status="completed", pages_done=0, contacts_seen=0)
+        DiscoveryRun.objects.create(campaign=self.campaign, status="failed", pages_done=1, contacts_seen=0)
+        DiscoveryRun.objects.create(campaign=self.campaign, status="running", pages_done=1, contacts_seen=0)
+        self.assertNotContains(self.client.get(reverse("dashboard")), "Recipe review needed")
+
+    def test_regular_collection_zero_contact_alert_is_also_visible(self):
+        self.client.force_login(self.user)
+        run = Run.objects.create(source=self.source, status="completed", pages_done=1, contacts_seen=0)
+        for url in (reverse("dashboard"), reverse("source_detail", args=[self.source.pk]), reverse("run_detail", args=[run.pk])):
+            self.assertContains(self.client.get(url), "Recipe review needed")
 
     def test_search_requires_configuration_and_unapproved_seeds_rejected(self):
         form = CampaignForm(self.data(search_enabled="on", search_queries="merchant services"))

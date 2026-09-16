@@ -26,6 +26,8 @@ Transient HTTP failures retry with exponential backoff and a bounded Retry-After
 
 The source category is operator context. Person tags come from the selected person passage; page tags come from the full page. A too-broad CSS selector can produce overly broad attribution, so each real source needs a recipe/evidence review.
 
+CSS recipes can narrow evidence to a descendant of each selected person card. Per-page messages report matched-card counts and rejection reasons without storing rejected contact fields. `manage.py inspect_recipe` previews saved HTML locally without requests or database writes. Dashboard recipe-review warnings are derived from the latest completed run per source/campaign and also cover pre-existing history; zero new leads with nonzero contact observations is a healthy refresh.
+
 ## Known boundaries
 
 The discovery app extends this pipeline with `Campaign`, `DiscoveryRun`, `DiscoveredURL`, `DiscoveryJob` and `DailyUsage`. One collector lease covers both job queues; the worker alternates queue preference and rotates runnable campaigns. Discovery uses the same transport, robots preparation, source scope, throttles, extraction/evidence validation and lead storage. Its additive migration leaves the existing lead/source tables unchanged. Full workflow and limits: [Discovery](DISCOVERY.md).
@@ -46,6 +48,6 @@ The discovery app extends this pipeline with `Campaign`, `DiscoveryRun`, `Discov
 
 1. Validate approved representative websites and add tested source recipes.
 2. Exercise Chromium and local Ollama on the user's actual hardware.
-3. Add source health notifications and freshness filters once a real refresh cadence is established.
+3. Extend the zero-contact health warnings with freshness filters once a real refresh cadence is established.
 4. Add explicit user roles, suppression matching across identity changes, retention/deletion controls, and an operator audit trail before wider team use.
 5. Add a distributed queue only when measured throughput justifies multiple workers.

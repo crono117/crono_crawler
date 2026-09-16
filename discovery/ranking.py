@@ -8,6 +8,12 @@ ASSETS = re.compile(r"\.(?:pdf|jpe?g|png|gif|svg|webp|zip|exe|mp[34]|css|js|ico|
 TRACKING = {"gclid", "fbclid", "msclkid", "mc_cid", "mc_eid"}
 TRAPS = {"sort", "order", "filter", "session", "sessionid", "sid", "calendar", "replytocom"}
 SKIP_PATH = re.compile(r"/(?:login|logout|signin|signout|search|cart|checkout|calendar|wp-admin)(?:/|$)", re.I)
+CONTACT_EXCLUSIONS = (
+    "path:blog", "path:article", "path:emv-credit-card-machines", "path:product", "path:software",
+    "domain:facebook.com", "domain:linkedin.com", "domain:x.com", "domain:twitter.com",
+)
+TARGETS = ("team", "staff", "people", "representative", "rep", "dealer", "partner", "agent",
+           "executive", "sales", "contact", "about", "directory", "member")
 
 
 def lines(text):
@@ -44,28 +50,53 @@ def contains(text, term):
     return bool(re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text, re.I))
 
 
+def words(text):
+    return text.lower().replace("-", " ").replace("_", " ")
+
+
+def phrase_matches(text, term):
+    text, term = words(text), words(term)
+    return contains(text, term) or (len(term) > 2 and not term.endswith("s") and contains(text, term + "s"))
+
+
+def exclusion_matches(rule, url, label, context):
+    parsed = urlsplit(url)
+    host, path = parsed.hostname.lower().rstrip("."), unquote(parsed.path)
+    if rule.startswith("path:"):
+        return phrase_matches(path, rule[5:].strip())
+    # Bare domain names are accepted too, so x.com matches a hostname, not page prose.
+    if rule.startswith("domain:") or re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", rule):
+        domain = rule.removeprefix("domain:").strip().lower().rstrip(".")
+        return host == domain or host.endswith("." + domain)
+    return phrase_matches(" ".join((host, path, label, context)), rule)
+
+
 def rank(campaign, url, label="", context=""):
-    text = " ".join((unquote(urlsplit(url).path), label, context)).lower()
-    excluded = [term for term in lines(campaign.exclusions) if contains(text, term)]
+    direct = " ".join((unquote(urlsplit(url).path), label))
+    text = words(" ".join((direct, context)))
+    excluded = [term for term in lines(campaign.exclusions) if exclusion_matches(term, url, label, context)]
     if excluded:
         return -100, ["Excluded phrase: " + term for term in excluded[:3]]
     score, reasons = 0, []
-    targets = ("team", "staff", "people", "representatives", "reps", "dealers", "partners", "contact", "about", "directory", "members")
-    if any(contains(text.replace("-", " ").replace("_", " "), word) for word in targets):
+    # Nearby sales/team prose must not turn every product link into a team page.
+    if any(phrase_matches(direct, word) for word in TARGETS):
         score += 35
         reasons.append("Team, contact, partner or directory page (+35)")
-    matched = [term for term in lines(campaign.keywords) if contains(text, term)]
+    matched = [term for term in lines(campaign.keywords) if phrase_matches(text, term)]
     if matched:
         score += 25
         reasons.append("Industry: " + ", ".join(matched[:3]) + " (+25)")
-    matched = [term for term in lines(campaign.sales_terms) if contains(text, term)]
+    matched = [term for term in lines(campaign.sales_terms) if phrase_matches(text, term)]
     if matched:
         score += 20
         reasons.append("Sales role: " + ", ".join(matched[:3]) + " (+20)")
-    if campaign.region and contains(text, campaign.region):
+    if campaign.region and phrase_matches(text, campaign.region):
         score += 10
         reasons.append("Region mentioned (+10; not verified)")
-    if any(contains(text, word) for word in ("blog", "news", "careers", "vacancies", "privacy", "terms")):
+    if any(phrase_matches(direct, word) for word in ("blog", "article", "news", "careers", "vacancies", "privacy", "terms")):
         score -= 20
         reasons.append("Editorial, legal or recruitment page (-20)")
+    if any(phrase_matches(direct, word) for word in ("product", "device", "software", "emv credit card machines")):
+        score -= 25
+        reasons.append("Product, device or software page (-25)")
     return score, reasons or ["No strong relevance signal yet"]

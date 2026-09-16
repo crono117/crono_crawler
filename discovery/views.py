@@ -6,10 +6,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from leads.views import staff_required
+from leads.services.health import recipe_review_runs
 from .forms import ApproveURLForm, CampaignForm
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryRun
 from .providers import search_ready
-from .services import OPEN, approve, pause, start
+from .services import OPEN, approve, pause, refresh_priorities, start
 
 
 @staff_required
@@ -21,6 +22,7 @@ def home(request):
         "active_count": Campaign.objects.filter(active=True).count(),
         "today": DailyUsage.objects.filter(day=timezone.now().date()).aggregate(requests=Sum("requests"), searches=Sum("searches")),
         "search_ready": search_ready(), "recent_runs": DiscoveryRun.objects.select_related("campaign")[:10],
+        "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign")[:5],
     })
 
 
@@ -36,6 +38,7 @@ def campaign_form(request, pk=None):
             campaign.active = False
             campaign.save()
             form.save_m2m()
+            refresh_priorities(campaign)
         messages.success(request, "Campaign saved and paused. Start it when ready.")
         return redirect("discovery:campaign", pk=campaign.pk)
     return render(request, "discovery/form.html", {"form": form, "campaign": campaign})
@@ -45,6 +48,7 @@ def campaign_form(request, pk=None):
 def campaign_detail(request, pk):
     campaign = get_object_or_404(Campaign.objects.prefetch_related("sources"), pk=pk)
     return render(request, "discovery/campaign.html", {"campaign": campaign, "runs": campaign.runs.all()[:20],
+        "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign").filter(campaign=campaign),
         "url_count": campaign.urls.count(), "pending_count": campaign.urls.filter(decision="pending").count(),
         "today": campaign.usage.filter(day=timezone.now().date()).first()})
 

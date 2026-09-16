@@ -4,6 +4,8 @@ Repository: [crono117/crono_crawler](https://github.com/crono117/crono_crawler).
 
 **Discovery trial:** this branch adds scheduled discovery campaigns, ranked exact URLs, sitemap exploration, source review and optional web search. See [the discovery setup and upgrade guide](docs/DISCOVERY.md). The same worker runs both collection and discovery; existing accounts and lead data are preserved.
 
+**Zero-contact pilot follow-up:** dashboard recipe-review warnings, precise path/domain filters and an offline `inspect_recipe` command help diagnose successful crawls that yield no contacts. See [the Host Merchant / Hermes handoff](docs/HOST_MERCHANT_PILOT.md) for the controlled update and test sequence.
+
 A self-hosted Python application that continuously collects, reviews and refreshes published professional contacts from sources you select. The initial focus is merchant-services sales representatives, with separate tags for POS, payroll, business funding, telecom, IT and commercial insurance.
 
 **Local pilot:** Django + SQLite + a persistent background worker. Optional Playwright handles JavaScript pages. Optional Ollama extracts less structured pages with a model running on your own machine. There is no OpenAI integration or paid AI API requirement.

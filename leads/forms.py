@@ -1,8 +1,8 @@
-import soupsieve
 from django import forms
 from django.conf import settings
 from .models import Lead, Source
 from .services.network import canonical_url, in_scope, public_addresses
+from .services.extraction import validate_recipe
 from urllib.parse import urlsplit
 
 class SourceForm(forms.ModelForm):
@@ -18,7 +18,7 @@ class SourceForm(forms.ModelForm):
                    "approval_notes": forms.Textarea(attrs={"rows": 3}), "allowed_paths": forms.Textarea(attrs={"rows": 3})}
         help_texts = {"company": "Optional source company name. This is your supplied context, not an extracted fact.",
                       "approval_notes": "Record why collection is appropriate, any source terms, and restrictions.",
-                      "recipe": "Leave blank for common team cards. Set a row selector and field selectors for a specific site.",
+                      "recipe": "Leave blank for common team cards. Field selectors are relative to each person row. Optional evidence selects a smaller container inside that row; it must contain the name and contact evidence. Never use a page-wide footer contact as a person's contact.",
                       "discover_external": "Candidates are saved for review; the collector does not fetch them automatically.",
                       "require_sales_role": "Turn off only when the selected page is already a curated directory of relevant representatives."}
     def __init__(self, *args, **kwargs):
@@ -47,17 +47,10 @@ class SourceForm(forms.ModelForm):
         return "\n".join(paths)
     def clean_recipe(self):
         recipe = self.cleaned_data.get("recipe") or {}
-        if not isinstance(recipe, dict) or set(recipe) - {"row", "name", "title", "email", "phone", "company"}:
-            raise forms.ValidationError("Use an object with row, name, title, email, phone, and/or company selectors.")
-        for key, value in recipe.items():
-            if not isinstance(value, str) or (key in ("row", "name") and not value):
-                raise forms.ValidationError("Selectors must be strings; row and name cannot be empty.")
-            if value:
-                try:
-                    soupsieve.compile(value)
-                except Exception as exc:
-                    raise forms.ValidationError(f"Invalid {key} selector: {exc}") from exc
-        return recipe
+        try:
+            return validate_recipe(recipe)
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc)) from exc
     def clean(self):
         data = super().clean()
         for field, bounds in {"interval_hours": (1, 8760), "delay_seconds": (2, 3600), "max_pages": (1, 500), "max_depth": (0, 5)}.items():
