@@ -102,7 +102,10 @@ A useful first agent task is: "Read AGENTS.md, run the tests, then validate brow
 .venv/bin/python manage.py check
 .venv/bin/python manage.py test
 .venv/bin/python manage.py makemigrations --check --dry-run
+.venv/bin/python scripts/smoke_local.py
 ```
+
+The smoke test starts real web and worker processes on a temporary local port/database, exercises sign-in, review, export, pause/run and restart recovery, and removes its test data afterward. It does not change your working database or require third-party network access.
 
 Separate terminals are also supported:
 

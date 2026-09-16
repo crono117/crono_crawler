@@ -9,6 +9,7 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 - Python 3.12 is the reference environment; Python 3.11+ is supported by the bootstrap.
 - Install and migrate: `python3 setup.py --no-user`
 - Tests: `.venv/bin/python manage.py test`
+- Live web/worker smoke test: `.venv/bin/python scripts/smoke_local.py` (isolated temporary database, synthetic contacts, no external requests).
 - Django checks: `.venv/bin/python manage.py check`
 - Migration drift: `.venv/bin/python manage.py makemigrations --check --dry-run`
 - Web and worker: `python3 run-local.py`
