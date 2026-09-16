@@ -16,7 +16,7 @@ The collector is a separate management command. A lease prevents two workers fro
 4. The page content hash and extraction settings determine whether extraction is needed.
 5. CSS extraction selects named person cards; optional Ollama returns candidate fields plus a contiguous evidence passage. Validation rejects unsupported fields. Keyword service tagging is deterministic in both modes.
 6. The storage layer preserves observations separately from the contact summary and from review decisions.
-7. In-scope links become bounded page jobs. External domains become review candidates. No candidate automatically expands the crawl scope.
+7. In-scope links become bounded page jobs. External domains become discovery candidates. An enabled campaign policy may authorize a new, scoped Source for automatic setup; otherwise it remains pending. No candidate silently expands an existing source's scope.
 
 Transient HTTP failures retry with exponential backoff and a bounded Retry-After value, up to four failed attempts per page. HTTP 401/403, disallowed robots, and recognized access challenges pause the source. A collector or extractor configuration error becomes a failed page with a visible message. The operator can fix the source and start a fresh run.
 
@@ -26,7 +26,13 @@ Transient HTTP failures retry with exponential backoff and a bounded Retry-After
 
 The source category is operator context. Person tags come from the selected person passage; page tags come from the full page. A too-broad CSS selector can produce overly broad attribution, so each real source needs a recipe/evidence review.
 
+CSS recipes can select the person card itself or narrow evidence to a descendant. Per-page messages report matched-card counts and rejection reasons without storing rejected contact fields. `manage.py inspect_recipe` previews saved HTML locally without requests or database writes. Dashboard recipe-review warnings are derived from the latest completed run per source/campaign and also cover pre-existing history; zero new leads with nonzero contact observations is a healthy refresh.
+
+`automation/` adds `SitePolicy`, `SiteAutomationJob`, `ProbePage`, `RecipeVersion`, `AutomationEvent` and campaign-scoped coordinator credentials. The same worker performs private HTML probing, metadata recon, deterministic candidate generation, offline validation, versioned release and bounded canaries. Automatic sources can enter normal Discovery collection only with an authorized, active known-good recipe. Their separate source scheduler stays off. Drift triggers a bounded re-probe; access failures pause for review. Previous evidence and review decisions survive. See [Automation](AUTOMATION.md) for thresholds, retention, rollback and API boundaries.
+
 ## Known boundaries
+
+The discovery app extends this pipeline with `Campaign`, `DiscoveryRun`, `DiscoveredURL`, `DiscoveryJob` and `DailyUsage`. One collector lease covers both job queues; the worker alternates queue preference and rotates runnable campaigns. Discovery uses the same transport, robots preparation, source scope, throttles, extraction/evidence validation and lead storage. Its additive migration leaves the existing lead/source tables unchanged. Full workflow and limits: [Discovery](DISCOVERY.md).
 
 - Exactly one worker per database; this is not a distributed crawling fleet.
 - Scope is an exact HTTP(S) origin plus path prefixes. No wildcard domain permissions.
@@ -34,8 +40,8 @@ The source category is operator context. Person tags come from the selected pers
 - The browser path does not forward session cookies or execute POST APIs. Some JS sites will not render fully; 1.5 seconds of post-DOM settling is only a pilot default.
 - Transport honors an identity-encoding request; a server that insists on compression is rejected rather than risking an unbounded decompression step.
 - DNS/TLS/network operations can fail; the network path is not a substitute for isolating the collector from sensitive infrastructure on a shared server.
-- Evidence is retained until the operator administers retention/deletion. There is no automatic retention period or erasure workflow in this pilot.
-- No full raw-page archive, source-change notification, or automatic crawling of search engines.
+- Accepted contact evidence is retained until the operator administers retention/deletion. Private automation probe/canary HTML expires after 24 hours and is cleaned up by the worker. There is no general contact-erasure workflow in this pilot.
+- No permanent raw-page archive, external source-change notifications, or automatic crawling of search engines. Automatic recipe health and page-structure checks are visible in Site automation.
 - Conservative deduplication does not fully resolve identity across job moves, contact changes, or shared addresses. Review state belongs to a specific stored identity.
 - AI's evidence match limits fabrication but does not prove the passage attributes every field correctly; reviews remain necessary.
 - URL-form DNS checks are synchronous and can delay a source form save on a slow resolver.
@@ -44,6 +50,6 @@ The source category is operator context. Person tags come from the selected pers
 
 1. Validate approved representative websites and add tested source recipes.
 2. Exercise Chromium and local Ollama on the user's actual hardware.
-3. Add source health notifications and freshness filters once a real refresh cadence is established.
+3. Extend the zero-contact health warnings with freshness filters once a real refresh cadence is established.
 4. Add explicit user roles, suppression matching across identity changes, retention/deletion controls, and an operator audit trail before wider team use.
 5. Add a distributed queue only when measured throughput justifies multiple workers.

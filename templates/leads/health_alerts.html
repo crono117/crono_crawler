@@ -1,0 +1,6 @@
+{% for alert in discovery_alerts %}
+<div class="notice warning spaced" role="status"><strong>Recipe review needed · {{ alert.campaign.name }}</strong><p>The latest completed run processed {{ alert.pages_done }} HTML pages with zero validated contacts. Check whether the pages publish named contacts, then inspect the CSS recipe and page diagnostics.</p><a href="{% url 'discovery:run' alert.pk %}">Review discovery run #{{ alert.pk }} →</a></div>
+{% endfor %}
+{% for alert in collection_alerts %}
+<div class="notice warning spaced" role="status"><strong>Recipe review needed · {{ alert.source.name }}</strong><p>The latest completed run processed {{ alert.pages_done }} HTML pages with zero validated contacts. Check page suitability and the CSS recipe. A working crawler does not guarantee published person-level contact details.</p><a href="{% url 'run_detail' alert.pk %}">Review collection run #{{ alert.pk }} →</a></div>
+{% endfor %}

@@ -20,6 +20,9 @@ class Source(models.Model):
     extractor = models.CharField(max_length=12, choices=[("rules", "CSS / structured HTML"), ("ollama", "Local Ollama")], default="rules")
     require_sales_role = models.BooleanField(default=True)
     recipe = models.JSONField(default=dict, blank=True)
+    setup_mode = models.CharField(max_length=16, default="rules_only", choices=[("rules_only", "Operator-configured rules"), ("automatic", "Automated recipe setup")])
+    approval_kind = models.CharField(max_length=12, default="operator", choices=[("operator", "Operator review"), ("policy", "Campaign policy")])
+    allow_homepage = models.BooleanField(default=False, help_text="Allow the exact homepage in addition to the path prefixes; does not allow the whole origin.")
     allowed_paths = models.TextField(default="/", help_text="One URL path prefix per line. / allows the whole site.")
     follow_links = models.BooleanField(default=True)
     discover_external = models.BooleanField(default=False)
@@ -46,6 +49,10 @@ class Run(models.Model):
     pages_done = models.PositiveIntegerField(default=0)
     contacts_seen = models.PositiveIntegerField(default=0)
     message = models.TextField(blank=True)
+
+    @property
+    def needs_recipe_review(self):
+        return self.status == "completed" and self.pages_done > 0 and self.contacts_seen == 0
 
     class Meta:
         ordering = ["-created_at"]

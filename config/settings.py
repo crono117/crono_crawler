@@ -20,7 +20,7 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1
 CSRF_TRUSTED_ORIGINS = [x for x in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x]
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
-    "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "leads",
+    "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "leads", "discovery", "automation",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware", "whitenoise.middleware.WhiteNoiseMiddleware", "django.contrib.sessions.middleware.SessionMiddleware",
@@ -77,3 +77,6 @@ BOT_CONTACT = os.environ.get("BOT_CONTACT", "")
 BOT_USER_AGENT = "ClearPayLeadBot/0.1" + (f" (+{BOT_CONTACT})" if BOT_CONTACT else "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
+BRAVE_SEARCH_ENABLED = os.environ.get("BRAVE_SEARCH_ENABLED", "0") == "1"
+BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+BRAVE_DAILY_SEARCH_LIMIT = max(0, int(os.environ.get("BRAVE_DAILY_SEARCH_LIMIT", "20")))

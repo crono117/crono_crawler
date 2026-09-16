@@ -3,7 +3,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
 
 MAX_BYTES = 6 * 1024 * 1024
@@ -43,6 +43,8 @@ def in_scope(source, url):
         # Reject traversal segments so a prefix cannot hide a different destination.
         if ".." in path.split("/") or "\\" in path:
             return False
+        if path == "/" and not urlsplit(target).query and getattr(source, "allow_homepage", False):
+            return True
         return any(path == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")
                    for prefix in source.allowed_paths.splitlines() if prefix.strip())
     except (ValueError, UnicodeError):
@@ -75,6 +77,7 @@ class Response:
     status: int
     headers: dict
     body: bytes
+    redirect_chain: list = field(default_factory=list)
     @property
     def text(self):
         content_type = self.headers.get("content-type", "")
@@ -84,8 +87,9 @@ class Response:
         except LookupError:
             return self.body.decode("utf-8", errors="replace")
 
-def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25):
+def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True):
     """Resolve once per hop; connect to that exact public IP with hostname TLS."""
+    redirects = []
     for _ in range(6):
         try:
             url = canonical_url(url)
@@ -102,12 +106,16 @@ def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25):
             connection = klass(p.hostname, addresses[0], port, timeout)
             connection.request("GET", urlunsplit(("", "", p.path, p.query, "")), headers={
                 "User-Agent": user_agent, "Accept-Encoding": "identity", "Accept": "*/*", "Connection": "close",
+                **(request_headers or {}),
             })
             response = connection.getresponse()
             headers = {key.lower(): value for key, value in response.getheaders()}
             if response.status in (301, 302, 303, 307, 308):
+                if not allow_redirects:
+                    raise FetchError("Redirects are disabled for this API request.")
                 if not headers.get("location"):
                     raise FetchError("Redirect has no destination.")
+                redirects.append({"url": url, "status": response.status})
                 url = urljoin(url, headers["location"])
                 continue
             if headers.get("content-encoding", "identity").lower() not in ("identity", ""):
@@ -115,7 +123,7 @@ def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25):
             body = response.read(max_bytes + 1)
             if len(body) > max_bytes:
                 raise FetchError("Response exceeds the configured size limit.")
-            return Response(url, response.status, headers, body)
+            return Response(url, response.status, headers, body, redirects)
         except FetchError:
             raise
         except (OSError, http.client.HTTPException) as exc:

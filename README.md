@@ -2,6 +2,12 @@
 
 Repository: [crono117/crono_crawler](https://github.com/crono117/crono_crawler). The active application lives on `main`. The repository's previous state is preserved on `archive/legacy-scraper-2026-09-16`; that snapshot contained only the Apache 2.0 license. Work on this application from `main`.
 
+**Discovery trial:** this branch adds scheduled discovery campaigns, ranked exact URLs, sitemap exploration, source review and optional web search. See [the discovery setup and upgrade guide](docs/DISCOVERY.md). The same worker runs both collection and discovery; existing accounts and lead data are preserved.
+
+**Zero-contact pilot follow-up:** dashboard recipe-review warnings, precise path/domain filters and an offline `inspect_recipe` command help diagnose successful crawls that yield no contacts. See [the Host Merchant / Hermes handoff](docs/HOST_MERCHANT_PILOT.md) for the controlled update and test sequence.
+
+**Autonomous setup:** enable a campaign policy once to let qualifying new sites progress through scoped probes, deterministic recipe generation, local evidence validation, versioned release and a bounded canary automatically. Healthy sites join normal discovery collection; ambiguity, blocks and evidence failures produce visible exceptions. There is no per-site approval click for sites that satisfy the policy, and no model dependency. See [automation controls and the updated Hermes handoff](docs/AUTOMATION.md). Existing sources retain their current mode until explicitly enrolled.
+
 A self-hosted Python application that continuously collects, reviews and refreshes published professional contacts from sources you select. The initial focus is merchant-services sales representatives, with separate tags for POS, payroll, business funding, telecom, IT and commercial insurance.
 
 **Local pilot:** Django + SQLite + a persistent background worker. Optional Playwright handles JavaScript pages. Optional Ollama extracts less structured pages with a model running on your own machine. There is no OpenAI integration or paid AI API requirement.
@@ -36,7 +42,7 @@ If you have already created an administrator, rerun setup with `--no-user` to av
 5. Supply a CSS recipe if the default common team-card selectors do not match the page. The example in `examples/css-recipe.json` shows the supported fields. A zero-contact run can mean that the page has no suitable named contacts or needs a different recipe.
 6. Save, then choose **Start / resume**. Inspect **Collection runs** and review each resulting lead's evidence.
 
-The worker follows in-scope links up to the run's page/depth limits. It does not perform a general web search. To expand discovery, add an appropriate directory source and enable external website discovery. Those links enter **Discovery** for approval; they are never automatically fetched as new sources.
+The regular collector follows in-scope links up to the run's page/depth limits and can save exact external URLs under **Discovery → Links from regular collection**. For ongoing exploration, create a **Discovery campaign** using approved starting sources. Campaigns rank links, read in-scope sitemaps, and collect contacts from eligible pages. New domains enter the configured automatic setup policy, or remain pending when that policy is disabled or does not cover them. Optional Brave web search can find additional domains; it is disabled by default. See [Discovery](docs/DISCOVERY.md) for controls, limits and the offline demo.
 
 Collection is scheduled while sources are active. **Pause** disables recurring collection and stops additional pages; an in-flight page may finish saving. Editing a source cancels its unfinished run and leaves it paused so the new configuration starts consistently.
 
@@ -122,6 +128,6 @@ See [deployment and migration](docs/DEPLOYMENT.md). Docker Compose supplies Post
 
 ## Validation and pilot limits
 
-See [validation notes](docs/VALIDATION.md) for the exact checks performed and optional paths that still need real-environment testing. This is a functional local pilot, not a guarantee of compatibility with every website. It needs representative, approved sources to measure lead quality and collection throughput. It does not crawl behind authentication, bypass blocks, solve CAPTCHAs, run rotating proxies, or provide a general search-engine discovery service.
+See [validation notes](docs/VALIDATION.md) for the exact checks performed and optional paths that still need real-environment testing. This is a functional local pilot, not a guarantee of compatibility with every website. It needs representative, approved sources to measure lead quality and collection throughput. It does not crawl behind authentication, bypass blocks, solve CAPTCHAs, or run rotating proxies.
 
 The current worker is intentionally single-process. Browser fetches, AI extraction and the webapp can run on one machine, but heavy model inference should be planned separately. Authentication is for trusted staff; the pilot does not yet implement distinct salesperson/admin roles, SSO, or a comprehensive user-action audit trail.

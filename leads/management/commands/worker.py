@@ -25,8 +25,10 @@ class Command(BaseCommand):
             if not token:
                 return
             self.stdout.write(self.style.SUCCESS("Collector running. Ctrl+C stops it safely."))
+            prefer_discovery = False
             while not stop.is_set():
-                worked = tick(token)
+                worked = tick(token, prefer_discovery=prefer_discovery)
+                prefer_discovery = not prefer_discovery
                 if options["once"]:
                     break
                 if not worked:

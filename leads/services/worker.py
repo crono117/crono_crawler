@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 from leads.models import DomainState, PageJob, PageSnapshot, Run, Source, SourceCandidate, WorkerLease
-from .extraction import extract, signature, soup_for
+from .extraction import diagnostic_message, extract, signature, soup_for
 from .network import FetchError, Response, canonical_url, fetch, fetch_browser, in_scope, origin, require_success
 from .storage import save_records, touch_unchanged
 
@@ -26,6 +26,8 @@ def enqueue(source):
     source = Source.objects.select_for_update().get(pk=source.pk)
     if not source.approved:
         raise ValueError("Review and approve the source before running it.")
+    if source.setup_mode == "automatic":
+        raise ValueError("This source is managed by Site automation. Use its campaign and setup controls.")
     run = Run.objects.filter(source=source, status__in=OPEN_STATUSES).first()
     if run:
         if run.status == "paused":
@@ -47,11 +49,21 @@ def enqueue(source):
 
 @transaction.atomic
 def pause_source(source, message="Paused by operator."):
+    from discovery.services import pause_for_source
     Source.objects.filter(pk=source.pk).update(active=False, last_error=message)
     Run.objects.filter(source=source, status__in=("queued", "running")).update(status="paused", message=message)
+    if source.setup_mode == "automatic":
+        from automation.models import SiteAutomationJob
+        from automation.services import pause_job
+        job = SiteAutomationJob.objects.filter(source=source).first()
+        if job:
+            pause_job(job, message)
+    else:
+        pause_for_source(source, message)
 
 @transaction.atomic
 def acquire_lease():
+    from discovery.models import DiscoveryJob
     now = timezone.now()
     lease, _ = WorkerLease.objects.get_or_create(key="collector", defaults={"heartbeat_at": now - timedelta(days=1)})
     lease = WorkerLease.objects.select_for_update().get(pk=lease.pk)
@@ -62,6 +74,9 @@ def acquire_lease():
     lease.save()
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    from automation.models import SiteAutomationJob
+    SiteAutomationJob.objects.filter(processing=True).update(processing=False)
     return lease.token
 
 def heartbeat(token):
@@ -72,7 +87,7 @@ def release_lease(token):
     WorkerLease.objects.filter(key="collector", token=token).update(token="", heartbeat_at=timezone.now())
 
 def schedule_due():
-    for source in Source.objects.filter(active=True, approved=True, next_due_at__lte=timezone.now()):
+    for source in Source.objects.filter(active=True, approved=True, setup_mode="rules_only", next_due_at__lte=timezone.now()):
         if not source.runs.filter(status__in=OPEN_STATUSES).exists():
             enqueue(source)
 
@@ -143,8 +158,8 @@ def collect_links(source, job, html, base_url):
                 _, created = PageJob.objects.get_or_create(run=job.run, url=url, defaults={"depth": job.depth + 1})
                 remaining -= int(created)
         elif source.discover_external and origin(url) != origin(source.url) and len(seen) <= 300:
-            # Save only the external homepage, without fetching it or automatically approving it.
-            candidate = origin(url) + "/"
+            # Preserve the actual useful path without fetching or approving it.
+            candidate = url
             if not Source.objects.filter(url=candidate).exists():
                 SourceCandidate.objects.get_or_create(url=candidate, defaults={
                     "label": link.get_text(" ", strip=True)[:200], "discovered_from": source, "evidence_url": base_url,
@@ -193,10 +208,21 @@ def handle_error(job, source, exc):
 
 def process(job):
     source = job.run.source
+    if source.setup_mode == "automatic":
+        job.status, job.message = "skipped", "Automatic setup owns this source; use its campaign."
+        job.save()
+        finish_run(job.run)
+        return
     try:
         if source.collector == "demo":
-            html = (Path(settings.BASE_DIR) / "examples" / "demo-team.html").read_text()
-            response = Response(source.url, 200, {"content-type": "text/html"}, html.encode())
+            from discovery.services import DEMO_ORIGIN, demo_response
+            if source.url.startswith(DEMO_ORIGIN + "/"):
+                response = demo_response(job.url)
+                require_success(response)
+                html = response.text
+            else:
+                html = (Path(settings.BASE_DIR) / "examples" / "demo-team.html").read_text()
+                response = Response(source.url, 200, {"content-type": "text/html"}, html.encode())
         else:
             guard = prepare_domain(source, job)
             if guard is None:
@@ -218,7 +244,8 @@ def process(job):
         sig = signature(source)
         cached = PageSnapshot.objects.filter(source=source, url=response.url,
                    content_hash=content_hash, extraction_signature=sig).exists()
-        records, company_tags = (None, None) if cached else extract(html, source)
+        diagnostics = {}
+        records, company_tags = (None, None) if cached else extract(html, source, diagnostics=diagnostics)
         with transaction.atomic():
             # A pause takes effect between pages. In-flight pages may still be saved.
             count = touch_unchanged(source, response.url) if cached else save_records(
@@ -229,6 +256,10 @@ def process(job):
             collect_links(source, job, html, response.url)
             job.status = "done"
             job.message = f"{count} contact(s)." + (" Content unchanged." if cached else "")
+            if not count:
+                job.message += " No validated contacts; review page suitability and CSS recipe."
+            if diagnostics:
+                job.message += " " + diagnostic_message(diagnostics)
             job.save()
             Run.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count)
         finish_run(job.run)
@@ -236,17 +267,31 @@ def process(job):
         logger.warning("Page %s: %s", job.pk, exc)
         handle_error(job, source, exc)
 
-def tick(token):
+def tick(token, prefer_discovery=False):
+    from discovery import services as discovery
+    from automation import services as automation
     heartbeat(token)
     schedule_due()
+    discovery.schedule_due()
+    automation.maintenance()
+    if prefer_discovery and automation.tick(token):
+        heartbeat(token)
+        return True
+    if prefer_discovery and discovery.tick():
+        heartbeat(token)
+        return True
     with transaction.atomic():
         job = PageJob.objects.select_related("run__source").filter(status="queued", available_at__lte=timezone.now(),
             run__status__in=("queued", "running"), run__source__active=True, run__source__approved=True).order_by("available_at", "id").first()
-        if not job:
-            return False
-        job.status = "processing"
-        job.save()
-        Run.objects.filter(pk=job.run_id, status="queued").update(status="running", started_at=timezone.now())
-    process(job)
+        if job:
+            job.status = "processing"
+            job.save()
+            Run.objects.filter(pk=job.run_id, status="queued").update(status="running", started_at=timezone.now())
+    if job:
+        process(job)
+    else:
+        worked = discovery.tick() or automation.tick(token)
+        heartbeat(token)
+        return worked
     heartbeat(token)
     return True

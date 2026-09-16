@@ -121,7 +121,7 @@ class HttpSocketIntegrationTests(TestCase):
         self.assertEqual(run.pages_done, 2)
         self.assertEqual(Lead.objects.count(), 3)
         self.assertEqual(Observation.objects.count(), 4)
-        self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/")
+        self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/team/")
         self.assertEqual([r["path"] for r in self.server.requests], ["/robots.txt", "/team/", "/team/page-2"])
         self.assertTrue(all(r["host"] == "fixture.example.test" for r in self.server.requests))
         self.assertTrue(all(r["agent"] == settings.BOT_USER_AGENT for r in self.server.requests))

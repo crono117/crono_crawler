@@ -13,6 +13,7 @@ from django.views.decorators.http import require_POST
 from .forms import LeadReviewForm, SourceForm
 from .models import CATEGORIES, Lead, Observation, PageJob, Run, Source, SourceCandidate, WorkerLease
 from .services.worker import enqueue, pause_source
+from .services.health import recipe_review_runs
 
 staff_required = user_passes_test(lambda u: u.is_authenticated and u.is_active and u.is_staff)
 
@@ -26,14 +27,17 @@ def console_context(request):
 
 @staff_required
 def dashboard(request):
+    from discovery.models import DiscoveredURL, DiscoveryRun
     return render(request, "leads/dashboard.html", {
         "lead_count": Lead.objects.exclude(status__in=("rejected", "suppressed")).count(),
         "review_count": Lead.objects.filter(status="new").count(),
         "active_sources": Source.objects.filter(active=True, approved=True).count(),
-        "candidate_count": SourceCandidate.objects.filter(status="new").count(),
+        "candidate_count": SourceCandidate.objects.filter(status="new").count() + DiscoveredURL.objects.filter(decision="pending").count(),
         "recent_leads": Lead.objects.prefetch_related("observations__source")[:5],
         "recent_runs": Run.objects.select_related("source")[:6],
         "source_count": Source.objects.count(),
+        "collection_alerts": recipe_review_runs(Run, "source")[:5],
+        "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign")[:5],
     })
 
 @staff_required
@@ -42,25 +46,44 @@ def sources(request):
 
 @staff_required
 def source_form(request, pk=None):
+    from discovery.models import DiscoveredURL
+    from discovery.services import approve, pause_for_source
     source = get_object_or_404(Source, pk=pk) if pk else None
     if source and source.collector == "demo":
         messages.info(request, "The offline fixture has a fixed configuration. Add a new source to collect a real website.")
         return redirect("source_detail", pk=source.pk)
     candidate = SourceCandidate.objects.filter(pk=request.GET.get("candidate")).first() if request.GET.get("candidate", "").isdigit() else None
     initial = {"url": candidate.url, "name": candidate.label or candidate.url} if candidate else {}
+    discovered = get_object_or_404(DiscoveredURL, pk=request.GET["discovery_url"]) if request.GET.get("discovery_url", "").isdigit() else None
+    if discovered and not source:
+        initial = {"url": discovered.url, "name": (discovered.label or discovered.origin)[:160],
+                   "category": discovered.campaign.category, "allowed_paths": "/"}
     form = SourceForm(request.POST or None, instance=source, initial=initial)
+    if request.method == "POST" and discovered and form.is_valid():
+        from leads.services.network import in_scope
+        if not in_scope(form.instance, discovered.url):
+            form.add_error("allowed_paths", "The source URL and scope must cover the discovered URL you are reviewing.")
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
             source = form.save(commit=False)
             # Editing configuration stops the old crawl so new limits apply consistently.
             if source.pk:
+                from automation.models import SiteAutomationJob
+                from automation.services import pause_job
+                setup_job = SiteAutomationJob.objects.filter(source=source).first()
+                if setup_job:
+                    pause_job(setup_job, "Source settings changed; review and re-probe before release.", rollback=False)
+                pause_for_source(source)
                 Run.objects.filter(source=source, status__in=("queued", "running", "paused")).update(
                     status="cancelled", finished_at=timezone.now(), message="Source configuration changed.")
             source.active = False
+            source.approval_kind = "operator"
             source.save()
             if candidate:
                 candidate.status = "added"
                 candidate.save()
+            if discovered and source.approved:
+                approve(discovered, source)
         messages.success(request, "Source saved. Use Run now to begin collection.")
         return redirect("source_detail", pk=source.pk)
     return render(request, "leads/source_form.html", {"form": form, "source": source})
@@ -69,6 +92,7 @@ def source_form(request, pk=None):
 def source_detail(request, pk):
     source = get_object_or_404(Source, pk=pk)
     return render(request, "leads/source_detail.html", {"source": source, "runs": source.runs.all()[:15],
+        "collection_alerts": recipe_review_runs(Run, "source").filter(source=source),
         "observations": source.observations.select_related("lead")[:20]})
 
 @require_POST

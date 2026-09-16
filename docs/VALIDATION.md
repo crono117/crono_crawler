@@ -16,6 +16,40 @@ Initial build: September 16, 2026. Reference environment: Linux, Python 3.12.14,
 
 The test suite uses synthetic HTML, mocked third-party model responses, and controlled local HTTP fixtures. It does not make requests to real lead sources. These checks validate application behavior, not real-site extraction coverage or public-network connectivity.
 
+## Discovery branch verification
+
+The `feat/discovery-v1` extension passed **72 Django tests** (the original 40 plus 32 discovery tests), Django system checks, and the migration-drift check. Two existing assertions now expect an external link's exact path rather than only its homepage.
+
+Discovery coverage includes the offline graph and sitemap-only contact page, source approval/revocation, source/campaign pause propagation, recurring schedules and queue coalescing, bounded URL/domain/job budgets, persistent daily quotas, ranking and tracking-parameter removal, dismissal/review, evidence preservation on extraction errors, XML/gzip limits and entity rejection, optional search contracts and shared quota/backoff, staff access, CSRF, server-side form limits and all new templates.
+
+Four integration tests use real local HTTP sockets with only fixture DNS/socket routing substituted. They validate robots-first behavior and throttling, nested sitemaps (including a map without an XML filename), preservation of exact external URLs without fetching them, explicit approval before fetching a second domain, lead extraction, HTTP 403 pauses, disallowed robots, and blocked private redirects. Invalid/private sitemap entries are skipped without weakening network guards.
+
+The extended `scripts/smoke_local.py` passed with actual separate web and worker processes. It creates a temporary database, runs the existing collection/review/export checks, exercises the discovery dashboard, follows the fixed offline graph into three additional fictional contacts, dismisses a discovered URL, pauses the campaign, and restarts both processes with discovery work queued. The repeated run adds no duplicates, preserves URL dismissal, and retains existing lead suppression. Processes and the temporary database are cleaned up.
+
+No real lead website, live Brave API request, or visual browser screenshot was used to validate this feature. Discovery's HTML-first path does not establish that JavaScript-only sources work. The existing optional browser/Ollama/Docker/Cursor validation gaps below remain separate.
+
+## Host Merchant follow-up verification
+
+The follow-up passed **92 Django tests**, system checks and the migration-drift check. No database schema change is required. Twenty added tests cover scoped evidence selectors, unchanged strict contact/role validation, distinct rejection diagnostics, the read-only offline preview command, path/domain/plural exclusions, navigation noise, rescoring already saved URLs, skipping queued excluded URLs, manual approval for high-scoring new domains, retrospective zero-contact alerts and clearing current alerts on a refresh that sees existing contacts.
+
+The actual web/worker smoke test also passed with the added zero-contact fixture. Its worker completed a one-page run with no matching card selector; the lead overview, Discovery dashboard, campaign detail and run detail all displayed the recipe-review warning, and the page diagnostics identified the unmatched selector. Original collection, evidence, suppression, export, restart and discovery checks still passed. This used an isolated temporary database with fictional contacts only.
+
+The user's desktop report establishes a successful 10-page Host Merchant crawl with zero validated contacts; it is operator-reported, not a crawl performed in this workspace. Official public-page text was inspected for suitability. Direct fetching could not resolve the domain here, and the separate cloud browser encountered the site's security verification, so no Host Merchant HTML selectors or production extraction recipe were validated. See [the Hermes handoff](HOST_MERCHANT_PILOT.md) for the local inspection and 5–10-page rerun. The update must still be downloaded and exercised against the user's actual campaign before claiming improved real-contact yield.
+
+## Autonomous setup verification
+
+The automatic setup extension passed **124 Django tests** (92 existing plus 32 new), Django system checks, the migration-drift check and the complete real-process smoke test on Linux/Python 3.12. No hosted model or third-party website was used.
+
+Coverage includes campaign policy authorization without per-site clicks, score/scope/domain exclusions, explicit dismissals, rotation past excluded pending candidates, daily new-site and shared request budgets, exact homepage scope, depth-one probing/canaries, metadata without extracted contact values, deterministic candidate selection, evidence containment, global/shared contact rejection, zero-result diagnostics, version preservation, rollback and retention. Tests also cover source changes during requests, setup generations, stale worker successes/failures, lease restart, normal-page drift, observed robots changes, staff/CSRF controls, campaign-scoped credentials, HTTPS enforcement, signed-bundle tampering/scope checks and remote proposals requiring local validation.
+
+Three new HTTP integration tests use a real local server and socket transport with fixture DNS/connection routing substituted. They exercise the global worker through robots, probing, recipe validation and a canary, plus robots denial and private-redirect rejection. Production network guards are unchanged.
+
+The actual web/worker smoke starts the offline automatic-setup fixture, waits for its recipe and canary to pass, verifies two additional fictional contacts and all automation dashboard pages, then stops both processes, queues another setup generation and restarts. It verifies activation without duplicate people and retains the existing suppression decision. The older collection, discovery, zero-contact alert, export and restart checks still pass. The smoke database and processes are removed afterward.
+
+Applying the additive migrations to the existing local sample database preserved every original column for its one source, three contacts and three evidence observations. Existing sources retained operator-configured rules mode; no campaign policy was silently enabled. This was a local sample upgrade, not an upgrade of the user's desktop database.
+
+The optional API is an authenticated integration surface in this application. A separate remote coordinator/desktop-client deployment, asymmetric signing, raw-HTML transfer, calibrated recipe accuracy, real-site extraction yield and visual screenshot QA have not been established. The new workflow does not claim to validate a Host Merchant recipe until tested against that site's actual local HTML. The operational limits and Hermes update steps are in [Automation](AUTOMATION.md).
+
 ## Still to validate on the user's environment
 
 - **Chromium rendering:** Playwright was installed in a separate build environment, but full Chromium and a subsequent headless-shell download timed out. The browser collector has not been exercised with a real browser. The separate browser-control service rejected navigation to the local application with `ERR_BLOCKED_BY_CLIENT`, so no visual screenshot QA was completed; templates were exercised through Django and real HTTP.

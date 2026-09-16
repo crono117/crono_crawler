@@ -132,6 +132,74 @@ def main():
                 assert lead.status == "suppressed" and Lead.objects.count() == 3
                 assert "Lead overview" in client.get("/").text
                 print("PASS: full process restart resumes a queued job and retains the login session and review decisions.")
+
+                from discovery.models import Campaign, DiscoveryRun, DiscoveredURL
+                from discovery.services import start as start_discovery
+                call_command("init_discovery_demo", stdout=io.StringIO())
+                campaign = Campaign.objects.get(name="Offline discovery demo")
+                wait_for(lambda: campaign.runs.filter(status="completed").exists(), "Discovery demo did not finish.")
+                assert Lead.objects.count() == 6
+                discovered = campaign.urls.get(url="https://new-vendor.example.org/reps/")
+                assert discovered.decision == "pending" and not discovered.jobs.exists()
+                for path in ("/discovery/", "/discovery/campaigns/new/", f"/discovery/campaigns/{campaign.pk}/",
+                             "/discovery/candidates/", f"/discovery/candidates/{discovered.pk}/",
+                             f"/discovery/runs/{campaign.runs.first().pk}/"):
+                    assert client.get(path).status_code == 200, path
+                detail = client.get(f"/discovery/candidates/{discovered.pk}/")
+                client.post(f"/discovery/candidates/{discovered.pk}/", data={"action": "dismiss", "csrfmiddlewaretoken": csrf(detail)})
+                discovered.refresh_from_db()
+                assert discovered.decision == "dismissed"
+                detail = client.get(f"/discovery/campaigns/{campaign.pk}/")
+                client.post(f"/discovery/campaigns/{campaign.pk}/action/", data={"action": "pause", "csrfmiddlewaretoken": csrf(detail)})
+                campaign.refresh_from_db()
+                assert not campaign.active
+                print("PASS: discovery dashboard, link paths, sitemap-only page, three new fictional contacts and source review controls.")
+
+                stop()
+                pending_discovery = start_discovery(campaign)
+                start()
+                wait_for(ready, "The discovery test web process did not restart.")
+                wait_for(lambda: DiscoveryRun.objects.get(pk=pending_discovery.pk).status == "completed", "Discovery did not resume after process restart.")
+                pending_discovery.refresh_from_db()
+                discovered.refresh_from_db()
+                lead.refresh_from_db()
+                assert pending_discovery.new_contacts == 0 and Lead.objects.count() == 6
+                assert discovered.decision == "dismissed" and lead.status == "suppressed"
+                print("PASS: discovery queue restart, deduplication, URL dismissal and existing lead suppression all persist.")
+
+                from discovery.services import DEMO_ORIGIN
+                empty_source = Source.objects.create(name="Zero-contact fixture", url=DEMO_ORIGIN + "/team/people/",
+                    approved=True, collector="demo", recipe={"row": ".unmatched-test-card"})
+                empty_campaign = Campaign.objects.create(name="Recipe health fixture", max_pages=1, use_sitemaps=False)
+                empty_campaign.sources.add(empty_source)
+                empty_run = start_discovery(empty_campaign)
+                wait_for(lambda: DiscoveryRun.objects.get(pk=empty_run.pk).status == "completed", "Zero-contact run did not finish.")
+                for path in ("/", "/discovery/", f"/discovery/campaigns/{empty_campaign.pk}/", f"/discovery/runs/{empty_run.pk}/"):
+                    assert "Recipe review needed" in client.get(path).text, path
+                assert "No person cards matched" in client.get(f"/discovery/runs/{empty_run.pk}/").text
+                assert Lead.objects.count() == 6
+                print("PASS: zero-contact worker diagnostics and recipe health alerts on all dashboard surfaces.")
+
+                from automation.models import SiteAutomationJob
+                call_command("init_automation_demo", stdout=io.StringIO())
+                automated = SiteAutomationJob.objects.get(campaign__name="Offline automation demo")
+                wait_for(lambda: SiteAutomationJob.objects.get(pk=automated.pk).state in ("active", "paused", "failed"),
+                         "Automatic setup did not finish.")
+                automated.refresh_from_db()
+                assert automated.state == "active", automated.message
+                assert Lead.objects.count() == 8
+                assert {"Robin Autonomy", "Morgan Pipeline"}.issubset(set(Lead.objects.values_list("name", flat=True)))
+                for path in ("/automation/", f"/automation/jobs/{automated.pk}/", f"/automation/policies/{automated.campaign_id}/"):
+                    assert client.get(path).status_code == 200, path
+                from automation.services import start_setup
+                stop()
+                start_setup(automated.source, automated.campaign)
+                start()
+                wait_for(ready, "Web process did not restart for automatic setup.")
+                wait_for(lambda: SiteAutomationJob.objects.get(pk=automated.pk).state == "active", "Setup did not resume after restart.")
+                assert Lead.objects.count() == 8
+                assert Lead.objects.get(name="Alex Example").status == "suppressed"
+                print("PASS: automatic recipe setup, local validation, canary, version history, controls and full process restart.")
         except Exception:
             stop()
             output.seek(0)

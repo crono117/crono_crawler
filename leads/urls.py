@@ -13,6 +13,6 @@ urlpatterns = [
     path("leads/<int:pk>/", views.lead_detail, name="lead_detail"),
     path("runs/", views.runs, name="runs"),
     path("runs/<int:pk>/", views.run_detail, name="run_detail"),
-    path("discovery/", views.candidates, name="candidates"),
+    path("discovery/legacy/", views.candidates, name="candidates"),
     path("discovery/<int:pk>/dismiss/", views.candidate_dismiss, name="candidate_dismiss"),
 ]

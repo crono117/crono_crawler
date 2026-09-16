@@ -21,7 +21,7 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 - Keep the core in Python. Django renders the control panel; SQLite is the local default and PostgreSQL is the server option.
 - No OpenAI API or other hosted model is required. Optional model extraction uses a separately configured Ollama service.
 - There is exactly one active worker per database. The database queue, per-origin throttle, and lease are restart checkpoints.
-- Never fetch unapproved sources. Respect robots rules and configured origin/path limits. Pause on blocked access. Do not add CAPTCHA solvers, proxy rotation, stealth, or login/session scraping.
+- Never fetch unauthorized sources. Authorization can be an operator's source review or an enabled campaign policy; record that distinction. Policy-created sources must pass scoped probing, local recipe validation and a bounded canary before ordinary collection. Respect robots rules and configured origin/path limits. Pause on blocked access. Do not add CAPTCHA solvers, proxy rotation, stealth, or login/session scraping.
 - Network destinations are public-only. Keep DNS pinning and redirect checks in the HTTP path and request interception in the browser path.
 - Preserve the distinction between source business type, services in person evidence, and services elsewhere on the page.
 - Contact details and names require stored source evidence. Unknown attributes stay unknown. AI output is untrusted and must pass evidence validation.
@@ -37,6 +37,10 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 `leads/services/worker.py`: scheduling, leases, retries, robots and crawl limits.
 `leads/models.py`: persistent data model. Commit migrations for schema changes.
 `leads/forms.py`, `views.py`, `templates/`, `static/`: authenticated operator console.
+
+`discovery/`: campaign scheduling, exact-URL ranking and review, bounded XML/gzip sitemaps, optional Brave search, and persistent discovery jobs. Read `docs/DISCOVERY.md` before changing this app. The existing collector lease owns both queues; do not launch an independent discovery worker. Search results are metadata only until covered by an approved source. Preserve shared request throttling, daily quotas across restarts, source pause propagation, and the separation of discovery hints from contact evidence. `manage.py init_discovery_demo` is a fixed offline fixture.
+
+`automation/`: campaign policy authorization, persistent setup jobs, private bounded HTML probes, metadata recon, deterministic CSS proposals, local validation, recipe versions, canaries and drift recovery. Read `docs/AUTOMATION.md` before changing this app. The same collector lease owns this queue too. A relevance score alone cannot release a recipe. Preserve exact source scope, policy snapshots, generation/lease checks, operator dismissals, daily budgets, previous versions, review state and evidence. Raw probe HTML is local and expires after 24 hours; coordinator APIs accept selector proposals and return metadata, never remote contact assertions or raw pages. `manage.py init_automation_demo` is a fixed offline fixture.
 
 ## Change verification
 

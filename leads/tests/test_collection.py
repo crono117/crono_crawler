@@ -232,7 +232,7 @@ class HttpPipelineTests(TestCase):
         run = enqueue(self.source)
         tick(self.token)
         self.assertEqual(run.jobs.count(), 2)
-        self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/")
+        self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/team")
         self.assertEqual(mocked.call_count, 1)
 
     def test_retry_after_invalid_header_is_bounded(self):
