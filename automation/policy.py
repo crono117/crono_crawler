@@ -44,6 +44,12 @@ def authorized(job):
 
 
 def collection_allowed(source):
+    if (source.recipe or {}).get("engine"):
+        from leads.services.extraction import validate_recipe
+        try:
+            validate_recipe(source.recipe)
+        except ValueError:
+            return False
     if source.setup_mode != "automatic":
         return True
     job = SiteAutomationJob.objects.select_related("source", "campaign", "current_recipe").filter(source=source).first()

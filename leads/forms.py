@@ -11,7 +11,7 @@ class SourceForm(forms.ModelForm):
         fields = ["name", "url", "company", "category", "collector", "extractor", "require_sales_role", "recipe", "setup_mode",
                   "allowed_paths", "allow_homepage", "follow_links", "discover_external", "interval_hours", "delay_seconds",
                   "max_pages", "max_depth", "approved", "approval_notes"]
-        labels = {"category": "Source business type", "recipe": "CSS recipe (optional JSON)",
+        labels = {"category": "Source business type", "recipe": "Extraction recipe (optional JSON)",
                   "approved": "I have reviewed this source for collection", "require_sales_role": "Require a sales-related role or description",
                   "discover_external": "Save external websites as review candidates"}
         widgets = {"recipe": forms.Textarea(attrs={"rows": 8, "placeholder": '{"row": ".team-member", "name": "h3"}'}),

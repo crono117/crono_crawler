@@ -8,6 +8,8 @@ from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_
     evidence_node, normalize, selected_text, soup_for, tags, validate_recipe, validate_record)
 from leads.services.network import in_scope
 from discovery.ranking import clean_url, rank
+from .packs import hints as pack_hints, suggestions
+from leads.services.structured import entities
 
 PROBE_VERSION = "1.0"
 FIELDS = ("name", "title", "email", "phone", "company")
@@ -32,35 +34,50 @@ def proposals(html_pages):
                     rows.add("." + token)
         if soup.select("article h3"):
             rows.add("article:has(h3)")
-    return [{"row": row, **fields, "email": DEFAULT_SELECTORS["email"], "phone": DEFAULT_SELECTORS["phone"],
+    generic = [{"row": row, **fields, "email": DEFAULT_SELECTORS["email"], "phone": DEFAULT_SELECTORS["phone"],
              "company": ".company", "evidence": ""} for row in sorted(rows) for fields in FIELD_OPTIONS][:64]
+    return (suggestions(html_pages) + generic)[:64]
 
 
 def evaluate(html, source, recipe):
     selectors = DEFAULT_SELECTORS | validate_recipe(recipe)
     soup = soup_for(html)
-    rows = soup.select(selectors["row"], limit=501)
+    structured = bool(recipe.get("engine"))
+    parse_stats = {}
+    if structured:
+        items, parse_stats = entities(html)
+        rows = [item for item in items if item["kind"] == "Person"]
+    else:
+        rows = soup.select(selectors["row"], limit=501)
     counts, candidates, shape = Counter(), [], []
     global_text = " ".join(contact_evidence(node) for node in soup.select("header, footer, nav, [role=navigation], [role=contentinfo]"))
     global_emails = {value.casefold() for value in EMAIL.findall(global_text)}
     global_phones = {re.sub(r"\D", "", value) for value in PHONE.findall(global_text)}
     signals = Counter()
     for row in rows[:500]:
-        fields = {key: selected_text(row, selectors[key]) for key in FIELDS}
+        fields = row["fields"] if structured else {key: selected_text(row, selectors[key]) for key in FIELDS}
         signals["name"] += int(len(fields["name"].split()) >= 2)
         signals["role"] += int(bool(fields["title"] and SALES_ROLE.search(fields["title"])))
         signals["contact"] += int(bool(fields["email"] or fields["phone"]))
-        shape.append([node.name for node in row.find_all(True, limit=40)])
-        names = {normalize(node.get_text(" ", strip=True)) for node in row.select(selectors["name"]) if normalize(node.get_text(" ", strip=True))}
-        if row.find_parent(["header", "footer", "nav"]) or row.select_one("header, footer, nav, form") or len(names) != 1:
-            counts["ambiguous_container"] += 1
-            continue
-        evidence = evidence_node(row, selectors["evidence"])
-        if evidence is None:
-            counts["missing_evidence_container"] += 1
-            continue
+        if structured:
+            shape.append([row["syntax"], *sorted(key for key, value in fields.items() if value)])
+            if not fields["company"]:
+                counts["missing_employer"] += 1
+                continue
+            evidence_text = row["evidence"]
+        else:
+            shape.append([node.name for node in row.find_all(True, limit=40)])
+            names = {normalize(node.get_text(" ", strip=True)) for node in row.select(selectors["name"]) if normalize(node.get_text(" ", strip=True))}
+            if row.find_parent(["header", "footer", "nav"]) or row.select_one("header, footer, nav, form") or len(names) != 1:
+                counts["ambiguous_container"] += 1
+                continue
+            evidence = evidence_node(row, selectors["evidence"])
+            if evidence is None:
+                counts["missing_evidence_container"] += 1
+                continue
+            evidence_text = contact_evidence(evidence)
         stats = {}
-        record = validate_record(fields, contact_evidence(evidence), source, stats)
+        record = validate_record(fields, evidence_text, source, stats)
         if not record:
             counts.update(stats.get("rejected", {}))
         elif source.require_sales_role and not record["title"]:
@@ -88,11 +105,13 @@ def evaluate(html, source, recipe):
         else:
             accepted[key] = record
     total = min(len(rows), 500)
+    if parse_stats.get("parse_errors"):
+        counts["structured_parse_error"] += parse_stats["parse_errors"]
     result = "contacts_accepted" if accepted else ("no_matching_cards" if not total else
         "cards_without_contacts" if counts.get("missing_contact", 0) + counts.get("shared_or_global_contact", 0) == total else "contacts_or_evidence_invalid")
     stats = {"result": result, "matched_cards": total, "accepted_records": len(accepted),
              "rejected_records": sum(counts.values()), "primary_rejections": dict(counts), "signals": dict(signals),
-             "row_limit_reached": len(rows) > 500,
+             "row_limit_reached": len(rows) > 500 or parse_stats.get("limit_reached", False),
              "structure_hash": hashlib.sha256(json.dumps(sorted({tuple(s) for s in shape})).encode()).hexdigest()}
     return list(accepted.values()), tags(normalize(soup.get_text(" ", strip=True))), stats
 
@@ -129,14 +148,16 @@ def recon_page(response, source, campaign):
         "contact_mechanisms": {"mailto": len(soup.select("a[href^='mailto:']")), "tel": len(soup.select("a[href^='tel:']")),
             "visible_email_count": len(EMAIL.findall(soup.get_text(" ", strip=True))), "visible_phone_count": len(PHONE.findall(soup.get_text(" ", strip=True)))},
         "candidate_containers": []}
+    metadata["recipe_pack_hints"] = pack_hints(html)
     seen = set()
     for recipe in proposals([html]):
-        if recipe["row"] in seen:
+        container = recipe.get("row", recipe.get("engine"))
+        if container in seen:
             continue
-        seen.add(recipe["row"])
+        seen.add(container)
         _, _, stats = evaluate(html, source, recipe)
         if stats["matched_cards"]:
-            metadata["candidate_containers"].append({"selector": recipe["row"], "matches": stats["matched_cards"], "signals": stats["signals"]})
+            metadata["candidate_containers"].append({"selector": container, "matches": stats["matched_cards"], "signals": stats["signals"]})
     links = {}
     for node in soup.select("a[href]")[:2000]:
         try:

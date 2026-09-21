@@ -1,5 +1,7 @@
 # ClearPay Lead Engine
 
+**Parallel extraction trial:** `feat/jev-extraction-packs` extends the Jev test branch with opt-in Extruct structured data, WordPress/Webflow/Squarespace recipe suggestions, an isolated AutoScraper comparison, and an offline worker demo. Start with [the extraction testing handoff](docs/EXTRACTION_TESTING.md). The original Jev branch remains available separately.
+
 **Jev trial branch:** `feat/jev-integration-v1` adds optional evidence-backed classification, bounded company follow-ups, a staff review console, durable spending controls and a complete offline demo. Start with [the local-agent setup and testing handoff](docs/JEV_TESTING.md). Paid calls, capture and routing are disabled by default. No key is needed to test the system.
 
 Repository: [crono117/crono_crawler](https://github.com/crono117/crono_crawler). The active application lives on `main`. The repository's previous state is preserved on `archive/legacy-scraper-2026-09-16`; that snapshot contained only the Apache 2.0 license. Work on this application from `main`.

@@ -8,7 +8,7 @@ from leads.services.extraction import DEFAULT_SELECTORS, diagnostic_message, ext
 
 
 class Command(BaseCommand):
-    help = "Check a CSS recipe against saved HTML without fetching URLs, calling a model, or saving contacts."
+    help = "Check a CSS or structured recipe against saved HTML without requests, models, or contact writes."
 
     def add_arguments(self, parser):
         parser.add_argument("--source", type=int, required=True, help="Existing source ID supplying recipe and validation settings.")
@@ -39,8 +39,8 @@ class Command(BaseCommand):
             records, page_tags = extract(raw.decode("utf-8", errors="replace"), source, diagnostics=diagnostics)
         except (OSError, ValueError) as exc:
             raise CommandError(str(exc)) from exc
-        result = {"source_id": source.pk, "url": source.url, "mode": "offline CSS preview; no data saved",
-                  "selectors": DEFAULT_SELECTORS | (source.recipe or {}), "diagnostics": diagnostics,
+        result = {"source_id": source.pk, "url": source.url, "mode": "offline recipe preview; no data saved",
+                  "selectors": source.recipe if source.recipe.get("engine") else DEFAULT_SELECTORS | (source.recipe or {}), "diagnostics": diagnostics,
                   "summary": diagnostic_message(diagnostics), "page_tags": page_tags}
         if options["show_records"]:
             result["records"] = records

@@ -20,3 +20,7 @@ jobs:
       - run: python manage.py test
       - run: python scripts/smoke_local.py
       - run: python scripts/smoke_jev.py
+      - run: python scripts/smoke_extraction.py
+      - run: python -m venv .venv-autoscraper
+      - run: .venv-autoscraper/bin/python -m pip install -r requirements-benchmark.txt
+      - run: python manage.py benchmark_extraction --autoscraper-python .venv-autoscraper/bin/python --assert-fixtures

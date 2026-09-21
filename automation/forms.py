@@ -38,7 +38,7 @@ class PolicyForm(forms.ModelForm):
 
 
 class CandidateForm(forms.Form):
-    recipe = forms.JSONField(widget=forms.Textarea(attrs={"rows": 10}), label="Candidate CSS recipe")
+    recipe = forms.JSONField(widget=forms.Textarea(attrs={"rows": 10}), label="Candidate extraction recipe")
 
     def clean_recipe(self):
         try:

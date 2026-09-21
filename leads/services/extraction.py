@@ -27,6 +27,12 @@ REJECTION_LABELS = {
 }
 
 def validate_recipe(recipe):
+    if isinstance(recipe, dict) and "engine" in recipe:
+        if recipe != {"engine": "structured-v1"}:
+            raise ValueError('The structured recipe must be exactly {"engine": "structured-v1"}.')
+        if not settings.EXTRACTION_PACKS_ENABLED:
+            raise ValueError("Enable EXTRACTION_PACKS_ENABLED to use structured recipes.")
+        return recipe
     if not isinstance(recipe, dict) or set(recipe) - set(DEFAULT_SELECTORS):
         raise ValueError("Use an object with row, name, title, email, phone, company, and/or evidence selectors.")
     for key, value in recipe.items():
@@ -52,7 +58,7 @@ def diagnostic_message(diagnostics):
     count = diagnostics.get("rows_checked", 0)
     if not count:
         return "No person cards matched the row selector; review the page and CSS recipe."
-    reasons = [f"{value} {REJECTION_LABELS[key]}" for key, value in diagnostics.get("rejected", {}).items()]
+    reasons = [f"{value} {REJECTION_LABELS.get(key, key.replace('_', ' '))}" for key, value in diagnostics.get("rejected", {}).items()]
     return f"Checked {count} person card(s). " + ("; ".join(reasons) + "." if reasons else "")
 TAG_PATTERNS = {
     "merchant_services": r"merchant (?:services|accounts?)|payment processing|credit card processing|card payments",
@@ -85,6 +91,8 @@ def page_text(html):
 def signature(source):
     value = [VERSION, source.extractor, source.recipe, source.company, source.category,
              source.require_sales_role, settings.OLLAMA_MODEL if source.extractor == "ollama" else ""]
+    if settings.EXTRACTION_PACKS_ENABLED:
+        value.append("packs-v1:structured-v1")
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 def selected_text(row, selector):
@@ -149,6 +157,14 @@ def validate_record(record, evidence, source, diagnostics=None):
             "contact_scope": scope, "person_tags": tags(evidence), "evidence": evidence[:12000]}
 
 def extract_rules(html, source, diagnostics=None):
+    if (source.recipe or {}).get("engine"):
+        # Structured records use the same strict association checks as canaries.
+        from automation.recipes import evaluate
+        records, _, stats = evaluate(html, source, source.recipe)
+        if diagnostics is not None:
+            diagnostics.update(extractor="rules", rows_checked=stats["matched_cards"],
+                               row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"])
+        return records
     soup = soup_for(html)
     selectors = DEFAULT_SELECTORS | validate_recipe(source.recipe or {})
     rows = soup.select(selectors["row"], limit=501)

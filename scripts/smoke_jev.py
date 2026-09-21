@@ -45,7 +45,7 @@ def main():
             DJANGO_SECRET_KEY=secrets.token_urlsafe(48), DJANGO_ALLOWED_HOSTS='127.0.0.1,localhost',
             DJANGO_SECURE_COOKIES='0', DJANGO_SETTINGS_MODULE='config.settings', JEV_MODE='mock',
             JEV_CAPTURE_ENABLED='1', JEV_ROUTING_ENABLED='1', TYPESAFE_API_KEY='', JEV_PRICE_CONFIRMED='0',
-            JEV_TOKEN_COUNTER='', JEV_ALLOW_ESTIMATED_TOKENS='0', BRAVE_SEARCH_ENABLED='0', OLLAMA_MODEL='')
+            JEV_TOKEN_COUNTER='', JEV_ALLOW_ESTIMATED_TOKENS='0', BRAVE_SEARCH_ENABLED='0', OLLAMA_MODEL='', EXTRACTION_PACKS_ENABLED='0')
         os.environ.update(env)
         import django
         django.setup()

@@ -12,4 +12,9 @@ def demo_response(source, url):
     if url == DEMO_ORIGIN + "/team/":
         return Response(url, 200, {"content-type": "text/html; charset=utf-8"},
                         (Path(settings.BASE_DIR) / "examples" / "automation-team.html").read_bytes())
+    names = {DEMO_ORIGIN + f"/extraction/{name}/": f"{name}-heldout.html"
+             for name in ("wordpress", "webflow", "squarespace", "jsonld", "microdata")}
+    if url in names:
+        return Response(url, 200, {"content-type": "text/html; charset=utf-8"},
+                        (Path(settings.BASE_DIR) / "examples" / "extraction" / names[url]).read_bytes())
     return Response(url, 404, {"content-type": "text/plain"}, b"No page in this fixed fixture.")

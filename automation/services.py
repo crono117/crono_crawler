@@ -7,7 +7,7 @@ from django.db.models import Max
 from django.utils import timezone
 from discovery.ranking import rank
 from leads.models import DomainState, PageSnapshot, Source, WorkerLease
-from leads.services.extraction import signature
+from leads.services.extraction import signature, validate_recipe
 from leads.services.network import FetchError, fetch, in_scope, origin, require_success
 from leads.services.storage import save_records
 from .models import AutomationEvent, ProbePage, RecipeVersion, SiteAutomationJob, SitePolicy
@@ -233,6 +233,11 @@ def release_recipe(job):
     version = job.current_recipe
     if not version or version.scope_hash != job.scope_hash or version.generation != job.generation or version.score < job.policy_snapshot["min_recipe_score"] or not version.validation.get("accepted_records"):
         pause_job(job, "Recipe did not satisfy the local release gate.", rollback=False)
+        return
+    try:
+        validate_recipe(version.recipe)
+    except ValueError as exc:
+        pause_job(job, str(exc), rollback=False)
         return
     version.status, version.released_at = "released", timezone.now()
     version.save(update_fields=["status", "released_at"])

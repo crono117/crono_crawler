@@ -86,6 +86,7 @@ JEV_MODE = os.environ.get("JEV_MODE", "off")
 if JEV_MODE not in ("off", "mock", "live"):
     raise RuntimeError("JEV_MODE must be off, mock or live.")
 JEV_CAPTURE_ENABLED = os.environ.get("JEV_CAPTURE_ENABLED", "0") == "1"
+EXTRACTION_PACKS_ENABLED = os.environ.get("EXTRACTION_PACKS_ENABLED", "0") == "1"
 JEV_ROUTING_ENABLED = os.environ.get("JEV_ROUTING_ENABLED", "0") == "1"
 JEV_MODEL = "jev-1.13.0"
 TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")

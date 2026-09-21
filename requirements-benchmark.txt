@@ -1,0 +1,5 @@
+# Install in a separate .venv-autoscraper, never in the app environment.
+# AutoScraper's empty-attribute matching needs BeautifulSoup's older semantics.
+autoscraper==1.1.14
+beautifulsoup4==4.12.3
+lxml==6.1.3

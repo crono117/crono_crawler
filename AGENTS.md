@@ -44,6 +44,8 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 
 ## Change verification
 
+On `feat/jev-extraction-packs`, read `docs/EXTRACTION_TESTING.md`. This parallel trial intentionally starts from the published Jev branch. Keep `EXTRACTION_PACKS_ENABLED` opt-in, structured evidence labelled as parsed direct properties, and platform recipes behind the existing local validation/canary gates. AutoScraper belongs only in its separate benchmark environment; never downgrade the app's BeautifulSoup or import AutoScraper in a worker. Run `scripts/smoke_extraction.py` and the held-out benchmark after changes to this addition.
+
 `classification/` adds opt-in Jev evidence/judgments and bounded company follow-ups. Read `docs/JEV_TESTING.md` for the implemented controls and local-agent handoff; `docs/JEV_DESIGN.md` is a historical proposal. Keep paid HTTP exclusively behind `classification/accounting.py` admission and `provider.evaluate_once`, under the existing collector lease. Never refund uncertain sends, reset cumulative budgets on restart, infer source permission from a judgment, or promote model labels over contact evidence/human suppression. Run `scripts/smoke_jev.py` as well as the existing smoke after changes to this path. All automated tests and smoke scripts are offline and use fictional data.
 
 Run the tests and Django checks after code changes. Add a regression test when fixing a meaningful collection, privacy, authentication, or persistence defect. Keep network tests deterministic; no third-party websites or hosted LLMs are required. Run actual browser/Ollama integration checks only when those optional services are available, and distinguish mock tests from real integration results.

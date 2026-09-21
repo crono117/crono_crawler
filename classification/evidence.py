@@ -12,6 +12,7 @@ from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, contac
                                        normalize, selected_text, signature, soup_for)
 from leads.services.network import in_scope, origin
 from discovery.ranking import clean_url
+from leads.services.structured import entities
 from .contracts import digest
 from .models import (Affiliation, Company, CompanyDomain, ContactCandidate, EvidenceDocument,
                      EvidenceSpan, Person)
@@ -60,8 +61,13 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
         return []
     provider = provider or ('live' if settings.JEV_MODE == 'live' else 'mock')
     soup = soup_for(html)
-    text = contact_evidence(soup)
-    truncated = len(text) > 50000
+    visible_text = contact_evidence(soup)
+    structured_items, structured_stats = entities(html)
+    text = visible_text
+    if structured_items:
+        text += "\n[Parsed schema.org direct properties; canonical projection]\n"
+        text += "\n".join(item['evidence'] for item in structured_items)
+    truncated = len(text) > 50000 or structured_stats['limit_reached']
     text = text[:50000]
     if not text:
         return []
@@ -92,6 +98,7 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
             'source': source, 'url': url, 'retrieved_at': now, 'last_checked': now, 'content_hash': body_hash,
             'scope_hash': sig, 'parser_version': VERSION, 'extraction_signature': extraction_sig,
             'text': text, 'text_hash': digest(text), 'links': links,
+            'provenance': 'fetched+structured-v1' if structured_items else 'fetched',
             'truncated': truncated, 'expires_at': now + timedelta(days=30)})
     if not created:
         # Never overwrite original evidence or original retrieval time.
@@ -101,22 +108,54 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
             return []
     title_node = soup.select_one('[itemtype*="Organization"] [itemprop="name"], .company-name, h1')
     title = normalize(title_node.get_text(' ', strip=True)) if title_node else ''
-    company_name = source.company if source.company and source.company.casefold() in text.casefold() else title
+    company_name = source.company if source.company and source.company.casefold() in visible_text.casefold() else title
+    company_text = visible_text[:1200]
+    company_locator = 'page-opening'
+    if not company_name or company_name.lower() in ('our team', 'team', 'contact us', 'about us', 'home'):
+        organizations = [item for item in structured_items if item['kind'] == 'Organization']
+        # Multiple organizations do not establish which one owns the page.
+        if len(organizations) == 1:
+            company_name = organizations[0]['fields']['name']
+            company_text = organizations[0]['evidence']
+            company_locator = organizations[0]['locator']
     if not company_name or len(company_name) > 200 or company_name.lower() in ('our team', 'team', 'contact us', 'about us', 'home'):
         return []
     company, _ = Company.objects.get_or_create(identity=digest([origin(url), company_name.casefold()]), defaults={'name': company_name})
-    company_text = text[:1200]
-    company_span = add_span(doc, 'company', company_text, 'company', 'page-opening')
-    if company_name.casefold() not in company_text.casefold():
+    company_span = add_span(doc, 'company', company_text, 'company', company_locator)
+    if not company_span or company_name.casefold() not in company_text.casefold():
         return []
     # A reviewed source is not automatic proof of company-domain ownership.
     CompanyDomain.objects.get_or_create(company=company, url=source.url, defaults={
         'origin': origin(source.url), 'span': company_span})
     from .services import enqueue_subject
     evaluations = enqueue_subject(doc, company, company_span, provider=provider, company_job=company_job)
+    for index, item in enumerate(structured_items):
+        fields = item['fields']
+        # An unrelated author or a bare Person does not establish employment.
+        if item['kind'] != 'Person' or not fields['company']:
+            continue
+        span = add_span(doc, f'structured-person-{index}', item['evidence'], 'person', item['locator'])
+        if not span:
+            continue
+        person, _ = Person.objects.get_or_create(identity=digest([fields['name'].casefold(), source.pk, url]),
+                                                 defaults={'name': fields['name']})
+        employer = company
+        if fields['company'].casefold() != company.name.casefold():
+            employer, _ = Company.objects.get_or_create(identity=digest([origin(url), fields['company'].casefold()]),
+                                                       defaults={'name': fields['company']})
+            evaluations += enqueue_subject(doc, employer, span, provider=provider, company_job=company_job)
+        Affiliation.objects.get_or_create(person=person, company=employer, span=span, defaults={'title': fields['title']})
+        contacts = contacts_for(span, employer, person)
+        evaluations += enqueue_subject(doc, employer, span, person=person, contacts=contacts[:2],
+                                       provider=provider, company_job=company_job)
     selector = source.recipe.get('row') or DEFAULT_SELECTORS['row']
     selectors = DEFAULT_SELECTORS | (source.recipe or {})
-    for index, row in enumerate(soup.select(selector, limit=100)):
+    rows = [] if source.recipe.get('engine') else soup.select(selector, limit=100)
+    for index, row in enumerate(rows):
+        if settings.EXTRACTION_PACKS_ENABLED and (row.get('itemtype', '').rstrip('/').endswith('/Person') or
+                row.find_parent(attrs={'itemscope': True})):
+            # Structured adapter owns item-scope associations when enabled.
+            continue
         name = selected_text(row, selectors['name'])
         if not 2 <= len(name.split()) <= 8 or len(name) > 100 or '@' in name:
             continue
