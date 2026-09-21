@@ -54,7 +54,7 @@ def collection_allowed(source):
 @transaction.atomic
 def consider(candidate):
     """Authorize only a bounded probe, never normal collection or scope expansion."""
-    if candidate.decision != "pending" or candidate.kind != "page":
+    if candidate.manual_review_required or candidate.decision != "pending" or candidate.kind != "page":
         return None
     campaign = candidate.campaign
     policy = SitePolicy.objects.filter(campaign=campaign, enabled=True).first()
@@ -78,7 +78,7 @@ def consider(candidate):
     campaign.sources.add(source)
     from .services import start_setup
     job = start_setup(source, campaign)
-    for sibling in campaign.urls.filter(origin=origin(source.url), decision="pending"):
+    for sibling in campaign.urls.filter(origin=origin(source.url), decision="pending", manual_review_required=False):
         if in_scope(source, sibling.url):
             sibling.source, sibling.decision = source, "approved"
             sibling.last_result = f"Policy authorized setup job #{job.pk}; collection waits for a validated recipe and canary."
@@ -91,7 +91,7 @@ def consider_pending():
     from discovery.models import DiscoveredURL
     for policy in SitePolicy.objects.filter(enabled=True, campaign__active=True):
         pending = DiscoveredURL.objects.filter(campaign_id=policy.campaign_id, decision="pending",
-            kind="page", score__gte=policy.min_url_score).select_related("campaign").order_by("id")
+            kind="page", manual_review_required=False, score__gte=policy.min_url_score).select_related("campaign").order_by("id")
         candidates = list(pending.filter(id__gt=policy.pending_scan_cursor)[:100])
         if not candidates and policy.pending_scan_cursor:
             candidates = list(pending[:100])

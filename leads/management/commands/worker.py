@@ -26,8 +26,10 @@ class Command(BaseCommand):
                 return
             self.stdout.write(self.style.SUCCESS("Collector running. Ctrl+C stops it safely."))
             prefer_discovery = False
+            iteration = 0
             while not stop.is_set():
-                worked = tick(token, prefer_discovery=prefer_discovery)
+                worked = tick(token, prefer_discovery=prefer_discovery, prefer_classification=iteration % 4 == 3)
+                iteration += 1
                 prefer_discovery = not prefer_discovery
                 if options["once"]:
                     break

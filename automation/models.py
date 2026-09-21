@@ -30,6 +30,7 @@ class SitePolicy(models.Model):
 
 
 class SiteAutomationJob(models.Model):
+    company_job = models.ForeignKey("classification.CompanyJob", null=True, blank=True, on_delete=models.PROTECT)
     STATES = [(s, s.replace("_", " ").title()) for s in (
         "probe_queued", "probing", "probe_complete", "recipe_queued", "recipe_testing",
         "recipe_ready", "recipe_released", "canary", "active", "paused", "failed")]

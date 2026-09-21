@@ -20,7 +20,7 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1
 CSRF_TRUSTED_ORIGINS = [x for x in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x]
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
-    "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "leads", "discovery", "automation",
+    "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles", "leads", "discovery", "automation", "classification",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware", "whitenoise.middleware.WhiteNoiseMiddleware", "django.contrib.sessions.middleware.SessionMiddleware",
@@ -80,3 +80,17 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
 BRAVE_SEARCH_ENABLED = os.environ.get("BRAVE_SEARCH_ENABLED", "0") == "1"
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 BRAVE_DAILY_SEARCH_LIMIT = max(0, int(os.environ.get("BRAVE_DAILY_SEARCH_LIMIT", "20")))
+
+# Merely installing this app or supplying a key never enables paid work.
+JEV_MODE = os.environ.get("JEV_MODE", "off")
+if JEV_MODE not in ("off", "mock", "live"):
+    raise RuntimeError("JEV_MODE must be off, mock or live.")
+JEV_CAPTURE_ENABLED = os.environ.get("JEV_CAPTURE_ENABLED", "0") == "1"
+JEV_ROUTING_ENABLED = os.environ.get("JEV_ROUTING_ENABLED", "0") == "1"
+JEV_MODEL = "jev-1.13.0"
+TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")
+JEV_PRICE_CONFIRMED = os.environ.get("JEV_PRICE_CONFIRMED", "0") == "1"
+JEV_TOKEN_COUNTER = os.environ.get("JEV_TOKEN_COUNTER", "")
+JEV_ALLOW_ESTIMATED_TOKENS = os.environ.get("JEV_ALLOW_ESTIMATED_TOKENS", "0") == "1"
+JEV_MAX_INPUT_TOKENS = 5000
+JEV_DAILY_ATTEMPTS = min(100, max(1, int(os.environ.get("JEV_DAILY_ATTEMPTS", "100"))))

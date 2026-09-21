@@ -5,6 +5,7 @@
 <body>{% if user.is_authenticated %}
 <aside class="sidebar"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-symbol">c</span>clear<span class="brand-light">pay</span></a><div class="product-label">LEAD CONSOLE</div>
 <nav aria-label="Main navigation">
+<a class="{% if '/classification/' in request.path %}active{% endif %}" href="{% url 'classification:home' %}"><span>◇</span> Jev evidence</a>
 <a class="{% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Overview</a>
 <a class="{% if '/leads/' in request.path %}active{% endif %}" href="{% url 'leads' %}"><span>◉</span> Lead database</a>
 <a class="{% if '/sources/' in request.path %}active{% endif %}" href="{% url 'sources' %}"><span>▤</span> Sources</a>

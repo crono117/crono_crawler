@@ -5,7 +5,7 @@ def tune_sqlite(sender, connection, **kwargs):
     if connection.vendor == "sqlite":
         with connection.cursor() as cursor:
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA synchronous=FULL")
 
 class LeadsConfig(AppConfig):
     name = "leads"

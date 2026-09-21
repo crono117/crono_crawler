@@ -114,7 +114,8 @@ def fetch_probe_page(job, page):
             guard = prepare_domain(source, page)
             if guard is None:
                 return
-            response = fetch(page.url, settings.BOT_USER_AGENT, guard, max_bytes=MAX_BYTES)
+            from classification.routing import before_fetch
+            response = fetch(page.url, settings.BOT_USER_AGENT, guard, max_bytes=MAX_BYTES, before_attempt=before_fetch(page))
         require_success(response)
         if any(marker in response.text.lower() for marker in ("cf-chl-", "verify you are human", "g-recaptcha", "hcaptcha-container", "performing security verification")):
             raise FetchError("Access challenge; site setup paused.", status=403)
@@ -127,6 +128,8 @@ def fetch_probe_page(job, page):
         metadata, links = recon_page(response, source, job.campaign)
         if any(marker in response.text.lower() for marker in ("automated access is prohibited", "scraping is prohibited", "do not scrape")):
             raise FetchError("An explicit collection restriction needs operator review.", status=403)
+        from classification.evidence import capture_if_enabled
+        capture_if_enabled(source, response, company_job=job.company_job)
         state = DomainState.objects.get(origin=origin(source.url))
         metadata["robots"] = {"allowed": True, "policy_hash": hashlib.sha256(state.robots_text.encode()).hexdigest(),
                               "sitemaps": (parse_robots(state).site_maps() or [])[:20]}

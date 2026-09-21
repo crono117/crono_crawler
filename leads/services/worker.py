@@ -77,6 +77,9 @@ def acquire_lease():
     DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
     from automation.models import SiteAutomationJob
     SiteAutomationJob.objects.filter(processing=True).update(processing=False)
+    from classification.models import Evaluation
+    Evaluation.objects.filter(provider='mock', state='running').update(state='queued', lease_token='')
+    # Paid attempts retain their dispatch owner/reservation until explicit recovery.
     return lease.token
 
 def heartbeat(token):
@@ -110,8 +113,9 @@ def prepare_domain(source, job):
     if not state.robots_checked_at or state.robots_checked_at < now - timedelta(hours=24):
         state.next_allowed_at = now + timedelta(seconds=source.delay_seconds)
         state.save()
+        from classification.routing import before_fetch
         res = fetch(state.origin + "/robots.txt", settings.BOT_USER_AGENT,
-                    guard=lambda url: origin(url) == state.origin, max_bytes=512 * 1024)
+                    guard=lambda url: origin(url) == state.origin, max_bytes=512 * 1024, before_attempt=before_fetch(job))
         if res.status in (404, 410):
             state.robots_text = "User-agent: *\nAllow: /"
         else:
@@ -240,6 +244,8 @@ def process(job):
             challenge = html.lower()
             if any(marker in challenge for marker in ("cf-chl-", "verify you are human", "g-recaptcha", "hcaptcha-container")):
                 raise FetchError("Access challenge detected; source paused for review.", status=403)
+        from classification.evidence import capture_if_enabled
+        capture_if_enabled(source, response)
         content_hash = hashlib.sha256(response.body).hexdigest()
         sig = signature(source)
         cached = PageSnapshot.objects.filter(source=source, url=response.url,
@@ -267,13 +273,20 @@ def process(job):
         logger.warning("Page %s: %s", job.pk, exc)
         handle_error(job, source, exc)
 
-def tick(token, prefer_discovery=False):
+def tick(token, prefer_discovery=False, prefer_classification=False):
     from discovery import services as discovery
     from automation import services as automation
+    from classification import services as classification
     heartbeat(token)
     schedule_due()
     discovery.schedule_due()
     automation.maintenance()
+    if prefer_classification:
+        from classification.evidence import purge_expired
+        purge_expired()
+        if classification.tick(token):
+            heartbeat(token)
+            return True
     if prefer_discovery and automation.tick(token):
         heartbeat(token)
         return True
@@ -290,7 +303,7 @@ def tick(token, prefer_discovery=False):
     if job:
         process(job)
     else:
-        worked = discovery.tick() or automation.tick(token)
+        worked = discovery.tick() or automation.tick(token) or classification.tick(token)
         heartbeat(token)
         return worked
     heartbeat(token)

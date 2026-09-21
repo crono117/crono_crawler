@@ -36,7 +36,7 @@ def main():
         subprocess.run([str(python), "manage.py", "createsuperuser"], check=True)
     if args.demo:
         subprocess.run([str(python), "manage.py", "init_demo"], check=True)
-    print("\nReady. Run: python3 run-local.py\nThen open: http://127.0.0.1:8000")
+    print("\nReady. Run: python3 run-local.py\nThen open: http://127.0.0.1:8017")
 
 if __name__ == "__main__":
     main()

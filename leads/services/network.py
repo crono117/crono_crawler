@@ -87,7 +87,7 @@ class Response:
         except LookupError:
             return self.body.decode("utf-8", errors="replace")
 
-def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True):
+def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True, before_attempt=None):
     """Resolve once per hop; connect to that exact public IP with hostname TLS."""
     redirects = []
     for _ in range(6):
@@ -97,6 +97,8 @@ def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, reque
             raise FetchError(str(exc)) from exc
         if guard and not guard(url):
             raise FetchError("URL or redirect falls outside the approved scope.")
+        if before_attempt:
+            before_attempt(url)
         p = urlsplit(url)
         port = 443 if p.scheme == "https" else 80
         addresses = public_addresses(p.hostname, port)

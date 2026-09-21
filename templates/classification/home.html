@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block location %}Jev evidence review{% endblock %}
+{% block content %}
+<h1>Jev evidence review</h1>
+<p>Mode: <strong>{{ mode }}</strong> · Capture: {{ capture|yesno:'on,off' }} · Company routing: {{ routing|yesno:'on,off' }} · {% if wallet.paused %}Paused: {{ wallet.reason }}{% else %}Available{% endif %}</p>
+<p>Spent ${{ spent }} · Reserved ${{ reserved }} · Remaining ${{ remaining }} · Active attempt: {{ wallet.active_attempt|default:'none' }}</p>
+<p>Mock results test the workflow; they do not measure Jev accuracy. Judgments remain separate from accepted contacts and human review.</p>
+{% for problem in readiness %}<p class="notice">{{ problem }}</p>{% endfor %}
+<form method="post" action="{% url 'classification:control' %}">{% csrf_token %}
+<label>Reason <input name="reason" required maxlength="1000"></label>
+<button name="action" value="pause">Pause Jev</button><button name="action" value="resume">Resume Jev</button>
+<label>Cumulative allowance (USD) <input name="usd" inputmode="decimal" placeholder="1.00"></label><button name="action" value="allowance">Set allowance</button></form>
+<h2>Evaluations</h2><table><thead><tr><th>Company / person</th><th>Provider</th><th>State</th><th>Evidence</th></tr></thead><tbody>
+{% for item in evaluations %}<tr><td>{{ item.company }}{% if item.person %} / {{ item.person.name }}{% endif %}</td><td>{{ item.provider }}</td><td>{{ item.state }} {{ item.reason }}</td><td><a href="{% url 'classification:detail' item.pk %}">Inspect evidence and answers</a></td></tr>{% empty %}<tr><td colspan="4">No evaluations. Run the offline demo or enable evidence capture.</td></tr>{% endfor %}</tbody></table>
+<p>Page {{ evaluations.number }} of {{ evaluations.paginator.num_pages }} {% if evaluations.has_previous %}<a href="?page={{ evaluations.previous_page_number }}">Previous</a>{% endif %} {% if evaluations.has_next %}<a href="?page={{ evaluations.next_page_number }}">Next</a>{% endif %}</p>
+<h2>Company-domain review</h2><p>Verify ownership from the cited evidence. Verification does not authorize fetching this domain.</p>
+{% for item in domains %}<article><p><strong>{{ item.company }}</strong> → {{ item.url }} · Evidence: {{ item.span.document.url }} ({{ item.span.document.retrieved_at }})</p><blockquote>{{ item.span.text }}</blockquote>
+<form method="post" action="{% url 'classification:domain' item.pk %}">{% csrf_token %}<input name="reason" required placeholder="Evidence supporting this relationship" aria-label="Review reason"><button>Verify relationship</button></form></article>{% empty %}<p>No unreviewed domains.</p>{% endfor %}
+<h2>Company follow-ups</h2><table><thead><tr><th>Company</th><th>State</th><th>Limits consumed</th><th>Outcome</th></tr></thead><tbody>
+{% for job in jobs %}<tr><td>{{ job.company }} / pilot {{ job.pilot_id }}</td><td>{{ job.state }}</td><td>{{ job.fetches }}/{{ job.max_fetches }} fetches · {{ job.attempts }}/{{ job.max_attempts }} paid attempts</td><td>{{ job.reason }}</td></tr>{% empty %}<tr><td colspan="4">No company jobs. Configure a bounded pilot with the jev command.</td></tr>{% endfor %}</tbody></table>
+<h2>Recent paid attempts</h2><table><thead><tr><th>Attempt</th><th>State</th><th>HTTP</th><th>Input tokens</th></tr></thead><tbody>{% for attempt in attempts %}<tr><td>{{ attempt.pk }}</td><td>{{ attempt.state }}</td><td>{{ attempt.http_status|default:'—' }}</td><td>{{ attempt.input_tokens|default_if_none:'unknown; reservation retained' }}</td></tr>{% empty %}<tr><td colspan="4">No paid attempts.</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

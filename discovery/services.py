@@ -39,7 +39,7 @@ def refresh_priorities(campaign):
 
 
 @transaction.atomic
-def register(run, raw_url, *, label="", context="", found_on="", method="link", query="", depth=0, kind="page", seed=False):
+def register(run, raw_url, *, label="", context="", found_on="", method="link", query="", depth=0, kind="page", seed=False, company_job=None):
     """Record an exact URL, without fetching or DNS-resolving a new domain."""
     try:
         url = clean_url(raw_url)
@@ -50,10 +50,17 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
     if seed and score >= 0:
         score, reasons = max(score, 90), reasons + ["Explicit starting source"]
     source = approved_source(campaign, url)
+    manual = bool(company_job and not in_scope(company_job.source, url))
+    if manual:
+        from classification.models import Lineage
+        if (Lineage.objects.filter(company_job=company_job, relation='external_proposal').count() >= 5 or
+                Lineage.objects.filter(company_job__pilot=company_job.pilot, relation__in=('external_proposal', 'domain_proposal')).count() >= 25):
+            return None
     if source and score >= 0 and Observation.objects.filter(source=source, lead__status="reviewed", present=True).exists():
         score = min(100, score + 10)
         reasons.append("Source has human-reviewed contacts (+10)")
     candidate = DiscoveredURL.objects.filter(campaign=campaign, url=url).first()
+    preserve_existing_approval = bool(candidate and candidate.decision == 'approved')
     if candidate:
         DiscoveryRun.objects.filter(pk=run.pk).update(duplicates_seen=F("duplicates_seen") + 1)
         candidate.last_seen = timezone.now()
@@ -79,10 +86,23 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
             search_query=query[:600], score=score, reasons=reasons, kind=kind,
             decision="dismissed" if score < 0 else ("approved" if source else "pending"), source=source)
         DiscoveryRun.objects.filter(pk=run.pk).update(candidates_found=F("candidates_found") + 1, new_domains=F("new_domains") + int(new_domain))
+    if manual and not preserve_existing_approval:
+        candidate.manual_review_required = True
+        if candidate.decision != 'dismissed':
+            candidate.decision = 'pending'
+        candidate.save(update_fields=['manual_review_required', 'decision'])
+        from classification.models import Lineage
+        parent = company_job.lineage.first()
+        if parent:
+            Lineage.objects.get_or_create(company_job=company_job, document=parent.document, url=url, relation='external_proposal')
+    if candidate.manual_review_required:
+        return candidate
+    if manual:
+        return candidate  # Preserve existing approval without assigning it to this bounded job.
     if candidate.decision != "dismissed" and source:
         candidate.source, candidate.decision = source, "approved"
         candidate.save(update_fields=["source", "decision"])
-        queue_candidate(run, candidate, depth=depth, kind=candidate.kind, seed=seed)
+        queue_candidate(run, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job)
     elif candidate.decision == "pending":
         from automation.policy import consider
         consider(candidate)
@@ -90,9 +110,15 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
     return candidate
 
 
-def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False):
+def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
+    if candidate.manual_review_required:
+        return
+    if company_job:
+        from classification.routing import can_queue
+        if not can_queue(company_job, candidate.url, depth):
+            return
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
         return
     if candidate.score < 0 or (not seed and kind == "page" and candidate.score < campaign.min_score):
@@ -104,7 +130,7 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False):
     if run.jobs.exclude(kind="search").count() >= campaign.max_pages:
         return
     DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
-        "candidate": candidate, "source": candidate.source, "depth": depth,
+        "candidate": candidate, "source": candidate.source, "depth": depth, "company_job": company_job,
         "priority": 95 if kind == "sitemap" else candidate.score})
 
 
@@ -169,9 +195,10 @@ def approve(candidate, source):
     # Approve the selected URL even if explicitly dismissed earlier. Other dismissals persist.
     candidate.decision, candidate.source = "approved", source
     candidate.dismissal_scope = ""
-    candidate.save(update_fields=["decision", "source", "dismissal_scope"])
+    candidate.manual_review_required = False
+    candidate.save(update_fields=["decision", "source", "dismissal_scope", "manual_review_required"])
     run = candidate.campaign.runs.filter(status__in=("queued", "running")).first()
-    for sibling in candidate.campaign.urls.filter(origin=origin(source.url)).exclude(decision="dismissed"):
+    for sibling in candidate.campaign.urls.filter(origin=origin(source.url), manual_review_required=False).exclude(decision="dismissed"):
         if in_scope(source, sibling.url):
             sibling.decision, sibling.source = "approved", source
             sibling.save(update_fields=["decision", "source"])
@@ -244,7 +271,7 @@ def record_links(job, html, base_url):
         score, _ = rank(campaign, url, label, context)
         links.append((score, url, label, context))
     for _, url, label, context in sorted(links, key=lambda row: row[0], reverse=True):
-        register(job.run, url, label=label, context=context, found_on=base_url, depth=job.depth + 1)
+        register(job.run, url, label=label, context=context, found_on=base_url, depth=job.depth + 1, company_job=job.company_job)
 
 
 def demo_response(url):
@@ -263,6 +290,8 @@ def demo_response(url):
 
 def save_page(job, response):
     source = job.source
+    from classification.evidence import capture_if_enabled
+    capture_if_enabled(source, response, company_job=job.company_job)
     content_hash = hashlib.sha256(response.body).hexdigest()
     sig = signature(source)
     cached = PageSnapshot.objects.filter(source=source, url=response.url, content_hash=content_hash, extraction_signature=sig).exists()
@@ -318,6 +347,11 @@ def process(job):
     from leads.services.worker import prepare_domain, parse_robots, pause_source, retry_delay
     campaign = job.run.campaign
     try:
+        if job.company_job_id:
+            from classification.models import JevControl
+            if not job.company_job.pilot.active or JevControl.objects.filter(pk='jev', paused=True).exists():
+                defer(job, timezone.now() + timedelta(seconds=60), 'Company pilot/Jev is paused; queued work retained.')
+                return
         if job.kind == "search":
             if not campaign.search_enabled or not search_ready():
                 pause(campaign, "Search disabled or missing API key; turn search off or configure it before resuming.")
@@ -353,8 +387,15 @@ def process(job):
             done(job, "URL excluded by current campaign filters; no request made.", "skipped")
             return
         if source.collector == "demo":
+            from classification.fixtures import DEMO_ORIGIN as JEV_DEMO_ORIGIN, demo_response as jev_demo
             from automation.fixtures import DEMO_ORIGIN as AUTO_DEMO_ORIGIN, demo_response as automation_demo
-            response = automation_demo(source, job.url) if origin(source.url) == AUTO_DEMO_ORIGIN else demo_response(job.url)
+            if origin(source.url) == JEV_DEMO_ORIGIN:
+                response = jev_demo(job.url)
+            else:
+                response = automation_demo(source, job.url) if origin(source.url) == AUTO_DEMO_ORIGIN else demo_response(job.url)
+            if job.company_job_id:
+                from classification.routing import reserve_fetch
+                reserve_fetch(job.company_job_id, job.url)
         else:
             state = DomainState.objects.filter(origin=origin(source.url)).first()
             if state and state.next_allowed_at > timezone.now():
@@ -365,14 +406,15 @@ def process(job):
             guard = prepare_domain(source, job)
             if guard is None:
                 return
-            if campaign.use_sitemaps:
+            if campaign.use_sitemaps and not job.company_job_id:
                 state = DomainState.objects.get(origin=origin(source.url))
                 for sitemap in (parse_robots(state).site_maps() or [])[:20]:
                     if in_scope(source, sitemap):
                         register(job.run, sitemap, found_on=state.origin + "/robots.txt", method="sitemap", kind="sitemap", seed=True)
             # Discovery is intentionally HTML-first. Existing browser sources can still
             # be collected separately, using the collector's browser option.
-            response = fetch(job.url, settings.BOT_USER_AGENT, guard,
+            from classification.routing import before_fetch
+            response = fetch(job.url, settings.BOT_USER_AGENT, guard, before_attempt=before_fetch(job),
                              max_bytes=MAX_SITEMAP_BYTES if job.kind == "sitemap" else 6 * 1024 * 1024)
         if job.kind == "sitemap" and response.status in (404, 410):
             done(job, "No sitemap at this address.", "skipped")
@@ -391,7 +433,7 @@ def process(job):
             entries.sort(key=lambda item: rank(campaign, item[1])[0], reverse=True)
             for kind, url in entries:
                 register(job.run, url, found_on=response.url, method="sitemap", kind=kind,
-                         depth=job.depth + 1 if kind == "sitemap" else 1)
+                         depth=job.depth + 1 if kind == "sitemap" else 1, company_job=job.company_job)
             done(job, f"Read {len(entries)} sitemap entries; queued matching approved paths within limits.")
         else:
             if "html" not in response.headers.get("content-type", "").lower():

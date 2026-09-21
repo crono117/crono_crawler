@@ -19,3 +19,4 @@ jobs:
       - run: python manage.py makemigrations --check --dry-run
       - run: python manage.py test
       - run: python scripts/smoke_local.py
+      - run: python scripts/smoke_jev.py

@@ -65,6 +65,7 @@ class DiscoveryRun(models.Model):
 
 
 class DiscoveredURL(models.Model):
+    manual_review_required = models.BooleanField(default=False)
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="urls")
     first_run = models.ForeignKey(DiscoveryRun, on_delete=models.SET_NULL, null=True, related_name="found_urls")
     url = models.URLField(max_length=1500)
@@ -90,6 +91,7 @@ class DiscoveredURL(models.Model):
 
 
 class DiscoveryJob(models.Model):
+    company_job = models.ForeignKey("classification.CompanyJob", null=True, blank=True, on_delete=models.PROTECT)
     run = models.ForeignKey(DiscoveryRun, on_delete=models.CASCADE, related_name="jobs")
     candidate = models.ForeignKey(DiscoveredURL, on_delete=models.CASCADE, null=True, blank=True, related_name="jobs")
     source = models.ForeignKey("leads.Source", on_delete=models.SET_NULL, null=True, blank=True)

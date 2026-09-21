@@ -1,5 +1,7 @@
 # ClearPay Lead Engine
 
+**Jev trial branch:** `feat/jev-integration-v1` adds optional evidence-backed classification, bounded company follow-ups, a staff review console, durable spending controls and a complete offline demo. Start with [the local-agent setup and testing handoff](docs/JEV_TESTING.md). Paid calls, capture and routing are disabled by default. No key is needed to test the system.
+
 Repository: [crono117/crono_crawler](https://github.com/crono117/crono_crawler). The active application lives on `main`. The repository's previous state is preserved on `archive/legacy-scraper-2026-09-16`; that snapshot contained only the Apache 2.0 license. Work on this application from `main`.
 
 **Discovery trial:** this branch adds scheduled discovery campaigns, ranked exact URLs, sitemap exploration, source review and optional web search. See [the discovery setup and upgrade guide](docs/DISCOVERY.md). The same worker runs both collection and discovery; existing accounts and lead data are preserved.
@@ -25,7 +27,7 @@ python3 run-local.py
 
 The setup creates `.venv`, installs dependencies, generates a private `.env`, migrates the local database, and prompts you to create an administrator. It also queues an explicitly fictional demo source when `--demo` is supplied.
 
-Open **http://127.0.0.1:8000** and sign in. The demo produces three fictional contacts, letting you inspect the complete collection/review workflow without fetching a real website. Omit `--demo` for an empty database.
+Open **http://127.0.0.1:8017** and sign in. The demo produces three fictional contacts, letting you inspect the complete collection/review workflow without fetching a real website. Omit `--demo` for an empty database.
 
 On Windows, use `py setup.py --demo` and `py run-local.py`. The launch scripts handle the Windows virtualenv path; Windows has not been tested in this build. Linux is the verified platform.
 
