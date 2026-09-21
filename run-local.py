@@ -11,18 +11,19 @@ def main():
     root = Path(__file__).resolve().parent
     os.chdir(root)
     python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    bind_address = os.environ.get("CLEARPAY_BIND_ADDRESS", "127.0.0.1")
     if not python.exists():
         raise SystemExit("Run python3 setup.py first.")
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    commands = [[str(python), "-u", "manage.py", "runserver", "127.0.0.1:8000", "--noreload"],
+    commands = [[str(python), "-u", "manage.py", "runserver", f"{bind_address}:8017", "--noreload"],
                 [str(python), "-u", "manage.py", "worker"]]
     processes = []
     try:
         for cmd in commands:
             processes.append(subprocess.Popen(cmd))
-        print("\nClearPay Lead Console: http://127.0.0.1:8000\nCtrl+C stops the webapp and worker.\n", flush=True)
+        print(f"\nClearPay Lead Console: http://{bind_address}:8017\nCtrl+C stops the webapp and worker.\n", flush=True)
         while not stop.wait(1):
             if any(p.poll() is not None for p in processes):
                 print("A process exited; stopping the other process.", file=sys.stderr)
