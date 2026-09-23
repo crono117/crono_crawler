@@ -225,6 +225,22 @@ class SourceImportBrowserTests(TestCase):
         self.assertEqual(self.client.post(url, {"action": "unknown"}).status_code, 400)
         self.assertEqual(self.client.post(url, {"sources": json.dumps(document())}).status_code, 400)
 
+    def test_initial_import_page_shows_valid_example_before_upload(self):
+        from bs4 import BeautifulSoup
+        from leads.services.source_import import parse_upload
+        response = self.client.get('/sources/import/')
+        self.assertEqual(response.status_code, 200)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        panel = soup.select_one('#json-format-example')
+        self.assertIsNotNone(panel, 'Example must appear before any upload or error')
+        self.assertTrue(parse_upload(panel.select_one('pre code').get_text().encode('utf-8'))['sources'])
+        self.assertEqual(len(soup.select('#json-format-example')), 1)
+        self.assertIsNone(soup.select_one('[role=alert]'))
+        page = response.content.decode()
+        self.assertLess(page.index('id="json-format-example"'), page.index('Safe source settings only'))
+        self.assertLess(page.index('id="json-format-example"'), page.index('id="source-json"'))
+        self.assertFalse(Source.objects.exists())
+
     def test_rejected_upload_shows_copyable_example_before_instructions(self):
         from bs4 import BeautifulSoup
         from leads.services.source_import import parse_upload
@@ -233,13 +249,15 @@ class SourceImportBrowserTests(TestCase):
         soup = BeautifulSoup(response.content, 'html.parser')
         alert = soup.select_one('[role=alert]')
         self.assertIsNotNone(alert)
-        example = alert.select_one('pre code')
-        self.assertIsNotNone(example, 'Rejected files need an inline copyable JSON example')
+        example_panel = soup.select_one('#json-format-example')
+        self.assertIsNotNone(example_panel)
+        example = example_panel.select_one('pre code')
+        self.assertIsNotNone(example, 'Rejected files retain the always-visible JSON example')
         self.assertTrue(parse_upload(example.get_text().encode('utf-8'))['sources'])
-        self.assertIn('Download example JSON', alert.get_text())
-        self.assertIn('name', alert.get_text())
-        self.assertIn('url', alert.get_text())
-        self.assertIn('Preview JSON uploads', alert.get_text())
+        self.assertIn('Download example JSON', example_panel.get_text())
+        self.assertIn('name', example_panel.get_text())
+        self.assertIn('url', example_panel.get_text())
+        self.assertIn('Preview JSON uploads', example_panel.get_text())
         page = response.content.decode()
         self.assertLess(page.index('role="alert"'), page.index('Safe source settings only'))
         self.assertIsNone(soup.select_one('input[name=preview_token]'))
