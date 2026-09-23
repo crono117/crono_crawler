@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Import sources{% endblock %}{% block location %}Sources / Import JSON{% endblock %}
+{% block content %}
+<header class="page-heading"><div><div class="eyebrow">REVIEW BEFORE COLLECTION</div><h1>Import sources from JSON</h1><p>Preview source settings, then create inactive, unapproved sources. Existing sources are never changed.</p></div><a class="button" href="{% url 'sources' %}">Back to sources</a></header>
+<section class="panel">
+  <h2>Safe source settings only</h2>
+  <p><a href="{% url 'source_import_example' %}">Download example JSON</a> · <a href="{% url 'source_import_schema' %}">Download JSON Schema</a> · <a href="{% url 'source_import_guide' %}">Download format guide</a></p>
+  <p>Upload a UTF-8 <code>.json</code> file (optional BOM), at most 256 KiB, containing <code>schema_version: 1</code> and <code>sources</code> with 1–100 objects. Each needs <code>name</code> and a public HTTP(S) <code>url</code>. Unknown fields are rejected.</p>
+  <p>Names and companies are trimmed. URLs are not trimmed; query order is preserved. Scope defaults to the decoded starting URL path, not the whole website. Limits default to 5 pages, depth 1, delay 5 seconds and interval 168 hours; link following and external discovery are off.</p>
+  <p>Preview performs no DNS lookup or fetch and creates nothing. Confirmation creates only paused, unapproved sources with HTML / rules extraction, an empty recipe and the sales-role filter enabled. No collection, discovery or automation jobs are queued.</p>
+  <p>Public hostname resolution and robots checks happen later through the authorized collector. Import is not permission to collect.</p>
+</section>
+{% if error %}<section class="panel" role="alert"><h2>File not imported</h2><p>{{ error }}</p><p>Correct the file and upload it again to create a new preview.</p></section>{% endif %}
+{% if report %}
+<section class="panel">
+  {% if imported %}<h2>Import complete</h2><p>Created: {{ report.created }}. Skipped: {{ report.skipped }}.</p>
+  <p>Inspect each source's settings and recipe, review its terms and robots policy, approve via Edit, then start collection separately.</p>
+  {% else %}<h2>Preview</h2><p>Would create: {{ report.would_create }}. Would skip: {{ report.skipped }}. No sources have been saved.</p><p>This preview expires after 15 minutes and can only be confirmed by your account. Existing URLs are checked again at confirmation.</p>{% endif %}
+  <div class="table-wrap"><table><thead><tr><th>Row / source</th><th>URL / scope</th><th>Category</th><th>Limits / flags</th><th>Outcome</th></tr></thead><tbody>
+  {% for row in report.results %}<tr>
+    <td>{{ row.row }}. {% if row.source_id %}<a href="{% url 'source_detail' row.source_id %}">{{ row.name }}</a>{% else %}{{ row.name }}{% endif %}<small>{{ row.company }}</small></td>
+    <td><span class="url">{{ row.url }}</span><pre>{{ row.allowed_paths }}</pre></td><td>{{ row.category }}</td>
+    <td>Pages {{ row.max_pages }}; depth {{ row.max_depth }}; delay {{ row.delay_seconds }}s; interval {{ row.interval_hours }}h.<br>Follow links: {{ row.follow_links|yesno:"yes,no" }}; discover external: {{ row.discover_external|yesno:"yes,no" }}.</td>
+    <td>{% if row.outcome == 'created' %}Created — needs review{% elif row.outcome == 'would_create' %}Would create{% elif row.outcome == 'existing' %}Skipped — URL already exists; settings unchanged{% else %}Skipped — repeated URL in this file{% endif %}</td>
+  </tr>{% endfor %}</tbody></table></div>
+  {% if preview_token %}<form method="post" action="{% url 'source_import' %}">{% csrf_token %}<input type="hidden" name="action" value="import"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">Confirm import of inactive sources</button></form>{% endif %}
+</section>
+{% endif %}
+<section class="panel"><h2>Upload for preview</h2><form method="post" enctype="multipart/form-data" action="{% url 'source_import' %}">{% csrf_token %}<input type="hidden" name="action" value="preview"><p><label for="source-json">Source JSON file</label><input id="source-json" type="file" name="file" accept=".json,application/json" required></p><button class="button primary" type="submit">Preview JSON</button></form></section>
+{% endblock %}

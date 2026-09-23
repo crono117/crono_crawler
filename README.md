@@ -50,6 +50,12 @@ The regular collector follows in-scope links up to the run's page/depth limits a
 
 Collection is scheduled while sources are active. **Pause** disables recurring collection and stops additional pages; an in-flight page may finish saving. Editing a source cancels its unfinished run and leaves it paused so the new configuration starts consistently.
 
+## Bulk source upload
+
+Use **Sources → Import JSON** to preview and import up to 100 source configurations from a UTF-8 `.json` file (maximum 256 KiB). Only `name` and `url` are required for each source; the file also declares `schema_version: 1`. New sources are always paused and unapproved. Existing URLs are skipped without updates, and invalid files create no sources. The upload never crawls websites or calls providers.
+
+See the [bulk source format guide](docs/BULK_SOURCE_IMPORT.md), [editable example](examples/bulk-sources.json), and [JSON Schema](examples/bulk-sources.schema.json). All three are downloadable from the import screen. Preview first, confirm, then review/approve and start sources separately.
+
 ## What is stored
 
 | Item | Purpose |

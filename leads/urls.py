@@ -1,9 +1,13 @@
 from django.urls import path
-from . import views
+from . import bulk_views, views
 
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("sources/", views.sources, name="sources"),
+    path("sources/import/", bulk_views.source_import, name="source_import"),
+    path("sources/import/example/", bulk_views.source_import_download, {"kind": "example"}, name="source_import_example"),
+    path("sources/import/schema/", bulk_views.source_import_download, {"kind": "schema"}, name="source_import_schema"),
+    path("sources/import/guide/", bulk_views.source_import_download, {"kind": "guide"}, name="source_import_guide"),
     path("sources/new/", views.source_form, name="source_new"),
     path("sources/<int:pk>/", views.source_detail, name="source_detail"),
     path("sources/<int:pk>/edit/", views.source_form, name="source_edit"),

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "Example Payments — Sales Team",
+      "url": "https://payments.example.org/team/",
+      "company": "Example Payments",
+      "category": "merchant_services",
+      "allowed_paths": ["/team/"],
+      "max_pages": 5,
+      "max_depth": 1,
+      "delay_seconds": 5,
+      "interval_hours": 168,
+      "follow_links": false,
+      "discover_external": false
+    },
+    {
+      "name": "Example POS — Contact Page",
+      "url": "https://pos.example.org/contact/",
+      "category": "pos"
+    }
+  ]
+}
