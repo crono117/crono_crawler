@@ -125,7 +125,12 @@ def process(evaluation, token, *, mock_only=False):
         attempt = accounting.reserve(evaluation.pk, token)
         start = time.monotonic()
         result = provider.evaluate_once(attempt.pk, evaluation.request, token)
-        accounting.settle(attempt.pk, result, (time.monotonic() - start) * 1000)
+        attempt = accounting.settle(attempt.pk, result, (time.monotonic() - start) * 1000)
+        if attempt.state == 'uncertain' and result.status != 200:
+            Evaluation.objects.filter(pk=evaluation.pk, lease_token=token).update(state='uncertain',
+                available_at=retry_at(attempt.ordinal, result),
+                reason='Usage unknown; full reservation retained. Explicit recovery required before another attempt.')
+            return True
         if result.status == 200:
             if result.error:
                 raise ContractError('Provider response could not be read within bounds.')

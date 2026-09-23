@@ -19,6 +19,7 @@ def report():
     control = JevControl.objects.get(pk='jev')
     return {'mode': settings.JEV_MODE, 'model': settings.JEV_MODEL, 'paused': control.paused,
         'allowance_nusd': control.allowance_nusd, 'spent_nusd': control.spent_nusd,
+        'cumulative_attempt_limit': control.cumulative_attempt_limit,
         'reserved_nusd': control.reserved_nusd, 'remaining_nusd': control.remaining_nusd,
         'active_attempt': str(control.active_attempt) if control.active_attempt else None,
         'next_allowed_at': control.next_allowed_at.isoformat(), 'paid_attempts': Attempt.objects.count(),
@@ -37,6 +38,8 @@ class Command(BaseCommand):
         sub.add_parser('report')
         demo = sub.add_parser('demo', help='Fixed fictional end-to-end demo; never calls Jev or external sites.')
         demo.add_argument('--seed-only', action='store_true')
+        synthetic = sub.add_parser('seed-synthetic', help='Prepare fixed fictional calibration evidence; no fetch, pilot or API call.')
+        synthetic.add_argument('--provider', choices=['mock', 'live'], default='mock')
         run = sub.add_parser('run', help='Consume selected classification work under the collector lease, then exit.')
         run.add_argument('--limit', type=int, default=1)
         run.add_argument('--evaluation')
@@ -69,6 +72,7 @@ class Command(BaseCommand):
         budget = sub.add_parser('budget')
         budget.add_argument('usd')
         budget.add_argument('--reason', required=True)
+        budget.add_argument('--attempt-limit', type=int, help='Absolute cumulative attempt ceiling; does not reset history.')
         recover = sub.add_parser('recover')
         recover.add_argument('attempt_id')
         recover.add_argument('--worker-stopped', action='store_true')
@@ -87,15 +91,28 @@ class Command(BaseCommand):
         action = o['action']
         if action == 'doctor':
             wallet = JevControl.objects.get(pk='jev')
-            accounting.verify_ledger(wallet)
-            self.stdout.write(json.dumps({'live_ready': not accounting.readiness(),
-                'checks': accounting.readiness(), 'token_counter': settings.JEV_TOKEN_COUNTER or 'unverified estimate',
-                'key_present': bool(settings.TYPESAFE_API_KEY), 'ledger_consistent': True,
+            consistent = True
+            try:
+                accounting.verify_ledger(wallet)
+            except accounting.Deferred:
+                consistent = False
+            checks = accounting.diagnostics(wallet)
+            self.stdout.write(json.dumps({'live_ready': not checks,
+                'checks': checks, 'token_counter': settings.JEV_TOKEN_COUNTER or 'unverified estimate',
+                'daily_attempt_limit': settings.JEV_DAILY_ATTEMPTS,
+                'reservation_nusd': accounting.RESERVATION_NUSD,
+                'scope': 'Configuration and wallet only; each evaluation rechecks evidence, authorization and lease.',
+                'key_present': bool(settings.TYPESAFE_API_KEY), 'ledger_consistent': consistent,
                 'network_requests': 0, **report()}, indent=2))
         elif action in ('status', 'report'):
             self.stdout.write(json.dumps(report(), indent=2))
         elif action == 'demo':
             self.demo(o['seed_only'])
+        elif action == 'seed-synthetic':
+            from classification.fixtures import seed_calibration
+            evaluations = seed_calibration(o['provider'])
+            self.stdout.write(json.dumps({'provenance': 'synthetic-fixture', 'network_requests': 0,
+                'evaluations': [str(e.pk) for e in evaluations]}))
         elif action == 'import-html':
             from classification.evidence import capture_page
             stamp = parse_datetime(o['retrieved_at'])
@@ -165,7 +182,7 @@ class Command(BaseCommand):
         elif action in ('pause', 'resume'):
             accounting.set_paused(action == 'pause', 'local CLI', o['reason'])
         elif action == 'budget':
-            accounting.set_allowance(o['usd'], 'local CLI', o['reason'])
+            accounting.set_allowance(o['usd'], 'local CLI', o['reason'], attempt_limit=o['attempt_limit'])
         elif action == 'recover':
             accounting.recover_attempt(o['attempt_id'], 'local CLI', o['reason'], o['worker_stopped'], o['billed_nusd'])
         elif action == 'purge':

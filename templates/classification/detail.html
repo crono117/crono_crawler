@@ -2,7 +2,7 @@
 {% block content %}<h1>{{ evaluation.company }}{% if evaluation.person %} / {{ evaluation.person.name }}{% endif %}</h1>
 <p>{{ evaluation.provider }} · {{ evaluation.state }} · {{ evaluation.catalog_version }} · Requested {{ evaluation.model }} · Actual {{ evaluation.actual_model|default:'not received' }}</p>
 <p>{{ evaluation.reason }}</p><p>Source: {{ evaluation.document.source }} · {{ evaluation.document.url }}</p>
-<p>Retrieved {{ evaluation.document.retrieved_at|default:'unknown' }} · Last checked {{ evaluation.document.last_checked }} · Retained until {{ evaluation.document.expires_at }} · {{ uses }} recorded uses</p>
+<p>Provenance: {{ evaluation.document.provenance }} · Retrieved {{ evaluation.document.retrieved_at|default:'not a retrieved page / unknown' }} · Last checked {{ evaluation.document.last_checked }} · Retained until {{ evaluation.document.expires_at }} · {{ uses }} recorded uses</p>
 <h2>Exact saved evidence</h2>{% for span in spans %}<article><h3>Span {{ span.pk }} · {{ span.kind }} · Characters {{ span.start }}–{{ span.end }}</h3><blockquote>{{ span.text|default:'Expired evidence has been removed.' }}</blockquote></article>{% endfor %}
 <h2>Judgments for review</h2><table><thead><tr><th>Question</th><th>Answer</th><th>Confidence</th><th>Probability distribution</th><th>Review</th></tr></thead><tbody>{% for judgment in judgments %}<tr><td>{{ judgment.question_id }}</td><td>{{ judgment.label }}</td><td>{{ judgment.confidence }}</td><td>{{ judgment.probabilities }}</td><td>{{ judgment.review_state }}</td></tr>{% empty %}<tr><td colspan="5">No validated answers yet.</td></tr>{% endfor %}</tbody></table>
 <p>Probabilities describe the model's classification. They do not verify contact deliverability or replace human review.</p>

@@ -22,6 +22,8 @@ def owner_of(job):
 
 
 def eligible(evaluation):
+    if evaluation.document.provenance == 'synthetic-fixture':
+        return False
     if evaluation.person_id or evaluation.company_job_id or evaluation.state != 'succeeded' or not valid_evidence(evaluation):
         return False
     if (not evaluation.completed_at or not evaluation.document.retrieved_at or
@@ -38,6 +40,25 @@ def eligible(evaluation):
             if answer.probabilities.get(answer.label, 0) >= .9 and (answer.confidence or 0) >= .8 and probabilities[0] - probabilities[1] >= .2:
                 return True
     return False
+
+
+def allows_target(evaluation, source):
+    """Mock/demo evidence can drive only its own packaged offline source."""
+    doc = evaluation.document
+    if doc.provenance == 'synthetic-fixture':
+        return False
+    if evaluation.provider == 'mock' or doc.provenance == 'offline-demo' or doc.source.collector == 'demo':
+        from .fixtures import DEMO_ORIGIN
+        return bool(source and source.pk == doc.source_id and source.collector == 'demo' and
+                    source.url == DEMO_ORIGIN + '/' and origin(doc.url) == DEMO_ORIGIN)
+    return evaluation.provider == 'live'
+
+
+def check_triggers(job, source):
+    triggers = list(job.lineage.filter(relation='company_trigger').select_related('evaluation__document__source'))
+    if not triggers or any(not edge.evaluation or not eligible(edge.evaluation) or
+                           not allows_target(edge.evaluation, source) for edge in triggers):
+        raise Deferred('Company trigger evidence is stale, revoked, synthetic or incompatible with this source.')
 
 
 @transaction.atomic
@@ -66,6 +87,8 @@ def queue_company(pilot_id, evaluation_id):
     domains = list(CompanyDomain.objects.filter(company=evaluation.company, state='verified'))
     sources = list(pilot.campaign.sources.filter(approved=True))
     source = next((s for d in domains for s in sources if origin(s.url) == d.origin), None)
+    if not allows_target(evaluation, source):
+        raise ValueError('Synthetic/mock evidence cannot authorize real company work.')
     key = digest([evaluation.company_id, origin(source.url) if source else 'unresolved', scope_hash(source) if source else '', 'sales_team'])
     existing = CompanyJob.objects.filter(key=key, state__in=OPEN_COMPANY_STATES).first()
     existing = existing or CompanyJob.objects.filter(key=key, created_at__gt=timezone.now() - timedelta(days=7)).first()
@@ -85,13 +108,33 @@ def pause(job, message):
     CompanyJob.objects.filter(pk=job.pk).update(state='paused', reason=message[:1000])
 
 
+@transaction.atomic
 def propose_domains(job, domains):
     """Manual review metadata only; never invoke discovery.register or policy.consider."""
-    campaign = job.pilot.campaign
+    from django.core.exceptions import ValidationError
+    from automation.models import SitePolicy
+    from automation.policy import denied
+    from discovery.importing import metadata_url
+    campaign = Campaign.objects.select_for_update().get(pk=job.pilot.campaign_id)
+    policy = SitePolicy.objects.filter(campaign=campaign).first()
     for domain in domains[:5]:
-        if (campaign.urls.count() >= campaign.max_candidates or
+        try:
+            if metadata_url(domain.url) != domain.url or origin(domain.url) != domain.origin:
+                continue
+        except (ValueError, UnicodeError, ValidationError):
+            continue
+        candidate = campaign.urls.filter(url=domain.url).first()
+        # Existing pending metadata also needs explicit review, even at capacity.
+        # An earlier operator approval/dismissal is never overwritten.
+        if candidate and candidate.decision == 'pending':
+            candidate.manual_review_required = True
+            candidate.save(update_fields=['manual_review_required'])
+        if (campaign.urls.filter(origin=domain.origin, dismissal_scope='origin').exists() or
+                rank(campaign, domain.url, job.company.name)[0] < 0 or (policy and denied(policy, domain.url))):
+            continue
+        if ((not candidate and campaign.urls.count() >= campaign.max_candidates) or
                 Lineage.objects.filter(company_job__pilot=job.pilot, relation__in=('external_proposal', 'domain_proposal')).count() >= 25):
-            break
+            continue
         candidate, _ = DiscoveredURL.objects.get_or_create(campaign=campaign, url=domain.url, defaults={
             'origin': domain.origin, 'label': job.company.name, 'found_on': domain.span.document.url,
             'manual_review_required': True, 'method': 'company', 'score': 0})
@@ -100,6 +143,7 @@ def propose_domains(job, domains):
 
 
 def check_work(job):
+    check_triggers(job, job.source)
     if not job.pilot.active or not job.pilot.campaign.active:
         raise Deferred('Company pilot/campaign is paused.')
     if job.state not in ('queued', 'discovering', 'classifying', 'needs_recipe_review'):
@@ -182,6 +226,11 @@ def advance(job_id):
             return False
         job.state = 'pending_approval'
         job.source = next((s for s in job.pilot.campaign.sources.filter(approved=True) for d in domains if origin(s.url) == d.origin), None)
+        try:
+            check_triggers(job, job.source)
+        except Deferred as exc:
+            pause(job, exc.reason)
+            return False
         if not job.source:
             job.save(update_fields=['state'])
             propose_domains(job, domains)
@@ -239,6 +288,12 @@ def advance(job_id):
         url = item['url']
         score, reasons = rank(campaign, url, item.get('label', ''))
         if score < 0 or not can_queue(job, url, 0) or run.jobs.count() >= campaign.max_pages:
+            continue
+        existing = campaign.urls.filter(url=url).first()
+        if ((not existing or existing.decision != 'approved') and
+                campaign.urls.filter(origin=origin(url), dismissal_scope='origin').exists()):
+            continue
+        if not existing and campaign.urls.count() >= campaign.max_candidates:
             continue
         candidate, _ = DiscoveredURL.objects.get_or_create(campaign=campaign, url=url, defaults={
             'origin': origin(url), 'source': job.source, 'decision': 'approved', 'score': score,

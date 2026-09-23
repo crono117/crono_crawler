@@ -22,6 +22,17 @@ PHONE = re.compile(r'(?<!\w)(?:\+\d[\d ().-]{6,20}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\
 logger = logging.getLogger(__name__)
 
 
+def source_authorized(source, url):
+    if not source.approved or not in_scope(source, url):
+        return False
+    if source.setup_mode == 'automatic' or source.approval_kind == 'policy':
+        from automation.models import SiteAutomationJob
+        from automation.policy import authorized
+        job = SiteAutomationJob.objects.select_related('source', 'campaign').filter(source=source).first()
+        return bool(job and authorized(job))
+    return True
+
+
 def valid_span(span):
     doc = span.document
     return bool(doc.text and 0 <= span.start < span.end <= len(doc.text) and
@@ -52,10 +63,15 @@ def contacts_for(span, company, person=None, shared=False):
 
 
 @transaction.atomic
-def capture_page(source, url, body_hash, html, *, provider=None, company_job=None, retrieved_at=None):
+def capture_page(source, url, body_hash, html, *, provider=None, company_job=None, retrieved_at=None, synthetic=False):
     """Caller supplies already-authorized HTML; this function never fetches anything."""
     source.refresh_from_db()
-    if not source.approved or not in_scope(source, url):
+    if synthetic:
+        from .fixtures import CALIBRATION_URL, CALIBRATION_HTML, calibration_unchanged
+        if (not calibration_unchanged(source) or url != CALIBRATION_URL or company_job or retrieved_at or
+                html != CALIBRATION_HTML or body_hash != hashlib.sha256(CALIBRATION_HTML.encode()).hexdigest()):
+            raise ValueError('Synthetic calibration must use the fixed offline fixture without retrieval or company work.')
+    if not source_authorized(source, url):
         return []
     if company_job and company_job.source_id != source.pk:
         return []
@@ -85,20 +101,24 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
         if len(links) == 100:
             break
     fingerprint = digest([source.pk, url, body_hash, sig, extraction_sig, VERSION])
+    provenance = ('synthetic-fixture' if synthetic else 'offline-demo' if source.collector == 'demo'
+                  else 'fetched+structured-v1' if structured_items else 'fetched')
+    if synthetic:
+        fingerprint = digest([fingerprint, 'synthetic-fixture'])
     previous = EvidenceDocument.objects.filter(fingerprint=fingerprint).first()
     if previous and (not previous.text or (previous.expires_at and previous.expires_at <= now)):
         # Recapturing unchanged HTML after retention expiry creates a new immutable
         # version; subsequent captures reuse that retained version rather than revive old evidence.
         retained = EvidenceDocument.objects.filter(source=source, url=url, content_hash=body_hash,
             scope_hash=sig, extraction_signature=extraction_sig, parser_version=VERSION,
-            expires_at__gt=now).exclude(text='').order_by('-retrieved_at').first()
+            provenance=provenance, expires_at__gt=now).exclude(text='').order_by('-retrieved_at').first()
         fingerprint = retained.fingerprint if retained else digest([fingerprint, now.isoformat()])
     doc, created = EvidenceDocument.objects.get_or_create(
         fingerprint=fingerprint, defaults={
-            'source': source, 'url': url, 'retrieved_at': now, 'last_checked': now, 'content_hash': body_hash,
+            'source': source, 'url': url, 'retrieved_at': None if synthetic else now, 'last_checked': now, 'content_hash': body_hash,
             'scope_hash': sig, 'parser_version': VERSION, 'extraction_signature': extraction_sig,
             'text': text, 'text_hash': digest(text), 'links': links,
-            'provenance': 'fetched+structured-v1' if structured_items else 'fetched',
+            'provenance': provenance,
             'truncated': truncated, 'expires_at': now + timedelta(days=30)})
     if not created:
         # Never overwrite original evidence or original retrieval time.

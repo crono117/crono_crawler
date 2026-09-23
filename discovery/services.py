@@ -45,7 +45,7 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
         url = clean_url(raw_url)
     except (ValueError, UnicodeError):
         return None
-    campaign = run.campaign
+    campaign = Campaign.objects.select_for_update().get(pk=run.campaign_id)
     score, reasons = rank(campaign, url, label, context)
     if seed and score >= 0:
         score, reasons = max(score, 90), reasons + ["Explicit starting source"]
@@ -61,6 +61,8 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
         reasons.append("Source has human-reviewed contacts (+10)")
     candidate = DiscoveredURL.objects.filter(campaign=campaign, url=url).first()
     preserve_existing_approval = bool(candidate and candidate.decision == 'approved')
+    if source and not preserve_existing_approval and campaign.urls.filter(origin=origin(url), dismissal_scope='origin').exists():
+        return candidate  # Only an explicit approval of this exact URL overrides an origin dismissal.
     if candidate:
         DiscoveryRun.objects.filter(pk=run.pk).update(duplicates_seen=F("duplicates_seen") + 1)
         candidate.last_seen = timezone.now()

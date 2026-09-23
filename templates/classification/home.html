@@ -2,8 +2,9 @@
 {% block location %}Jev evidence review{% endblock %}
 {% block content %}
 <h1>Jev evidence review</h1>
-<p>Mode: <strong>{{ mode }}</strong> · Capture: {{ capture|yesno:'on,off' }} · Company routing: {{ routing|yesno:'on,off' }} · {% if wallet.paused %}Paused: {{ wallet.reason }}{% else %}Available{% endif %}</p>
+<p>Mode: <strong>{{ mode }}</strong> · Capture: {{ capture|yesno:'on,off' }} · Company routing: {{ routing|yesno:'on,off' }} · {% if readiness %}Admission blocked{% else %}Ready for admission; provider unverified{% endif %}{% if wallet.paused %} · Paused: {{ wallet.reason }}{% endif %}</p>
 <p>Spent ${{ spent }} · Reserved ${{ reserved }} · Remaining ${{ remaining }} · Active attempt: {{ wallet.active_attempt|default:'none' }}</p>
+<p>Cumulative attempt ceiling: {{ wallet.cumulative_attempt_limit|default_if_none:'not configured' }}. All prior paid attempts count, including failed and recovered attempts.</p>
 <p>Mock results test the workflow; they do not measure Jev accuracy. Judgments remain separate from accepted contacts and human review.</p>
 {% for problem in readiness %}<p class="notice">{{ problem }}</p>{% endfor %}
 <form method="post" action="{% url 'classification:control' %}">{% csrf_token %}

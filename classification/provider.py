@@ -34,7 +34,7 @@ async def _post(request):
                         chunks.append(chunk)
                     try:
                         body = json.loads(b''.join(chunks))
-                    except (ValueError, UnicodeError):
+                    except (ValueError, UnicodeError, RecursionError):
                         body = None
                     rid = response.headers.get('x-request-id', '')
                     # Only simple opaque IDs; never echo arbitrary provider header content.

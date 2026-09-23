@@ -1,5 +1,7 @@
 # Jev implementation and local-agent handoff
 
+**Repaired local rollout:** use [LOCAL_JEV_ROLLOUT.md](LOCAL_JEV_ROLLOUT.md) for current verification, recovery semantics, the explicit $0.01 / three-attempt pilot and deployment/rollback steps. This older branch guide is not authorization to spend or deploy.
+
 Branch: `feat/jev-integration-v1` in `crono117/crono_crawler`.
 
 This is an opt-in Python/Django implementation on the discovery/automation baseline. It runs without a Jev key using a fixed mock provider. All paid classification goes through one persisted admission path and the existing collector lease. No new daemon, queue service or Python dependency is required.
@@ -109,7 +111,7 @@ Only a fresh company-level technology/provider result meeting the fixed probabil
 | Admission reserve | 66,000 input tokens × 42 nano-USD = $0.002772 per attempted call; conservative full-context reservation |
 | Daily requests | At most 100 attempted calls per UTC day; configurable downward; retries count |
 | Concurrency / pacing | One locally active paid request; next admission at least one second after completion |
-| Retries | Up to 3 total attempts; transient network errors, 429/529/500/502/503/504; persisted jitter and Retry-After seconds/date/milliseconds |
+| Retries | Up to 3 attempts per evaluation, plus an optional cumulative wallet attempt ceiling; automatic retry only with known usage for 429/529/500/502/503/504. Unknown usage/transport failure requires explicit recovery; persisted jitter and Retry-After remain. |
 | Transport | Fixed HTTPS endpoint; zero transport retries; redirects disabled; 30-second total API timeout; 256 KiB response bound |
 | Evidence | Hashes, exact character spans, retrieval time, parser/extraction version, current approved scope; payload/cache separates mock/live |
 | Company work | 10 pages, depth at most 2, 30 fetch attempts including robots/redirects/retries, 5 distinct evaluation packets, 10 paid attempts, 24-hour default job deadline |

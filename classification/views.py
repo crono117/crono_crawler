@@ -17,7 +17,7 @@ def home(request):
         'mode': settings.JEV_MODE, 'capture': settings.JEV_CAPTURE_ENABLED, 'routing': settings.JEV_ROUTING_ENABLED,
         'wallet': wallet, 'spent': Decimal(wallet.spent_nusd) / 10**9,
         'reserved': Decimal(wallet.reserved_nusd) / 10**9, 'remaining': Decimal(wallet.remaining_nusd) / 10**9,
-        'readiness': accounting.readiness(), 'evaluations': Paginator(evaluations, 30).get_page(request.GET.get('page')),
+        'readiness': accounting.diagnostics(wallet), 'evaluations': Paginator(evaluations, 30).get_page(request.GET.get('page')),
         'domains': CompanyDomain.objects.select_related('company', 'span__document').filter(state='candidate')[:30],
         'jobs': CompanyJob.objects.select_related('company', 'pilot', 'source').order_by('-created_at')[:30],
         'pilots': Pilot.objects.order_by('-created_at')[:10], 'attempts': Attempt.objects.order_by('-created_at')[:20],

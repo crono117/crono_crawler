@@ -185,6 +185,7 @@ class JevControl(models.Model):
     paused = models.BooleanField(default=False)
     reason = models.CharField(max_length=1000, blank=True)
     allowance_nusd = models.PositiveBigIntegerField(default=1_000_000_000)
+    cumulative_attempt_limit = models.PositiveIntegerField(null=True, blank=True)
     spent_nusd = models.PositiveBigIntegerField(default=0)
     reserved_nusd = models.PositiveBigIntegerField(default=0)
     next_allowed_at = models.DateTimeField(default=timezone.now)

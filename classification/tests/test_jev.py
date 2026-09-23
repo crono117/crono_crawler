@@ -295,7 +295,8 @@ class AccountingTests(TestCase):
             self.reserve()
 
     def test_retry_after_persists_and_counts_failed_attempt(self):
-        with patch('classification.provider._post', new=AsyncMock(return_value=provider.Result(429, None, retry_after='120'))):
+        with patch('classification.provider._post', new=AsyncMock(return_value=provider.Result(
+                429, {'usage': {'input_tokens': 0, 'output_tokens': 0}}, retry_after='120'))):
             services.process(self.evaluation, self.token)
         self.evaluation.refresh_from_db()
         self.assertEqual(self.evaluation.state, 'retry_wait')
@@ -356,6 +357,7 @@ class RoutingTests(TestCase):
         self.assertEqual(first.lineage.count(), 1)
 
     def test_unverified_domain_blocks_fetch(self):
+        self.real_trigger()
         CompanyDomain.objects.update(state='candidate')
         job = self.job()
         self.assertEqual(job.state, 'pending_domain')
@@ -363,6 +365,7 @@ class RoutingTests(TestCase):
         self.assertFalse(DiscoveryJob.objects.exists())
 
     def test_verified_external_domain_requires_manual_approval(self):
+        self.real_trigger()
         CompanyDomain.objects.update(url='https://new.example.org/team/', origin='https://new.example.org')
         job = self.job()
         self.assertEqual(job.state, 'pending_approval')
@@ -371,6 +374,18 @@ class RoutingTests(TestCase):
         self.assertTrue(candidate.manual_review_required)
         self.assertEqual(candidate.decision, 'pending')
         self.assertFalse(DiscoveryJob.objects.exists())
+
+    def real_trigger(self):
+        # Exercise real-source routing with locally supplied fictional HTML and
+        # a validated stub response; never a provider or business-site request.
+        response = demo_response(self.source.url)
+        self.source.collector = 'http'
+        self.source.save()
+        self.trigger = capture_page(self.source, self.source.url, hashlib.sha256(response.body).hexdigest(),
+                                    response.text, provider='live')[0]
+        Evaluation.objects.filter(pk=self.trigger.pk).update(state='running', lease_token=self.token)
+        services.save_answers(self.trigger.pk, provider.mock_response(self.trigger.request), self.token)
+        self.trigger.refresh_from_db()
 
     def test_expired_pilot_does_not_start(self):
         self.pilot.expires_at = timezone.now() - timedelta(seconds=1)

@@ -64,11 +64,12 @@ def validate_response(request, response):
         if not isinstance(probabilities, dict) or set(probabilities) != set(criteria):
             raise ContractError('Response labels do not match supplied choices.')
         values = list(probabilities.values()) + [answer.get('confidence')]
-        if any(type(v) not in (float, int) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
+        if any(type(v) not in (float, int) or not 0 <= v <= 1 or not math.isfinite(v) for v in values):
             raise ContractError('Invalid probability/confidence.')
         if abs(sum(probabilities.values()) - 1) > 0.001:
             raise ContractError('Probabilities must sum to one.')
-        if answer.get('choice') not in criteria or probabilities[answer['choice']] < max(probabilities.values()) - 0.001:
+        label = answer.get('choice')
+        if not isinstance(label, str) or label not in criteria or probabilities[label] < max(probabilities.values()) - 0.001:
             raise ContractError('Invalid winning choice.')
     return answers
 

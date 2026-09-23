@@ -34,11 +34,27 @@ def admission_probe(evaluation_id, token, barrier):
         print('DEFERRED')
 
 
+def import_probe(campaign_id, url, barrier):
+    import django
+    django.setup()
+    from discovery.importing import import_metadata
+    deadline = time.monotonic() + 15
+    while not Path(barrier).exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError('Import barrier timed out.')
+        time.sleep(.02)
+    result = import_metadata(campaign_id, [{'url': url}], apply=True)
+    print(result['results'][0]['outcome'])
+
+
 def main():
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
     if len(sys.argv) > 1 and sys.argv[1] == '--admit':
         admission_probe(*sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == '--import':
+        import_probe(*sys.argv[2:])
         return
     with tempfile.TemporaryDirectory(prefix='jev-smoke-') as directory:
         env = dict(os.environ, DATA_DIR=directory, DATABASE_URL='', DJANGO_DEBUG='1',
@@ -170,6 +186,31 @@ def main():
             accounting.verify_ledger(JevControl.objects.get())
             release_lease(new_token)
             print('PASS: simultaneous process admission serialized; restart and crash recovery retain reservations.')
+            from discovery.models import Campaign
+            campaign = Campaign.objects.create(name='Offline concurrent metadata import', max_candidates=1)
+            barrier = str(Path(directory) / 'start-import')
+            children = []
+            try:
+                for name in ('first', 'second'):
+                    children.append(subprocess.Popen([sys.executable, __file__, '--import', str(campaign.pk),
+                        f'https://{name}.example.org/team/', barrier], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+                Path(barrier).touch()
+                outcomes = []
+                for child in children:
+                    stdout, stderr = child.communicate(timeout=30)
+                    assert child.returncode == 0, stderr
+                    outcomes.append(stdout.strip())
+                assert sorted(outcomes) == ['created', 'inventory_full'], outcomes
+                assert campaign.urls.count() == 1
+                assert campaign.urls.get().manual_review_required
+                assert not campaign.sources.exists() and not campaign.runs.exists()
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.terminate()
+                        child.wait(timeout=10)
+            print('PASS: simultaneous metadata imports respect inventory cap without approval or jobs.')
             print('PASS: no paid API requests or external website requests were made.')
         except Exception:
             output.seek(0)

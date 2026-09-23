@@ -60,9 +60,13 @@ def collection_allowed(source):
 @transaction.atomic
 def consider(candidate):
     """Authorize only a bounded probe, never normal collection or scope expansion."""
+    from discovery.models import Campaign, DiscoveredURL
+    # Share the import/register lock and reload review state after acquiring it.
+    campaign = Campaign.objects.select_for_update().get(pk=candidate.campaign_id)
+    candidate = DiscoveredURL.objects.get(pk=candidate.pk)
+    candidate.campaign = campaign
     if candidate.manual_review_required or candidate.decision != "pending" or candidate.kind != "page":
         return None
-    campaign = candidate.campaign
     policy = SitePolicy.objects.filter(campaign=campaign, enabled=True).first()
     if not policy or not campaign.active or denied(policy, candidate.url) or urlsplit(candidate.url).query:
         return None

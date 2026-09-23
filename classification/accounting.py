@@ -59,14 +59,37 @@ def verify_ledger(control):
         raise Deferred('Ledger totals disagree; reconcile before dispatch.')
 
 
+def diagnostics(control):
+    """Read-only operator preflight; reserve/dispatch still recheck all gates."""
+    problems = readiness()
+    try:
+        verify_ledger(control)
+    except Deferred as exc:
+        problems.append(exc.reason)
+    if control.paused:
+        problems.append('Jev is paused; review the saved pause reason before resuming.')
+    if control.active_attempt:
+        problems.append('An attempt owns dispatch; uncertain owners require recovery.')
+    if control.remaining_nusd < RESERVATION_NUSD:
+        problems.append('Cumulative pilot allowance exhausted or reserved; a full $0.002772 reservation is required.')
+    if control.cumulative_attempt_limit is not None and Attempt.objects.count() >= control.cumulative_attempt_limit:
+        problems.append('Cumulative attempt allowance exhausted; UTC days and recovery do not reset it.')
+    if control.next_allowed_at > timezone.now():
+        problems.append('Global request cooldown is still active.')
+    usage = DailyUsage.objects.filter(day=timezone.now().astimezone(utc.utc).date()).first()
+    if usage and usage.attempts >= settings.JEV_DAILY_ATTEMPTS:
+        problems.append('Daily attempts exhausted; cumulative allowance is unchanged.')
+    return problems
+
+
 def valid_evidence(evaluation):
-    from .evidence import valid_span
+    from .evidence import source_authorized, valid_span
     from .models import EvidenceSpan
     from automation.policy import scope_hash
     from leads.services.extraction import signature
     doc = evaluation.document
     doc.source.refresh_from_db()
-    if not doc.source.approved or scope_hash(doc.source) != doc.scope_hash or signature(doc.source) != doc.extraction_signature:
+    if not source_authorized(doc.source, doc.url) or scope_hash(doc.source) != doc.scope_hash or signature(doc.source) != doc.extraction_signature:
         return False
     if doc.expires_at and doc.expires_at <= timezone.now():
         return False
@@ -84,6 +107,8 @@ def reserve(evaluation_id, token):
     evaluation = Evaluation.objects.select_for_update().select_related('document__source').get(pk=evaluation_id)
     if evaluation.provider != 'live' or evaluation.state not in ('queued', 'retry_wait', 'waiting'):
         raise Deferred('Evaluation is not eligible for live dispatch.')
+    if evaluation.attempt_history.filter(state__in=('uncertain', 'dispatching', 'reserved')).exists():
+        raise Deferred('Previous attempt is unresolved; explicit recovery required.')
     problems = readiness()
     if problems:
         raise Deferred(problems[0])
@@ -94,6 +119,8 @@ def reserve(evaluation_id, token):
     now = timezone.now()
     if control.active_attempt:
         raise Deferred('An attempt owns dispatch; uncertain owners require recovery.')
+    if control.cumulative_attempt_limit is not None and Attempt.objects.count() >= control.cumulative_attempt_limit:
+        raise Deferred('Cumulative attempt allowance exhausted.')
     if control.next_allowed_at > now:
         raise Deferred('Global request cooldown.', control.next_allowed_at)
     if evaluation.attempts >= 3:
@@ -134,6 +161,10 @@ def dispatch(attempt_id, request, token):
     check_lease(token)
     if readiness() or control.paused or control.active_attempt != attempt.pk:
         raise Deferred('Live dispatch gate changed.')
+    verify_ledger(control)
+    if (control.remaining_nusd < 0 or (control.cumulative_attempt_limit is not None and
+            Attempt.objects.count() > control.cumulative_attempt_limit)):
+        raise Deferred('Cumulative allowance was reduced after admission.')
     if attempt.state != 'reserved' or attempt.lease_token != token or attempt.request_hash != digest(request):
         raise ContractError('Spent, stale or mismatched admission permit.')
     if attempt.day != timezone.now().astimezone(utc.utc).date():
@@ -207,6 +238,8 @@ def recover_attempt(attempt_id, actor, reason, worker_stopped=False, billed_nusd
         raise ValueError('A recovery reason is required.')
     control = JevControl.objects.select_for_update().get(pk='jev')
     attempt = Attempt.objects.get(pk=attempt_id)
+    if attempt.cost_nusd is not None or (attempt.state == 'recovered' and billed_nusd is None):
+        raise ValueError('This attempt is already reconciled or explicitly recovered; no recovery action remains.')
     if control.active_attempt == attempt.pk:
         if not worker_stopped:
             raise ValueError('Confirm the previous worker/transport is stopped before releasing dispatch.')
@@ -220,13 +253,20 @@ def recover_attempt(attempt_id, actor, reason, worker_stopped=False, billed_nusd
         control.reserved_nusd -= attempt.reserved_nusd
         control.spent_nusd += billed_nusd
         attempt.cost_nusd, attempt.state = billed_nusd, 'settled'
+    elif attempt.state == 'uncertain':
+        # Explicit authorization to retry, with the full unknown charge retained.
+        attempt.state = 'recovered'
     attempt.save()
-    control.next_allowed_at = timezone.now() + timedelta(seconds=1)
+    control.next_allowed_at = max(control.next_allowed_at, timezone.now() + timedelta(seconds=1))
     if control.remaining_nusd < 0:
         control.paused, control.reason = True, 'Verified billing exceeds allowance.'
     control.save()
-    Evaluation.objects.filter(pk=attempt.evaluation_id, state__in=('running', 'uncertain')).update(state='waiting',
-        reason='Recovered uncertain attempt; retained charges/reservations.', available_at=control.next_allowed_at)
+    evaluation = Evaluation.objects.select_for_update().get(pk=attempt.evaluation_id)
+    if attempt.ordinal == evaluation.attempts and evaluation.state in ('running', 'uncertain'):
+        evaluation.state = 'waiting'
+        evaluation.reason = 'Recovered uncertain attempt; retained charges/reservations.'
+        evaluation.available_at = max(evaluation.available_at, control.next_allowed_at)
+        evaluation.save(update_fields=['state', 'reason', 'available_at'])
     ControlEvent.objects.create(actor=actor, action='recover_attempt', reason=reason, data={
         'attempt': str(attempt.pk), 'worker_stopped': worker_stopped, 'billed_nusd': billed_nusd})
 
@@ -242,7 +282,7 @@ def set_paused(paused, actor, reason):
 
 
 @transaction.atomic
-def set_allowance(usd, actor, reason):
+def set_allowance(usd, actor, reason, *, attempt_limit=None):
     try:
         value = Decimal(usd) * 1_000_000_000
         if not value.is_finite() or value < 0 or value != value.to_integral_value() or value > 1_000_000_000_000:
@@ -250,7 +290,16 @@ def set_allowance(usd, actor, reason):
     except (InvalidOperation, ValueError, TypeError):
         raise ValueError('Use a nonnegative USD amount with at most nine decimal places (maximum $1000).')
     control = JevControl.objects.select_for_update().get(pk='jev')
+    if attempt_limit is not None and (type(attempt_limit) is not int or not 0 <= attempt_limit <= 1_000_000):
+        raise ValueError('Use a cumulative attempt limit between 0 and 1000000.')
+    if not reason.strip():
+        raise ValueError('A budget change reason is required.')
     before = control.allowance_nusd
+    before_attempts = control.cumulative_attempt_limit
     control.allowance_nusd = int(value)
-    control.save(update_fields=['allowance_nusd'])
-    ControlEvent.objects.create(actor=actor, action='allowance', reason=reason, data={'before_nusd': before, 'after_nusd': int(value)})
+    if attempt_limit is not None:
+        control.cumulative_attempt_limit = attempt_limit
+    control.save(update_fields=['allowance_nusd', 'cumulative_attempt_limit'])
+    ControlEvent.objects.create(actor=actor, action='allowance', reason=reason, data={
+        'before_nusd': before, 'after_nusd': int(value), 'before_attempt_limit': before_attempts,
+        'after_attempt_limit': control.cumulative_attempt_limit})
