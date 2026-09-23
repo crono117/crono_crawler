@@ -1,4 +1,4 @@
 {% extends 'base.html' %}{% block title %}Sign in{% endblock %}{% block content %}
-<section class="login-card"><div class="eyebrow">CLEARPAY · LEAD CONSOLE</div><h1>Your next connection<br>starts here.</h1><p class="muted">Sign in to manage sources, collection, and lead reviews.</p>
+<section class="login-card"><div class="eyebrow">LEAD CONSOLE</div><h1>Your next connection<br>starts here.</h1><p class="muted">Sign in to manage sources, collection, and lead reviews.</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="button primary full" type="submit">Sign in →</button></form>
 <p class="small muted">Use the administrator account you created during setup.</p></section>{% endblock %}

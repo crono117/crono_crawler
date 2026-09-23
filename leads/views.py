@@ -152,7 +152,7 @@ def safe_cell(value):
 @staff_required
 def export_leads(request):
     response = HttpResponse(content_type="text/csv; charset=utf-8")
-    response["Content-Disposition"] = 'attachment; filename="clearpay-leads.csv"'
+    response["Content-Disposition"] = 'attachment; filename="leads.csv"'
     writer = csv.writer(response)
     writer.writerow(["name", "company", "title", "email", "phone", "contact_scope", "review_status",
                      "source_business_types", "person_services", "company_services", "source_urls", "last_seen", "notes"])

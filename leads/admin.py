@@ -16,4 +16,5 @@ class ReadOnlyAdmin(admin.ModelAdmin):
 
 for model in (Source, Observation, Run, SourceCandidate):
     admin.site.register(model, ReadOnlyAdmin)
-admin.site.site_header = "ClearPay administration"
+admin.site.site_header = "Lead Console administration"
+admin.site.site_title = "Lead Console admin"

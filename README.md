@@ -1,4 +1,4 @@
-# ClearPay Lead Engine
+# Lead Console
 
 **Parallel extraction trial:** `feat/jev-extraction-packs` extends the Jev test branch with opt-in Extruct structured data, WordPress/Webflow/Squarespace recipe suggestions, an isolated AutoScraper comparison, and an offline worker demo. Start with [the extraction testing handoff](docs/EXTRACTION_TESTING.md). The original Jev branch remains available separately.
 
