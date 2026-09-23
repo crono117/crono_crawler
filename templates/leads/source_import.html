@@ -2,6 +2,29 @@
 {% block title %}Import sources{% endblock %}{% block location %}Sources / Import JSON{% endblock %}
 {% block content %}
 <header class="page-heading"><div><div class="eyebrow">REVIEW BEFORE COLLECTION</div><h1>Import sources from JSON</h1><p>Preview source settings, then create inactive, unapproved sources. Existing sources are never changed.</p></div><a class="button" href="{% url 'sources' %}">Back to sources</a></header>
+{% if error %}
+<section class="panel notice error" role="alert" aria-labelledby="import-error-title">
+  <h2 id="import-error-title">File not imported — check your JSON format</h2>
+  <p><strong>{{ error }}</strong></p>
+  <p>Use this structure. The outer object needs <code>schema_version</code> and <code>sources</code>; each source needs <code>name</code> and <code>url</code>.</p>
+  <pre><code>{
+  "schema_version": 1,
+  "sources": [
+    {
+      "name": "Example Company — Team",
+      "url": "https://example.org/team/"
+    },
+    {
+      "name": "Another Company — Contact",
+      "url": "https://example.com/contact/"
+    }
+  ]
+}</code></pre>
+  <p>Replace the fictional names and URLs with your own. Do not upload a bare array (<code>[...]</code>). For a simple import, keep only <code>name</code> and <code>url</code> in each source; omit <code>id</code>, <code>notes</code>, selector fields and free-text category descriptions. Optional category values must use a supported key, such as <code>merchant_services</code>, <code>pos</code> or <code>other</code>.</p>
+  <p><a class="button" href="{% url 'source_import_example' %}">Download example JSON</a> <a class="button" href="{% url 'source_import_guide' %}">Full format guide</a></p>
+  <p>Save the corrected file as <code>.json</code>, select it again below, then click <strong>Preview JSON</strong>. Preview JSON uploads and validates the file. The confirmation button appears only after validation succeeds; source approval is a separate step after import.</p>
+</section>
+{% endif %}
 <section class="panel">
   <h2>Safe source settings only</h2>
   <p><a href="{% url 'source_import_example' %}">Download example JSON</a> · <a href="{% url 'source_import_schema' %}">Download JSON Schema</a> · <a href="{% url 'source_import_guide' %}">Download format guide</a></p>
@@ -10,7 +33,6 @@
   <p>Preview performs no DNS lookup or fetch and creates nothing. Confirmation creates only paused, unapproved sources with HTML / rules extraction, an empty recipe and the sales-role filter enabled. No collection, discovery or automation jobs are queued.</p>
   <p>Public hostname resolution and robots checks happen later through the authorized collector. Import is not permission to collect.</p>
 </section>
-{% if error %}<section class="panel" role="alert"><h2>File not imported</h2><p>{{ error }}</p><p>Correct the file and upload it again to create a new preview.</p></section>{% endif %}
 {% if report %}
 <section class="panel">
   {% if imported %}<h2>Import complete</h2><p>Created: {{ report.created }}. Skipped: {{ report.skipped }}.</p>

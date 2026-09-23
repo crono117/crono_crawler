@@ -225,6 +225,26 @@ class SourceImportBrowserTests(TestCase):
         self.assertEqual(self.client.post(url, {"action": "unknown"}).status_code, 400)
         self.assertEqual(self.client.post(url, {"sources": json.dumps(document())}).status_code, 400)
 
+    def test_rejected_upload_shows_copyable_example_before_instructions(self):
+        from bs4 import BeautifulSoup
+        from leads.services.source_import import parse_upload
+        response = self.preview(body=b'[]')
+        self.assertEqual(response.status_code, 400)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        alert = soup.select_one('[role=alert]')
+        self.assertIsNotNone(alert)
+        example = alert.select_one('pre code')
+        self.assertIsNotNone(example, 'Rejected files need an inline copyable JSON example')
+        self.assertTrue(parse_upload(example.get_text().encode('utf-8'))['sources'])
+        self.assertIn('Download example JSON', alert.get_text())
+        self.assertIn('name', alert.get_text())
+        self.assertIn('url', alert.get_text())
+        self.assertIn('Preview JSON uploads', alert.get_text())
+        page = response.content.decode()
+        self.assertLess(page.index('role="alert"'), page.index('Safe source settings only'))
+        self.assertIsNone(soup.select_one('input[name=preview_token]'))
+        self.assertFalse(Source.objects.exists())
+
     def test_upload_errors_are_bounded_friendly_and_private(self):
         for filename, body in (("sources.txt", b"{}"), ("sources.json", b"x" * 262145), ("sources.json", b"\xff"), ("sources.json", b'{"schema_version":1,"sources":[]}')):
             response = self.preview(body=body, filename=filename)
