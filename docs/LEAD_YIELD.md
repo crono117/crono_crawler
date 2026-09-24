@@ -1,6 +1,6 @@
 # Lead yield work package 1
 
-Branch `feat/lead-yield-v2`, based on `main` at `289ea86`. It fixes four losses reproduced by the September 24, 2026 audit. It also fixes the four findings from the independent PR #2 review (suppression lost when a lead gains an email, selected visible contacts bypassing safeguards, fallback coverage by name substring, and understated JEV re-evaluation) and the two storage findings from the follow-up review at `ab004b5` (held decisions lost on later contact changes, and continuity inferred from one surviving record among same-name cards). Everything was checked with fictional HTML and offline tests. It has not been deployed, and it does not measure yield on real sources.
+Branch `feat/lead-yield-v2`, based on `main` at `289ea86`. It fixes four losses reproduced by the September 24, 2026 audit. It also fixes the four findings from the independent PR #2 review (suppression lost when a lead gains an email, selected visible contacts bypassing safeguards, fallback coverage by name substring, and understated JEV re-evaluation) the two storage findings from the follow-up review at `ab004b5` (held decisions lost on later contact changes, and continuity inferred from one surviving record among same-name cards), and the hold-ordering gap found at `c0b96f7` (a hold did not cover same-name identities recorded before it). Everything was checked with fictional HTML and offline tests. It has not been deployed, and it does not measure yield on real sources.
 
 ## Behavior changes
 
@@ -34,12 +34,15 @@ Unchanged: the `JEV_CAPTURE_ENABLED`/`JEV_LAYERED_BLOCKS_ENABLED` flags, the com
 - The existing lead is re-keyed and keeps its status and notes. Later crawls find it under the email identity.
 - When continuity is not proven, the record is stored as a separate lead. No status, notes or historical contact fields are copied to it.
 
-**Held decisions across contact changes.** The link between a reviewed person and later records is the page's observation history, which is kept when a lead is re-keyed and when it stops appearing:
+**Held decisions across contact changes.** The link between a reviewed person and their other identities is the page's observation history, which is kept when a lead is re-keyed and when it stops appearing. The scope is one source page and one name (case-folded). Each lead records who set its status in `status_origin`: `default` for a new record, `operator` for a review decision, or `hold` for an inherited hold, with `held_by` naming the held lead and `status_decided_at` the time of the operator decision.
 
-- When a lead is newly tied to a page (created, or not previously observed there) and a lead with the same name observed on that source page is suppressed or rejected, the new lead inherits that status with a note naming the held lead. This covers an email that is lost, changed or becomes ambiguous after enrichment, a person first stored with an email who loses it, and an ambiguous same-name card.
-- A held successor never becomes exportable without an operator decision. The note is added once; an operator who changes the successor's status is not overridden on later crawls.
-- Returning to the original email finds the original lead again under its email identity.
-- Positive review states (`reviewed`) are never copied. People with different names on the same page are unaffected, and people are never merged by name alone or by a shared phone or email. Generic inboxes keep the page-scoped identity.
+The hold applies in both orders:
+
+- **Hold first, identity later.** When a crawl stores a same-name record on a page where a lead is suppressed or rejected, that record inherits the status with a note naming the held lead. This covers an email that is lost, changed or becomes ambiguous, a person first stored with an email who loses it, and an ambiguous same-name card.
+- **Identities first, hold later.** When an operator suppresses or rejects a lead, in the review console or the Django admin, every same-name lead already recorded on a shared source page is held in the same transaction. The CSV export excludes them immediately, before any crawl. Returning to an older email reuses that older lead, which stays held.
+- **Existing databases.** Migration `0003_lead_status_origin` marks every existing non-`new` status as an operator decision (before this change only operators set statuses) and applies existing holds to same-name `new` leads on shared pages.
+
+Only records at `new` with origin other than `operator` can inherit a hold. An operator releases a held lead by saving a different status; that sets origin `operator`, clears `held_by`, and is never overridden by later crawls or holds. Saving notes without changing the status is not a release. An operator's earlier `reviewed` or `new` decision on a namesake is not overridden by a later hold. Releasing the original held lead does not release leads that inherited its hold; each is reviewed separately. Holds change status and add a note only: no facts are copied or merged. Positive review states are never copied, people with different names are unaffected, and people are never merged by name alone or by a shared phone or email. Generic inboxes keep the page-scoped identity.
 
 **Ordinary crawl ordering.** `collect_links()` now collects every in-scope link, orders them with `discovery.ranking.link_priority()`, and only then spends the page allowance:
 
@@ -99,12 +102,22 @@ Follow-up review fixtures at `ab004b5`, using that review's multi-crawl harness.
 | Held lead's email becomes ambiguous | second lead `new`, 1 exported row | second lead held with note; export empty |
 | Two selected same-name cards, one accepted record, original `reviewed` | original lead takes the other card's email, keeps old phone, `reviewed` notes | original keeps phone, `reviewed` and notes; other card is a separate `new` lead with no notes |
 
-Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/tests/test_visible_contacts.py`, `leads/tests/test_contact_continuity.py`, `leads/tests/test_crawl_ordering.py`.
+Hold-ordering fixtures at `c0b96f7`, using that review's harness with the real review POST and CSV endpoints. Alex Example is crawled with `alex.old@`, then `alex.current@` on the same card; the operator then holds the current lead.
+
+| Hold-ordering case | `c0b96f7` | This branch |
+| --- | --- | --- |
+| Current lead suppressed; export immediately | older `alex.old@` lead `new`, 1 row exported | older lead held (`hold`, `held_by` current); export empty |
+| Then the card returns to `alex.old@` | older lead reused, still `new`, 1 row exported | older lead reused, still held; export empty |
+| Same two steps with `rejected` | 1 old-address row exported each time | export empty each time |
+| Held successor released to `new` by the operator, recrawled | release kept, 1 row | release kept, 1 row |
+| Held successor released to `reviewed` by the operator, recrawled | release kept, 1 row | release kept, 1 row |
+
+Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/tests/test_visible_contacts.py`, `leads/tests/test_contact_continuity.py`, `leads/tests/test_status_origin_migration.py`, `leads/tests/test_crawl_ordering.py`.
 
 ## Verification
 
 ```bash
-.venv/bin/python manage.py test                       # 367 tests OK (293 existing + 74 new)
+.venv/bin/python manage.py test                       # 376 tests OK (293 existing + 83 new)
 .venv/bin/python manage.py check                      # no issues
 .venv/bin/python manage.py makemigrations --check --dry-run   # no changes
 .venv/bin/python manage.py benchmark_extraction --assert-fixtures  # packs 10/10, 0 extra; baseline 0/10
@@ -121,7 +134,9 @@ Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/test
 - Visible contacts are found only inside matched person cards. Pages with no card selector match still depend on recipes, structured data, or JEV blocks.
 - A lead that loses or changes its email gets a new identity. If the original was suppressed or rejected, the successor is held; otherwise it is a separate `new` lead for review, and the two are not merged automatically.
 - Held decisions follow a person only on the same source page. A person who moves to another page or source is not linked.
-- A new lead is held when a same-name lead on that page is held, even if they are different people. An operator releases it by changing its status.
+- A same-name lead on that page is held even if it is a different person. An operator releases it by saving a different status.
+- Releasing a held lead does not release the leads that inherited its hold; the operator reviews each one.
+- Status changes made outside the review console and the Django admin (for example, a direct database update) are not recorded as operator decisions and do not apply holds until the next crawl of that page.
 - The one-person check uses the recipe's name selector. A second person named only in an element outside that selector is not detected.
 - Local AI and structured-recipe records carry no card count, so they never continue a page-scoped lead when an email is added; a held original still holds the successor.
 - Company identity is not yet optional in JEV capture. A page with no company evidence produces no candidates rather than candidates with an unresolved employer.
