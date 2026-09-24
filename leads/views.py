@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from .forms import LeadReviewForm, SourceForm
 from .models import CATEGORIES, Lead, Observation, PageJob, Run, Source, SourceCandidate, WorkerLease
+from .services.storage import record_review
 from .services.worker import enqueue, pause_source
 from .services.health import recipe_review_runs
 
@@ -140,8 +141,9 @@ def lead_detail(request, pk):
     lead = get_object_or_404(Lead.objects.prefetch_related("observations__source"), pk=pk)
     form = LeadReviewForm(request.POST or None, instance=lead)
     if request.method == "POST" and form.is_valid():
-        form.save()
-        messages.success(request, "Review saved.")
+        held = record_review(form.save(commit=False), "status" in form.changed_data)
+        messages.success(request, "Review saved." + (
+            f" {held} unresolved same-name record(s) on the same page are now held for review." if held else ""))
         return redirect("lead_detail", pk=pk)
     return render(request, "leads/lead_detail.html", {"lead": lead, "form": form})
 

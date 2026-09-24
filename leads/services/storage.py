@@ -2,6 +2,7 @@ import hashlib
 import re
 from collections import Counter
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from leads.models import Lead, Observation
 
@@ -42,6 +43,48 @@ def hold_note(previous, url):
             "Review both records before changing this status.")
 
 
+def holdable(lead):
+    """Only a record still at its default status can inherit a hold; operator decisions stand."""
+    return lead.status == "new" and lead.status_origin != "operator"
+
+
+def hold(lead, held, url):
+    lead.status, lead.status_origin, lead.held_by = held.status, "hold", held
+    lead.notes = "\n".join(filter(None, [lead.notes, hold_note(held, url)]))
+
+
+def page_namesakes(lead):
+    """Other leads with this name observed on a source page where `lead` was observed, each with that page."""
+    pages = set(Observation.objects.filter(lead=lead).values_list("source_id", "page_url"))
+    if not pages:
+        return []
+    shared = Q()
+    for source_id, page_url in pages:
+        shared |= Q(source_id=source_id, page_url=page_url)
+    first_page = {}
+    for lead_id, page_url in Observation.objects.filter(shared).exclude(lead=lead).order_by("pk").values_list(
+            "lead_id", "page_url"):
+        first_page.setdefault(lead_id, page_url)
+    others = Lead.objects.select_for_update().filter(pk__in=first_page).order_by("pk")
+    return [(other, first_page[other.pk]) for other in others if other.name.casefold() == lead.name.casefold()]
+
+
+@transaction.atomic
+def record_review(lead, status_changed):
+    """Save an operator review. A suppression/rejection protects unresolved namesakes at once."""
+    if status_changed:
+        lead.status_origin, lead.held_by, lead.status_decided_at = "operator", None, timezone.now()
+    lead.save()
+    held = 0
+    if lead.status in HELD_STATUSES:
+        for other, url in page_namesakes(lead):
+            if holdable(other):
+                hold(other, lead, url)
+                other.save(update_fields=["status", "status_origin", "held_by", "notes"])
+                held += 1
+    return held
+
+
 def unique_card(record, records_by_name):
     """Extraction saw exactly one selector-matched card with this name, before any filtering.
 
@@ -76,12 +119,10 @@ def save_records(source, url, content_hash, records, company_tags):
             lead = Lead(identity=key, **facts, last_seen=now)
         held = [other for other in page_history if other.status in HELD_STATUSES and other.pk != lead.pk
                 and other.name.casefold() == record["name"].casefold()]
-        if (held and lead.pk not in observed_ids and lead.status == "new"
-                and not any(f"lead #{other.pk} " in lead.notes for other in held)):
-            # A lead newly tied to this page must not become an exportable replacement for a
-            # held namesake; an operator decides whether they are the same person.
-            lead.status = held[0].status
-            lead.notes = "\n".join(filter(None, [lead.notes, hold_note(held[0], url)]))
+        if held and holdable(lead):
+            # A same-name record on this page must not become an exportable replacement for a
+            # held lead; an operator decides whether they are the same person.
+            hold(lead, held[0], url)
         if not created:
             # Preserve review decisions/notes; retain older non-empty fields as historical hints.
             for field, value in facts.items():

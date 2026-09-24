@@ -44,6 +44,15 @@ class StorageFixture(TestCase):
         response = self.client.get(reverse('export'))
         return list(csv.DictReader(io.StringIO(response.content.decode())))
 
+    def review(self, lead, status, notes=None):
+        self.client.force_login(self.staff)
+        lead.refresh_from_db()
+        response = self.client.post(reverse('lead_detail', args=[lead.pk]),
+                                    {'status': status, 'notes': lead.notes if notes is None else notes})
+        self.assertEqual(response.status_code, 302)
+        lead.refresh_from_db()
+        return lead
+
 
 class ContactContinuityTests(StorageFixture):
     def seed_old_record(self, html=None, status='new', notes=''):
@@ -114,13 +123,12 @@ class ContactContinuityTests(StorageFixture):
         old = self.seed_old_record(status='suppressed')
         changed = page(card('Alex Example', '<a href="tel:+15550109999">Call</a><span class="email">alex@example.test</span>'))
         self.crawl(changed)
-        successor = Lead.objects.exclude(pk=old.pk).get()
-        successor.status = 'new'
-        successor.save(update_fields=['status'])
+        successor = self.review(Lead.objects.exclude(pk=old.pk).get(), 'new')
 
         self.crawl(changed)
 
         successor.refresh_from_db()
+        self.assertEqual((successor.status, successor.status_origin), ('new', 'operator'))
         self.assertEqual(successor.notes.count(f'lead #{old.pk} '), 1)
 
     def test_two_cards_with_the_same_name_are_not_merged_into_the_old_lead(self):
@@ -247,9 +255,7 @@ class HeldDecisionAcrossContactChangesTests(StorageFixture):
     def test_operator_can_release_a_held_successor(self):
         self.seed_enriched('suppressed')
         self.crawl(LATER_CRAWLS['email changed'])
-        successor = Lead.objects.get(email='alex.new@example.test')
-        successor.status = 'reviewed'
-        successor.save(update_fields=['status'])
+        self.review(Lead.objects.get(email='alex.new@example.test'), 'reviewed')
 
         self.crawl(LATER_CRAWLS['email changed'])
 
@@ -316,3 +322,137 @@ class AmbiguousSameNameCardTests(StorageFixture):
 
         self.assertEqual(Lead.objects.get(pk=original.pk).email, '')
         self.assertEqual(set(Lead.objects.values_list('status', flat=True)), {'suppressed'})
+
+
+def alex_with(email):
+    return page(alex(PHONE + f'<span class="email">{email}</span>'))
+
+
+OLD, CURRENT = alex_with('alex.old@example.test'), alex_with('alex.current@example.test')
+
+
+class HoldDecisionOrderingTests(StorageFixture):
+    """A hold protects same-name identities on the page whether they appeared before or after it."""
+
+    def discover_both(self):
+        self.crawl(OLD)
+        self.crawl(CURRENT)
+        return Lead.objects.get(email='alex.old@example.test'), Lead.objects.get(email='alex.current@example.test')
+
+    def test_hold_protects_identities_discovered_before_it(self):
+        for status in ('suppressed', 'rejected'):
+            with self.subTest(status=status):
+                Lead.objects.all().delete()
+                earlier, current = self.discover_both()
+                self.assertEqual(len(self.export_rows()), 2)
+
+                self.review(current, status, notes='Operator decision.')
+
+                self.assertEqual(self.export_rows(), [])
+                earlier.refresh_from_db()
+                self.assertEqual((earlier.status, earlier.status_origin, earlier.held_by_id),
+                                 (status, 'hold', current.pk))
+                for html in (OLD, CURRENT, OLD, OLD):
+                    self.crawl(html)
+                    self.assertEqual(self.export_rows(), [])
+                earlier.refresh_from_db()
+                self.assertEqual(earlier.status, status)
+                self.assertEqual(earlier.notes.count(f'lead #{current.pk} '), 1)
+                self.assertEqual(Lead.objects.get(pk=current.pk).notes, 'Operator decision.')
+
+    def test_hold_does_not_merge_or_copy_facts(self):
+        earlier, current = self.discover_both()
+
+        self.review(current, 'suppressed')
+
+        earlier.refresh_from_db()
+        self.assertEqual((earlier.email, earlier.phone), ('alex.old@example.test', '+15550101234'))
+        self.assertEqual(Lead.objects.count(), 2)
+
+    def test_operator_release_of_an_inherited_hold_is_kept(self):
+        for released in ('new', 'reviewed'):
+            with self.subTest(released=released):
+                Lead.objects.all().delete()
+                earlier, current = self.discover_both()
+                self.review(current, 'suppressed')
+
+                self.review(earlier, released)
+                for html in (OLD, CURRENT, OLD):
+                    self.crawl(html)
+
+                earlier.refresh_from_db()
+                self.assertEqual((earlier.status, earlier.status_origin, earlier.held_by_id),
+                                 (released, 'operator', None))
+                self.assertEqual([(r['email'], r['review_status']) for r in self.export_rows()],
+                                 [('alex.old@example.test', released)])
+
+    def test_operator_release_of_a_later_successor_is_kept(self):
+        for released in ('new', 'reviewed'):
+            with self.subTest(released=released):
+                Lead.objects.all().delete()
+                self.crawl(OLD)
+                self.review(Lead.objects.get(), 'suppressed')
+                self.crawl(CURRENT)
+                successor = Lead.objects.get(email='alex.current@example.test')
+                self.assertEqual((successor.status, successor.status_origin), ('suppressed', 'hold'))
+
+                self.review(successor, released)
+                self.crawl(CURRENT)
+                self.crawl(OLD)
+                self.crawl(CURRENT)
+
+                self.assertEqual([(r['email'], r['review_status']) for r in self.export_rows()],
+                                 [('alex.current@example.test', released)])
+
+    def test_earlier_operator_decision_is_not_overridden_by_a_later_hold(self):
+        earlier, current = self.discover_both()
+        self.review(earlier, 'reviewed', notes='Confirmed separately.')
+
+        self.review(current, 'suppressed')
+
+        earlier.refresh_from_db()
+        self.assertEqual((earlier.status, earlier.status_origin), ('reviewed', 'operator'))
+
+    def test_saving_notes_alone_is_not_a_release(self):
+        earlier, current = self.discover_both()
+        self.review(earlier, 'new', notes='Looked at this; no decision yet.')
+        earlier.refresh_from_db()
+        self.assertEqual(earlier.status_origin, 'default')
+
+        self.review(current, 'rejected')
+
+        earlier.refresh_from_db()
+        self.assertEqual(earlier.status, 'rejected')
+        self.assertEqual(self.export_rows(), [])
+
+    def test_hold_leaves_other_names_and_other_pages_alone(self):
+        self.crawl(page(alex(PHONE + '<span class="email">alex.old@example.test</span>'),
+                        card('Jordan Sample', '<a href="mailto:jordan@example.test">Email</a>')))
+        other_page = Source.objects.create(name='Another page', company='Example Payments', approved=True,
+                                           url='https://elsewhere.example.test/team/', allowed_paths='/team/')
+        records, tags = extract(alex_with('alex.elsewhere@example.test'), other_page)
+        save_records(other_page, other_page.url, 'other', records, tags)
+        self.crawl(CURRENT)
+
+        self.review(Lead.objects.get(email='alex.current@example.test'), 'suppressed')
+
+        self.assertEqual(sorted((r['name'], r['email']) for r in self.export_rows()),
+                         [('Alex Example', 'alex.elsewhere@example.test'), ('Jordan Sample', 'jordan@example.test')])
+        self.assertEqual(Lead.objects.get(email='alex.old@example.test').status, 'suppressed')
+        self.crawl(page(card('Jordan Sample', '<a href="mailto:jordan@example.test">Email</a>')))
+        self.assertEqual(Lead.objects.get(name='Jordan Sample').status, 'new')
+
+    def test_admin_status_change_is_an_operator_decision_and_applies_the_hold(self):
+        earlier, current = self.discover_both()
+        admin = get_user_model().objects.create_superuser('admin', password='Test-only-long-password-123')
+        self.client.force_login(admin)
+        current.refresh_from_db()
+        response = self.client.post(reverse('admin:leads_lead_change', args=[current.pk]), {
+            'name': current.name, 'company': current.company, 'title': current.title, 'email': current.email,
+            'phone': current.phone, 'contact_scope': current.contact_scope, 'status': 'suppressed', 'notes': ''})
+
+        self.assertEqual(response.status_code, 302)
+        current.refresh_from_db()
+        earlier.refresh_from_db()
+        self.assertEqual((current.status, current.status_origin), ('suppressed', 'operator'))
+        self.assertEqual((earlier.status, earlier.status_origin), ('suppressed', 'hold'))
