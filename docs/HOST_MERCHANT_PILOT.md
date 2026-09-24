@@ -66,10 +66,10 @@ Supported keys:
 | Key | Scope |
 | --- | --- |
 | `row` | One person/card container per match |
-| `name`, `title`, `email`, `phone`, `company` | Relative to that card; mailto/tel targets are read as contact values, and visible text in a selected contact element is reduced to its address |
+| `name`, `title`, `email`, `phone`, `company` | Relative to that card; mailto/tel targets are read as contact values |
 | `evidence` | Optional smaller container inside the card; blank uses the whole card |
 
-The evidence container must contain the person's name and the accepted contact details. An unmatched evidence selector rejects the card; it never falls back to the whole page. When no selected email or phone is usable, a single visible address inside the evidence container is used only if the card names exactly one person and the address is not a generic inbox, a header/footer/navigation contact, or repeated in another card. Keep the sales-role requirement enabled. Company context supplied in source settings remains operator context.
+The evidence container must contain the person's name and the accepted contact details. An unmatched evidence selector rejects the card; it never falls back to the whole page. When the email/phone selector is the default (or generated) mailto/tel link selector and finds nothing usable, a single visible address inside the evidence container is used only if the card names exactly one person and the address is not a generic inbox, a header/footer/navigation contact, or repeated in another card. An explicit email/phone selector, including an empty one, disables this inference for that field. Keep the sales-role requirement enabled. Company context supplied in source settings remains operator context.
 
 Offline preview, replacing `SOURCE_ID` with the real numeric ID:
 
