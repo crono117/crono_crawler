@@ -58,7 +58,7 @@ Open **http://127.0.0.1:8017/classification/**. The launcher uses port 8017. Sig
 
 ## Review-only layered candidate blocks
 
-`JEV_LAYERED_BLOCKS_ENABLED=1` adds a default-off fallback for authorized pages where structured `Person` data and configured/default person-card selectors both find no rows. It requires `JEV_CAPTURE_ENABLED=1`.
+`JEV_LAYERED_BLOCKS_ENABLED=1` adds a default-off fallback for authorized pages whose person blocks are not already captured. It requires `JEV_CAPTURE_ENABLED=1`. Eligibility is decided from usable candidates, not raw selector matches: a CSS row counts only when it names one plausible person with bounded card evidence, and a structured `Person` counts only when it states an employer. A block that is, contains or sits inside a captured card, or whose own heading names exactly a captured person, is skipped so one person is not queued twice; a name merely mentioned in a block does not count. Junk selector matches and employer-less schema authors therefore no longer suppress the fallback (see [Lead yield work package 1](LEAD_YIELD.md)).
 
 Code—not Jev—builds at most six bounded candidate blocks from already-fetched HTML. Header, navigation, footer, forms, dialogs, templates, hidden content, nested duplicates and blocks without a plausible name, role and published contact signal are excluded. Each block is capped at 500 characters and all blocks together at 2,400 characters. Exact block text is stored in immutable evidence spans.
 

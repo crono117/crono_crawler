@@ -143,8 +143,9 @@ def prepare_domain(source, job):
 def collect_links(source, job, html, base_url):
     if not source.follow_links and not source.discover_external:
         return
+    from discovery.ranking import link_priority
     remaining = max(0, source.max_pages - job.run.jobs.count())
-    seen = set()
+    seen, follow = set(), []
     for link in soup_for(html).select("a[href]")[:2000]:
         try:
             url = canonical_url(urljoin(base_url, link["href"]))
@@ -159,8 +160,7 @@ def collect_links(source, job, html, base_url):
             continue
         if in_scope(source, url):
             if source.follow_links and remaining and job.depth < source.max_depth:
-                _, created = PageJob.objects.get_or_create(run=job.run, url=url, defaults={"depth": job.depth + 1})
-                remaining -= int(created)
+                follow.append((-link_priority(url, link.get_text(" ", strip=True)[:200]), len(follow), url))
         elif source.discover_external and origin(url) != origin(source.url) and len(seen) <= 300:
             # Preserve the actual useful path without fetching or approving it.
             candidate = url
@@ -168,6 +168,12 @@ def collect_links(source, job, html, base_url):
                 SourceCandidate.objects.get_or_create(url=candidate, defaults={
                     "label": link.get_text(" ", strip=True)[:200], "discovered_from": source, "evidence_url": base_url,
                 })
+    # Team/profile/contact links claim the page allowance first; ties keep document order.
+    for _, _, url in sorted(follow):
+        if not remaining:
+            break
+        _, created = PageJob.objects.get_or_create(run=job.run, url=url, defaults={"depth": job.depth + 1})
+        remaining -= int(created)
 
 def retry_delay(attempts, header):
     seconds = min(3600, 30 * (2 ** max(0, attempts - 1)))

@@ -2,13 +2,14 @@
 import hashlib
 import json
 import re
+from collections import Counter
 from urllib.parse import unquote
 from bs4 import BeautifulSoup, NavigableString
 import httpx
 import soupsieve
 from django.conf import settings
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 DEFAULT_SELECTORS = {
     "row": '[itemtype*="schema.org/Person"], .team-member, .team-card, .person-card, .staff-member, .agent-card, .sales-rep',
     "name": '[itemprop="name"], .name, .person-name, .team-name, h2, h3',
@@ -16,6 +17,12 @@ DEFAULT_SELECTORS = {
     "email": 'a[href^="mailto:"]', "phone": 'a[href^="tel:"]', "company": '.company',
     "evidence": "",
 }
+CONTACT_FIELDS = ("email", "phone")
+# Default/generated link selectors. Only these opt a card into visible-contact inference;
+# an explicit recipe selector (including "") keeps exactly its own selection.
+INFERABLE_SELECTORS = {"email": {'a[href^="mailto:"]', "a[href^='mailto:']"},
+                       "phone": {'a[href^="tel:"]', "a[href^='tel:']"}}
+NON_CARD_TAGS = {"header", "nav", "footer", "form"}
 REJECTION_LABELS = {
     "evidence_too_long": "evidence container too broad",
     "invalid_name": "missing or invalid person name",
@@ -71,6 +78,7 @@ TAG_PATTERNS = {
 }
 SALES_ROLE = re.compile(r"\bsales\b|account (?:executive|manager)|business development|(?:payment|merchant|POS|payroll|funding|telecom|insurance).{0,25}(?:consultant|agent|advisor|broker|specialist)|independent (?:agent|rep)|\breseller\b|\bISO\b", re.I)
 EMAIL = re.compile(r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
+PHONE = re.compile(r'(?<!\w)(?:\+\d[\d ().-]{6,20}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?!\w)')
 GENERIC = {"info", "sales", "contact", "hello", "support", "office", "admin", "team", "enquiries", "inquiries"}
 
 def normalize(text):
@@ -122,6 +130,91 @@ def evidence_node(row, selector):
         return row
     return row.select_one(selector)
 
+def contact_key(kind, value):
+    return value.casefold() if kind == "email" else re.sub(r"\D", "", value)
+
+def _inside_chrome(child, card):
+    current = child.parent
+    while current is not None:
+        if current.name in NON_CARD_TAGS:
+            return True
+        if current is card:
+            return False
+        current = current.parent
+    return False
+
+def card_contacts(node):
+    """Distinct visible addresses inside one card, ignoring nested page chrome."""
+    parts = [str(child) for child in node.descendants
+             if isinstance(child, NavigableString) and not _inside_chrome(child, node)]
+    text = normalize(" ".join(parts))
+    found = {}
+    for kind, pattern in (("email", EMAIL), ("phone", PHONE)):
+        values = {}
+        for value in pattern.findall(text):
+            values.setdefault(contact_key(kind, value), value)
+        found[kind] = list(values.values())
+    return found
+
+def page_chrome_contacts(soup):
+    text = " ".join(contact_evidence(node) for node in soup.select(
+        "header, footer, nav, [role=navigation], [role=contentinfo]"))
+    return {"email": {contact_key("email", v) for v in EMAIL.findall(text)},
+            "phone": {contact_key("phone", v) for v in PHONE.findall(text)}}
+
+def card_record(row, selectors, evidence, chrome=None):
+    """Selected fields plus a guarded card-local visible-contact inference.
+
+    Selector values (mailto/tel targets, or an explicit recipe's own selection) keep
+    their existing behavior. When a default/generated link selector finds no usable
+    email or phone, one visible address may be inferred from the evidence container,
+    but only if the card is outside page chrome, names exactly one person, and shows
+    exactly one distinct address of that kind outside nested header/nav/footer/form.
+    With `chrome`, generic inboxes and page header/footer/navigation contacts are also
+    refused; callers that apply their own shared-contact filter afterwards pass None.
+    Returns the record and its per-field provenance ("selector" or "visible"); callers
+    drop "visible" values repeated in another card.
+    """
+    record = {key: selected_text(row, selectors[key]) for key in ("name", "title", "company", "email", "phone")}
+    provenance = {kind: "selector" for kind in CONTACT_FIELDS if record[kind]}
+    missing = [kind for kind in CONTACT_FIELDS if not usable_contact(kind, record[kind])
+               and selectors[kind].strip() in INFERABLE_SELECTORS[kind]]
+    if evidence is None or not missing or row.name in NON_CARD_TAGS or row.find_parent(list(NON_CARD_TAGS)):
+        return record, provenance
+    names = {normalize(node.get_text(" ", strip=True)) for node in row.select(selectors["name"], limit=10)} - {""}
+    if len(names) != 1:
+        return record, provenance
+    visible = card_contacts(evidence)
+    for kind in missing:
+        values = visible[kind]
+        if len(values) != 1:
+            continue
+        value = values[0]
+        if chrome is not None and (contact_key(kind, value) in chrome[kind] or
+                                   (kind == "email" and value.split("@")[0].lower() in GENERIC)):
+            continue
+        record[kind] = value
+        provenance[kind] = "visible"
+    return record, provenance
+
+def usable_contact(kind, value):
+    if kind == "email":
+        return bool(EMAIL.fullmatch(value))
+    return 7 <= len(re.sub(r"\D", "", value)) <= 15
+
+def drop_repeated_visible(cards):
+    """A visible address printed in several cards is a shared line, not a direct contact."""
+    owners = {}
+    for index, (record, _) in enumerate(cards):
+        for kind in CONTACT_FIELDS:
+            if usable_contact(kind, record[kind]):
+                owners.setdefault((kind, contact_key(kind, record[kind])), set()).add(index)
+    for record, provenance in cards:
+        for kind in CONTACT_FIELDS:
+            if provenance.get(kind) == "visible" and len(owners[(kind, contact_key(kind, record[kind]))]) > 1:
+                record[kind] = ""
+                del provenance[kind]
+
 def validate_record(record, evidence, source, diagnostics=None):
     evidence = normalize(evidence)
     if len(evidence) > 12000:
@@ -170,16 +263,28 @@ def extract_rules(html, source, diagnostics=None):
     rows = soup.select(selectors["row"], limit=501)
     if diagnostics is not None:
         diagnostics.update(extractor="rules", rows_checked=min(len(rows), 500), row_limit_reached=len(rows) > 500, rejected={})
-    records = []
+    chrome = page_chrome_contacts(soup)
+    # Counted before evidence, contact and duplicate filtering, so storage can tell a unique
+    # card from one that merely survived validation. Unknown when the row limit truncates.
+    name_cards = None if len(rows) > 500 else Counter(
+        normalize(selected_text(row, selectors["name"]))[:200].casefold() for row in rows)
+    cards, evidence_texts = [], []
     for row in rows[:500]:
-        record = {key: selected_text(row, selectors[key]) for key in ("name", "title", "email", "phone", "company")}
         # Evidence can narrow a card, never escape it or fall back to the whole page.
         evidence_row = evidence_node(row, selectors["evidence"])
         if evidence_row is None:
             rejected(diagnostics, "missing_evidence_container")
             continue
-        accepted = validate_record(record, contact_evidence(evidence_row), source, diagnostics)
+        cards.append(card_record(row, selectors, evidence_row, chrome))
+        evidence_texts.append(contact_evidence(evidence_row))
+    drop_repeated_visible(cards)
+    records = []
+    for (record, provenance), evidence in zip(cards, evidence_texts):
+        accepted = validate_record(record, evidence, source, diagnostics)
         if accepted:
+            accepted["contact_provenance"] = {kind: provenance[kind] for kind in CONTACT_FIELDS
+                                              if accepted[kind] and kind in provenance}
+            accepted["name_cards"] = name_cards[accepted["name"].casefold()] if name_cards else None
             records.append(accepted)
     return records
 
