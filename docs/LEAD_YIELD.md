@@ -1,6 +1,6 @@
 # Lead yield work package 1
 
-Branch `feat/lead-yield-v2`, based on `main` at `289ea86`. It fixes four losses reproduced by the September 24, 2026 audit. Everything was checked with fictional HTML and offline tests. It has not been deployed, and it does not measure yield on real sources.
+Branch `feat/lead-yield-v2`, based on `main` at `289ea86`. It fixes four losses reproduced by the September 24, 2026 audit. It also fixes the four findings from the independent PR #2 review: suppression lost when a lead gains an email, selected visible contacts bypassing safeguards, fallback coverage by name substring, and understated JEV re-evaluation. Everything was checked with fictional HTML and offline tests. It has not been deployed, and it does not measure yield on real sources.
 
 ## Behavior changes
 
@@ -8,7 +8,8 @@ Branch `feat/lead-yield-v2`, based on `main` at `289ea86`. It fixes four losses 
 
 - A CSS row counts only if it names one plausible person and has bounded card evidence (the same test the row loop already applied).
 - A structured `Person` counts only if it states an employer. Only those are captured.
-- A block is skipped if it is, contains, or sits inside a captured card, or if it repeats a captured person's name. This prevents one person from being queued twice.
+- A block is skipped if it is, contains, or sits inside a captured card in the DOM, or if its own heading names exactly a captured person (after whitespace normalization and case folding). This prevents one person from being queued twice.
+- A name mentioned elsewhere in a block does not count as coverage. For example, a biography that mentions a colleague, or "Joann Lee" next to a captured "Ann Lee", is still offered as a block.
 
 Unchanged: the `JEV_CAPTURE_ENABLED`/`JEV_LAYERED_BLOCKS_ENABLED` flags, the company-job exclusion, the header/nav/footer/hidden exclusions, the 6-block/2,400-character caps, and review-only judgments.
 
@@ -16,14 +17,22 @@ Unchanged: the `JEV_CAPTURE_ENABLED`/`JEV_LAYERED_BLOCKS_ENABLED` flags, the com
 
 **Visible contacts (CSS extraction and local recipe validation).**
 
-- The default and generated contact selectors now read `a[href^="mailto:"]`/`a[href^="tel:"]` targets, `[itemprop=email|telephone]`, `.email`, `.phone` and `.telephone`. Visible text such as "Email: alex@…" is reduced to the address.
-- When no selected email or phone is usable, a card-local fallback may use a single visible address from the card's evidence container. All of these must hold:
-  - the card names exactly one person and is not inside, and does not use text from, `header`/`nav`/`footer`/`form`;
-  - it has exactly one distinct candidate of that kind;
-  - the candidate is not a generic inbox (`info@`, `sales@`, …) or a page header/footer/navigation contact;
-  - the value does not also appear in another card.
-- Explicit recipes that select plain-text phone numbers in other formats keep their previous behavior.
-- Local validation (`automation.recipes.evaluate`) uses the same fields and keeps its own shared/global filter, which labels rejected values `shared_or_global_contact`.
+- The default contact selectors are still `a[href^="mailto:"]` and `a[href^="tel:"]`. Link targets and explicit recipe selections keep their existing behavior; their provenance is `selector`.
+- A visible address may be inferred, with provenance `visible`, only when the card's contact selector is a default or generated link selector (either quote style) and it found no usable email or phone. The address can be wrapped in `.email`/`.phone`/`itemprop` elements, labelled ("Email: alex@…"), or bare text. All of these must hold:
+  - the card names exactly one person under the name selector and is not inside, or itself, `header`/`nav`/`footer`/`form`;
+  - the evidence container, excluding nested `header`/`nav`/`footer`/`form`, shows exactly one distinct address of that kind;
+  - the address is not a generic inbox (`info@`, `sales@`, …) or a page header/footer/navigation contact;
+  - the address does not also appear in another card.
+- An explicit recipe selector, including an empty one, never triggers inference. An explicit `.email` still accepts an element that contains exactly one address, and still rejects one that contains several.
+- Local validation (`automation.recipes.evaluate`) builds the same fields and keeps its own shared/global filter, which labels rejected values `shared_or_global_contact`. Ordinary extraction, local validation and generated recipes reach the same result for every safeguard fixture.
+- Validated records carry `contact_provenance`, which is stored in each observation's `facts`.
+
+**Stored lead continuity.** A lead's identity is its name plus email when it has a direct email, and otherwise its name, company, source and page. When re-extraction adds an email to a card that was stored without one, `save_records()` now continues the stored page-scoped lead, if continuity is provable:
+
+- Continuity requires exactly one card with that name on the page, a stored email that is empty or the same, and no conflicting stored phone.
+- The existing lead is re-keyed and keeps its status and notes. Later crawls find it under the email identity.
+- If continuity cannot be proven and the page-scoped lead is suppressed or rejected, the successor inherits that status with a note naming the held lead. It cannot silently become an exportable replacement. The note is not repeated on later crawls.
+- People are never merged by name alone or by a shared phone or email. Generic inboxes keep the page-scoped identity.
 
 **Ordinary crawl ordering.** `collect_links()` now collects every in-scope link, orders them with `discovery.ranking.link_priority()`, and only then spends the page allowance:
 
@@ -33,9 +42,11 @@ Unchanged: the `JEV_CAPTURE_ENABLED`/`JEV_LAYERED_BLOCKS_ENABLED` flags, the com
 
 ## Rollout effects
 
-- `leads.services.extraction.VERSION` changes from `0.3.0` to `0.4.0`. Each source's extraction signature changes, so unchanged pages are re-extracted once on their next crawl. This is local work only. Stored review notes and suppression decisions are preserved by the existing storage path, and the smoke tests confirm it.
-- The extraction signature is part of the JEV evidence-document fingerprint. With `JEV_CAPTURE_ENABLED=1`, the next capture of each page creates a new evidence document. If `JEV_MODE=live`, that can queue one extra evaluation per page in the current weekly cache window. Newly eligible blocks and pages that previously stopped at the company check also add evaluations. All requests still go through the existing admission, daily allowance and reservations. No spending setting changed.
-- Newly extracted visible contacts appear as new observations and leads for operator review, exactly like mailto/tel contacts. CSV export rules are unchanged.
+- `leads.services.extraction.VERSION` changes from `0.3.0` to `0.4.0`. Each source's extraction signature changes, so unchanged pages are re-extracted once on their next crawl. This is local work. Leads that gain an email keep their review state as described in "Stored lead continuity" above; unmatched successors of suppressed or rejected leads are held.
+- The extraction signature is part of the JEV evidence-document fingerprint, and that fingerprint is part of every evaluation cache key. With `JEV_CAPTURE_ENABLED=1`, the next capture of each unchanged page therefore re-creates **all** of its evaluations once: one company evaluation, one per captured person, one per employer named in a card, and the page/block evaluation when blocks exist. Batching by the token limit can split these further.
+- Measured with the mock provider on an unchanged page with three CSS people: the first capture created 4 evaluations. After only the version change, the next capture created 4 new evaluations. Repeating it created 0 more. Live charges were not measured.
+- Newly eligible blocks, and pages that previously stopped at the company check, add evaluations too. All requests still go through the existing admission, daily allowance and reservations. No spending setting changed. With `JEV_MODE=live`, expect roughly one re-evaluation of every captured page's company, people and blocks within the first crawl cycle, spread over days if the daily allowance is reached.
+- Newly extracted visible contacts appear as observations and leads for operator review, exactly like mailto/tel contacts. CSV export still excludes suppressed and rejected leads.
 
 ## Before/after (fictional fixtures, sockets blocked)
 
@@ -59,12 +70,25 @@ Measured with the same script on `289ea86` and on this branch:
 | Best of the generated recipes on the visible-email page | 0 accepted | 1 accepted |
 | Ordinary crawl, `max_pages=3`, team link last | home, 2 product pages | home, team, 1 product page |
 
-Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/tests/test_visible_contacts.py`, `leads/tests/test_crawl_ordering.py`.
+PR #2 review fixtures, using the review's harness. The "first PR head" column is `d5bc6a9`; this branch column is after the review fixes. The ordinary-extraction result is shown; local validation and generated recipes match it on this branch.
+
+| Review case | `main` | First PR head | This branch |
+| --- | --- | --- | --- |
+| `.email` element containing two addresses | 0 records | first address assigned | 0 records |
+| Second person's heading, then their `.email` | 0 records | Jordan's email assigned to Alex | 0 records |
+| `.email` inside a nested footer | 0 records | footer address assigned | 0 records |
+| `.email` containing `info@` | 0 records | kept, marked shared | 0 records |
+| Same `.phone` switchboard in two cards | 0 records | both phones kept, marked shared | own emails only, phones dropped |
+| Suppressed phone-only lead re-extracted with an email | n/a | new exportable `new` lead | same lead, still suppressed with notes; export empty |
+| Joann Lee block next to a captured Ann Lee card | block dropped | block dropped | 1 block question for Joann |
+| Version change on a 3-person page (mock) | n/a | 4 new evaluations | 4 new evaluations (now documented) |
+
+Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/tests/test_visible_contacts.py`, `leads/tests/test_contact_continuity.py`, `leads/tests/test_crawl_ordering.py`.
 
 ## Verification
 
 ```bash
-.venv/bin/python manage.py test                       # 330 tests OK (293 existing + 37 new)
+.venv/bin/python manage.py test                       # 357 tests OK (293 existing + 64 new)
 .venv/bin/python manage.py check                      # no issues
 .venv/bin/python manage.py makemigrations --check --dry-run   # no changes
 .venv/bin/python manage.py benchmark_extraction --assert-fixtures  # packs 10/10, 0 extra; baseline 0/10
@@ -79,6 +103,8 @@ Regression tests: `classification/tests/test_lead_yield_capture.py`, `leads/test
 - The fixtures prove specific behavior. They do not measure how often these layouts occur on real sources. Run the annotated replay from the audit before and after deployment.
 - The visible-contact fallback recognizes US-style phone numbers and `+` international numbers. Other plain-text formats need an explicit phone selector.
 - Visible contacts are found only inside matched person cards. Pages with no card selector match still depend on recipes, structured data, or JEV blocks.
+- Lead continuity covers a stored page-scoped lead gaining an email. A lead that loses its email, or whose email changes, still gets a new identity; the old lead keeps its review state but is no longer observed.
+- The one-person check uses the recipe's name selector. A second person named only in an element outside that selector is not detected.
 - Company identity is not yet optional in JEV capture. A page with no company evidence produces no candidates rather than candidates with an unresolved employer.
 - Profile-only people without a contact, reviewed-block promotion, browser escalation, search diversification and new parsers are left to later work packages.
 - Ordinary-crawl priority is keyword-based. It orders links but does not judge page quality.
