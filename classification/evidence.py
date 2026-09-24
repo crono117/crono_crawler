@@ -8,7 +8,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from automation.policy import scope_hash
-from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, contact_evidence,
+from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, PHONE, contact_evidence,
                                        normalize, selected_text, signature, soup_for)
 from leads.services.network import in_scope, origin
 from discovery.ranking import clean_url
@@ -19,7 +19,6 @@ from .models import (Affiliation, Company, CompanyDomain, ContactCandidate, Evid
 
 VERSION = 'candidate-v1.0'
 LAYERED_VERSION = 'blocks-v1'
-PHONE = re.compile(r'(?<!\w)(?:\+\d[\d ().-]{6,20}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?!\w)')
 ROLE = re.compile(r'\b(?:chief|president|vice president|vp|director|manager|sales|engineer|founder|owner|partner|consultant|agent|advisor|broker|specialist|representative|account executive|business development)\b', re.I)
 BLOCK_TAGS = ('article', 'section', 'li', 'div', 'address')
 EXCLUDED_TAGS = {'header', 'nav', 'footer', 'form', 'dialog', 'template'}
@@ -92,7 +91,18 @@ def _bounded_block_text(node, text, name, limit):
     return normalize(f'{prefix[:available].rstrip()} {contact_text}')
 
 
-def candidate_blocks(soup):
+def candidate_blocks(soup, covered=(), covered_names=()):
+    """Bounded generic person blocks not already captured by a CSS row or structured Person.
+
+    A block that is, contains, or sits inside a covered node, or repeats a covered
+    person's name, would duplicate an existing candidate and is skipped.
+    """
+    covered_ids = set()
+    for node in covered:
+        covered_ids.add(id(node))
+        covered_ids.update(id(parent) for parent in node.parents)
+        covered_ids.update(id(child) for child in node.find_all(True))
+    names = {name.casefold() for name in covered_names if name}
     candidates = []
     for node in soup.find_all(BLOCK_TAGS, limit=2000):
         if _hidden_or_excluded(node):
@@ -114,7 +124,7 @@ def candidate_blocks(soup):
         if any(id(descendant) in qualifying for descendant in node.find_all(BLOCK_TAGS)):
             continue
         canonical = text.casefold()
-        if canonical in seen:
+        if canonical in seen or id(node) in covered_ids or any(name in canonical for name in names):
             continue
         remaining = 2400 - aggregate
         if remaining <= 0 or len(blocks) == 6:
@@ -153,6 +163,39 @@ def contacts_for(span, company, person=None, shared=False):
     return contacts
 
 
+def usable_rows(rows, selectors):
+    """CSS rows that name one plausible person with bounded card evidence."""
+    usable = []
+    for index, row in enumerate(rows):
+        if settings.EXTRACTION_PACKS_ENABLED and (row.get('itemtype', '').rstrip('/').endswith('/Person') or
+                row.find_parent(attrs={'itemscope': True})):
+            # Structured adapter owns item-scope associations when enabled.
+            continue
+        name = selected_text(row, selectors['name'])
+        if not 2 <= len(name.split()) <= 8 or len(name) > 100 or '@' in name:
+            continue
+        person_text = contact_evidence(row)
+        if not person_text or len(person_text) > 1200 or name.casefold() not in person_text.casefold():
+            continue
+        usable.append((index, row, name, person_text))
+    return usable
+
+
+def company_passage(visible_text, company_name, limit=1200):
+    """Bounded page text that actually contains the company name.
+
+    The page opening is kept when it already names the company, so existing
+    evidence spans are unchanged; otherwise the window starts shortly before the
+    first mention. An absent name yields the opening, which the caller rejects.
+    """
+    opening = visible_text[:limit]
+    position = visible_text.casefold().find(company_name.casefold()) if company_name else -1
+    if position < 0 or position + len(company_name) <= limit:
+        return 'company', opening, 'page-opening'
+    start = max(0, position - 200)
+    return 'company-mention', visible_text[start:start + limit], 'company-mention'
+
+
 @transaction.atomic
 def capture_page(source, url, body_hash, html, *, provider=None, company_job=None, retrieved_at=None, synthetic=False):
     """Caller supplies already-authorized HTML; this function never fetches anything."""
@@ -173,10 +216,14 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
     selector = source.recipe.get('row') or DEFAULT_SELECTORS['row']
     selectors = DEFAULT_SELECTORS | (source.recipe or {})
     rows = [] if source.recipe.get('engine') else soup.select(selector, limit=100)
+    person_rows = usable_rows(rows, selectors)
+    # Only an employer-backed structured Person is captured below; a bare author is not coverage.
+    structured_people = [item['fields']['name'] for item in structured_items
+                         if item['kind'] == 'Person' and item['fields']['company']]
     layered_blocks = []
-    if (settings.JEV_CAPTURE_ENABLED and settings.JEV_LAYERED_BLOCKS_ENABLED and not company_job and
-            not any(item['kind'] == 'Person' for item in structured_items) and not rows):
-        layered_blocks = candidate_blocks(soup)
+    if settings.JEV_CAPTURE_ENABLED and settings.JEV_LAYERED_BLOCKS_ENABLED and not company_job:
+        layered_blocks = candidate_blocks(soup, covered=[row for _, row, _, _ in person_rows],
+                                          covered_names=[name for _, _, name, _ in person_rows] + structured_people)
     text = visible_text
     if structured_items:
         text += "\n[Parsed schema.org direct properties; canonical projection]\n"
@@ -240,8 +287,7 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
     title_node = soup.select_one('[itemtype*="Organization"] [itemprop="name"], .company-name, h1')
     title = normalize(title_node.get_text(' ', strip=True)) if title_node else ''
     company_name = source.company if source.company and source.company.casefold() in visible_text.casefold() else title
-    company_text = visible_text[:1200]
-    company_locator = 'page-opening'
+    company_key, company_text, company_locator = company_passage(visible_text, company_name)
     if not company_name or company_name.lower() in ('our team', 'team', 'contact us', 'about us', 'home'):
         organizations = [item for item in structured_items if item['kind'] == 'Organization']
         # Multiple organizations do not establish which one owns the page.
@@ -252,7 +298,7 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
     if not company_name or len(company_name) > 200 or company_name.lower() in ('our team', 'team', 'contact us', 'about us', 'home'):
         return []
     company, _ = Company.objects.get_or_create(identity=digest([origin(url), company_name.casefold()]), defaults={'name': company_name})
-    company_span = add_span(doc, 'company', company_text, 'company', company_locator)
+    company_span = add_span(doc, company_key, company_text, 'company', company_locator)
     if not company_span or company_name.casefold() not in company_text.casefold():
         return []
     # A reviewed source is not automatic proof of company-domain ownership.
@@ -289,17 +335,7 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
         contacts = contacts_for(span, employer, person)
         evaluations += enqueue_subject(doc, employer, span, person=person, contacts=contacts[:2],
                                        provider=provider, company_job=company_job)
-    for index, row in enumerate(rows):
-        if settings.EXTRACTION_PACKS_ENABLED and (row.get('itemtype', '').rstrip('/').endswith('/Person') or
-                row.find_parent(attrs={'itemscope': True})):
-            # Structured adapter owns item-scope associations when enabled.
-            continue
-        name = selected_text(row, selectors['name'])
-        if not 2 <= len(name.split()) <= 8 or len(name) > 100 or '@' in name:
-            continue
-        person_text = contact_evidence(row)
-        if not person_text or len(person_text) > 1200 or name.casefold() not in person_text.casefold():
-            continue
+    for index, row, name, person_text in person_rows:
         span = add_span(doc, f'person-{index}', person_text, 'person', selector)
         if not span:
             continue
