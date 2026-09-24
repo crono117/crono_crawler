@@ -119,9 +119,17 @@ A useful first agent task is: "Read AGENTS.md, run the tests, then validate brow
 .venv/bin/python manage.py test
 .venv/bin/python manage.py makemigrations --check --dry-run
 .venv/bin/python scripts/smoke_local.py
+.venv/bin/python scripts/smoke_extraction.py
+.venv/bin/python scripts/smoke_jev.py
+.venv/bin/python scripts/run_smoke_bulk_import.py
+.venv/bin/python manage.py benchmark_extraction --assert-fixtures
 ```
 
+`setup.py` needs Python's `venv` module with `ensurepip`. On Debian/Ubuntu, install `python3-venv` (or the versioned package, e.g. `python3.12-venv`) first; otherwise virtual-environment creation fails with "ensurepip is not available". Remove a half-created `.venv` before rerunning setup.
+
 The smoke test starts real web and worker processes on a temporary local port/database, exercises sign-in, review, export, pause/run and restart recovery, and removes its test data afterward. It does not change your working database or require third-party network access.
+
+`scripts/smoke_bulk_import.py` deliberately refuses to run in a checkout that has a `.env`. Use `scripts/run_smoke_bulk_import.py` instead: it copies the current tracked and new files to a temporary `bulk-import-*` directory (without `.env`, `.venv` or `data/`), sets `DJANGO_SECRET_KEY` (random), `JEV_MODE=off`, `BRAVE_SEARCH_ENABLED=0`, `DATA_DIR` and `TMPDIR` inside that directory, runs the smoke with the current interpreter, and deletes the copy on success (`--keep` retains it). Your `.env` and database are never read or changed.
 
 Separate terminals are also supported:
 
