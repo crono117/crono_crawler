@@ -14,6 +14,9 @@ CONTACT_EXCLUSIONS = (
 )
 TARGETS = ("team", "staff", "people", "representative", "rep", "dealer", "partner", "agent",
            "executive", "sales", "contact", "about", "directory", "member")
+PROFILE_TARGETS = ("profile", "bio", "biography", "leadership")
+EDITORIAL = ("blog", "article", "news", "careers", "vacancies", "privacy", "terms")
+PRODUCT = ("product", "device", "software", "emv credit card machines")
 
 
 def lines(text):
@@ -93,10 +96,21 @@ def rank(campaign, url, label="", context=""):
     if campaign.region and phrase_matches(text, campaign.region):
         score += 10
         reasons.append("Region mentioned (+10; not verified)")
-    if any(phrase_matches(direct, word) for word in ("blog", "article", "news", "careers", "vacancies", "privacy", "terms")):
+    if any(phrase_matches(direct, word) for word in EDITORIAL):
         score -= 20
         reasons.append("Editorial, legal or recruitment page (-20)")
-    if any(phrase_matches(direct, word) for word in ("product", "device", "software", "emv credit card machines")):
+    if any(phrase_matches(direct, word) for word in PRODUCT):
         score -= 25
         reasons.append("Product, device or software page (-25)")
     return score, reasons or ["No strong relevance signal yet"]
+
+
+def link_priority(url, label=""):
+    """Campaign-free crawl order for an already in-scope link. Never an exclusion."""
+    direct = " ".join((unquote(urlsplit(url).path), label))
+    score = 35 if any(phrase_matches(direct, word) for word in TARGETS + PROFILE_TARGETS) else 0
+    if any(phrase_matches(direct, word) for word in EDITORIAL):
+        score -= 20
+    if any(phrase_matches(direct, word) for word in PRODUCT):
+        score -= 25
+    return score
