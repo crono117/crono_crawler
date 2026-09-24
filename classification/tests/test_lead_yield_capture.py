@@ -86,6 +86,39 @@ class FallbackEligibilityTests(TestCase):
         self.assertEqual(list(Person.objects.values_list('name', flat=True)), ['Casey Sample'])
         self.assertEqual(block_questions(evaluations), [])
 
+    def test_similar_longer_name_is_not_covered_by_a_captured_person(self):
+        ann = ('<div class="team-member"><h3>Ann Lee</h3><p class="role">Sales Manager</p>'
+               '<a href="mailto:ann@example.test">Email</a></div>')
+        joann = ('<div class="employee-bio"><h3>Joann Lee</h3><p>Sales Manager</p>'
+                 '<p>joann@example.test</p></div>')
+
+        evaluations = self.capture(f'<html><body>{HEADING}{ann}{joann}</body></html>')
+
+        self.assertEqual(list(Person.objects.values_list('name', flat=True)), ['Ann Lee'])
+        self.assertEqual(len(block_questions(evaluations)), 1)
+        self.assertIn('Joann Lee', self.spans()[0])
+
+    def test_biography_mentioning_a_captured_colleague_is_still_a_block(self):
+        ann = ('<div class="team-member"><h3>Ann Lee</h3><p class="role">Sales Manager</p>'
+               '<a href="mailto:ann@example.test">Email</a></div>')
+        bio = ('<section class="employee-bio"><h2>Morgan Test</h2><p>Sales Director, previously worked '
+               'with Ann Lee on merchant accounts.</p><p>morgan@example.test</p></section>')
+
+        evaluations = self.capture(f'<html><body>{HEADING}{ann}{bio}</body></html>')
+
+        self.assertEqual(len(block_questions(evaluations)), 1)
+        self.assertIn('Morgan Test', self.spans()[0])
+
+    def test_same_person_elsewhere_on_the_page_is_still_a_duplicate(self):
+        ann = ('<div class="team-member"><h3>Ann Lee</h3><p class="role">Sales Manager</p>'
+               '<a href="mailto:ann@example.test">Email</a></div>')
+        again = ('<section class="employee-bio"><h2>Ann  Lee</h2><p>Merchant Sales Manager</p>'
+                 '<p>ann@example.test</p></section>')
+
+        evaluations = self.capture(f'<html><body>{HEADING}{ann}{again}</body></html>')
+
+        self.assertEqual(block_questions(evaluations), [])
+
     def test_existing_block_limits_still_apply_when_css_rows_also_match(self):
         junk = '<div class="team-member"><h3>Team</h3></div>'
         cards = ''.join(f'''<section class="employee-bio"><h2>Person Number {index}</h2>
@@ -168,3 +201,29 @@ class CompanyPassageTests(TestCase):
         self.assertEqual(evaluations, [])
         self.assertFalse(Company.objects.exists())
         self.assertFalse(Person.objects.exists())
+
+
+@override_settings(JEV_MODE='mock', JEV_CAPTURE_ENABLED=True, JEV_LAYERED_BLOCKS_ENABLED=True,
+                   JEV_TOKEN_COUNTER='')
+class ExtractionVersionRequeueTests(TestCase):
+    """Documents the rollout cost in docs/LEAD_YIELD.md: every evaluation for a page is re-created once."""
+
+    def test_version_change_recreates_company_and_each_person_evaluation_once(self):
+        from unittest.mock import patch
+        from leads.services import extraction
+        source = Source.objects.create(name='Requeue fixture', company='Example Payments', approved=True,
+                                       url='https://example.test/team/', allowed_paths='/team/')
+        cards = ''.join(f'<div class="team-member"><h3>{name}</h3><p class="role">Sales Manager</p>'
+                        f'<a href="mailto:person{index}@example.test">Email</a></div>'
+                        for index, name in enumerate(('Alex Example', 'Casey Sample', 'Jordan Test')))
+        page = f'<html><body>{HEADING}{cards}</body></html>'
+        body_hash = hashlib.sha256(page.encode()).hexdigest()
+
+        with patch.object(extraction, 'VERSION', '0.3.0'):
+            before = {e.pk for e in capture_page(source, source.url, body_hash, page)}
+        after = {e.pk for e in capture_page(source, source.url, body_hash, page)}
+        again = {e.pk for e in capture_page(source, source.url, body_hash, page)}
+
+        self.assertEqual(len(before), 4)
+        self.assertEqual(len(after - before), 4)
+        self.assertEqual(again - before - after, set())

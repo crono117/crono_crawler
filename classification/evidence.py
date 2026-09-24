@@ -94,15 +94,17 @@ def _bounded_block_text(node, text, name, limit):
 def candidate_blocks(soup, covered=(), covered_names=()):
     """Bounded generic person blocks not already captured by a CSS row or structured Person.
 
-    A block that is, contains, or sits inside a covered node, or repeats a covered
-    person's name, would duplicate an existing candidate and is skipped.
+    A block that is, contains, or sits inside a covered node, or whose own heading
+    names exactly a covered person, would duplicate an existing candidate and is
+    skipped. Names mentioned elsewhere in a block (a colleague, or a longer name that
+    contains a covered one) do not make it covered.
     """
     covered_ids = set()
     for node in covered:
         covered_ids.add(id(node))
         covered_ids.update(id(parent) for parent in node.parents)
         covered_ids.update(id(child) for child in node.find_all(True))
-    names = {name.casefold() for name in covered_names if name}
+    names = {normalize(name).casefold() for name in covered_names if name}
     candidates = []
     for node in soup.find_all(BLOCK_TAGS, limit=2000):
         if _hidden_or_excluded(node):
@@ -117,20 +119,19 @@ def candidate_blocks(soup, covered=(), covered_names=()):
                           name.casefold() not in {'contact us', 'our team', 'leadership team', 'meet the team'})
         has_contact = bool(node.select_one('a[href^="mailto:"], a[href^="tel:"]') or EMAIL.search(text) or PHONE.search(text))
         if plausible_name and ROLE.search(text) and has_contact:
-            candidates.append((node, text))
-    qualifying = {id(node) for node, _ in candidates}
+            candidates.append((node, text, name))
+    qualifying = {id(node) for node, _, _ in candidates}
     blocks, seen, aggregate = [], set(), 0
-    for node, text in candidates:
+    for node, text, name in candidates:
         if any(id(descendant) in qualifying for descendant in node.find_all(BLOCK_TAGS)):
             continue
         canonical = text.casefold()
-        if canonical in seen or id(node) in covered_ids or any(name in canonical for name in names):
+        if canonical in seen or id(node) in covered_ids or name.casefold() in names:
             continue
         remaining = 2400 - aggregate
         if remaining <= 0 or len(blocks) == 6:
             break
-        bounded = _bounded_block_text(node, text, normalize(node.find(
-            ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']).get_text(' ', strip=True)), min(500, remaining))
+        bounded = _bounded_block_text(node, text, name, min(500, remaining))
         if not bounded:
             continue
         seen.add(canonical)
