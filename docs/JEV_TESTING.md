@@ -1,6 +1,6 @@
 # Jev implementation and local-agent handoff
 
-**Repaired local rollout:** use [LOCAL_JEV_ROLLOUT.md](LOCAL_JEV_ROLLOUT.md) for current verification, recovery semantics, the explicit $0.01 / three-attempt pilot and deployment/rollback steps. This older branch guide is not authorization to spend or deploy.
+**Current local rollout:** use [LOCAL_JEV_ROLLOUT.md](LOCAL_JEV_ROLLOUT.md) for verification, recovery semantics, the $2-per-UTC-day policy and deployment/rollback steps. This guide is not independent authorization to spend or deploy.
 
 Branch: `feat/jev-integration-v1` in `crono117/crono_crawler`.
 
@@ -56,6 +56,16 @@ Open **http://127.0.0.1:8017/classification/**. The launcher uses port 8017. Sig
 
 `jev demo` is a synchronous offline command: stop a running worker before invoking it. It selects only its own fixed fixtures even in a populated database. Alternatively, use `jev demo --seed-only`, set `JEV_MODE=mock`, `JEV_CAPTURE_ENABLED=1`, `JEV_ROUTING_ENABLED=1`, and start the normal worker to observe the same queue flow. Mock outcomes can trigger routing only for sources with the `demo` collector.
 
+## Review-only layered candidate blocks
+
+`JEV_LAYERED_BLOCKS_ENABLED=1` adds a default-off fallback for authorized pages where structured `Person` data and configured/default person-card selectors both find no rows. It requires `JEV_CAPTURE_ENABLED=1`.
+
+Code—not Jev—builds at most six bounded candidate blocks from already-fetched HTML. Header, navigation, footer, forms, dialogs, templates, hidden content, nested duplicates and blocks without a plausible name, role and published contact signal are excluded. Each block is capped at 500 characters and all blocks together at 2,400 characters. Exact block text is stored in immutable evidence spans.
+
+Jev receives only supplied block IDs and typed questions about page purpose and block type. It cannot return selectors, names, emails, phone numbers, URLs, evidence quotes, permissions or budgets. Successful judgments remain review-only: they do not create people, contacts or leads; change recipes; approve sources; register URLs; or start routing. Company follow-up jobs are excluded from this initial fallback so their evaluation packet budget is unchanged.
+
+The feature is intentionally an instrumentation slice. It measures whether model-assisted segmentation can identify useful person/profile blocks on layouts missed by deterministic selectors. A later phase must still parse selected blocks mechanically and pass the existing evidence/contact validation before lead yield can improve.
+
 ## Live calibration after the key arrives
 
 Start with saved evidence and routing off. Stop the normal worker so a one-request CLI trial cannot compete with it.
@@ -63,7 +73,7 @@ Start with saved evidence and routing off. Stop the normal worker so a one-reque
 1. Check your TypeSafe account has access to **`jev-1.13.0`**, and verify the current API contract and input price. This implementation pins that model and uses **$0.042 per million input tokens**, zero output-token charge. See the [official API reference](https://docs.typesafe.ai/api). If model, price or billing semantics differ, update the adapter/accounting/tests before confirming readiness.
 2. Put the key in the private `.env` as `TYPESAFE_API_KEY=...`. Do not put it in source files, command history, prompts or logs. Set `JEV_MODE=live`, `JEV_PRICE_CONFIRMED=1`, `JEV_ROUTING_ENABLED=0`, and keep `JEV_CAPTURE_ENABLED=0` for this first saved-evidence test.
 3. Choose token admission mode. The strict default requires `JEV_TOKEN_COUNTER=your_module.count_request`, a provider-verified callable accepting the **entire request dict** and returning its input-token count, including questions, criteria and provider framing. No verified TypeSafe tokenizer is bundled. For a deliberately bounded initial calibration, explicitly set `JEV_ALLOW_ESTIMATED_TOKENS=1` instead. The fallback uses UTF-8 envelope bytes × 1.25 + 512. It is an estimate, **not a guarantee of the 5,000-token ceiling**. Above-limit reported usage pauses subsequent requests.
-4. Run `jev doctor`. It reads configuration and checks ledger consistency; it does not probe the account. Correct reported configuration problems. Confirm the console's wallet is unpaused and has no unexplained active attempt. Lower the daily limit to `JEV_DAILY_ATTEMPTS=1` for the first trial if desired.
+4. Run `jev doctor`. It reads configuration and checks ledger consistency; it does not probe the account. Correct reported configuration problems. Confirm the console is unpaused, has no unexplained active attempt, and reports the intended UTC-day dollar allowance.
 5. Create/review a real Source in the existing console with its exact approved origin and paths. Import HTML already retrieved with that authorization, supplying its actual timezone-aware retrieval time:
 
 ```bash
@@ -86,7 +96,7 @@ Replace all placeholders and the example timestamp. Import makes no network requ
 
 Inspect the result in the console: actual model, question IDs, labels, finite normalized probabilities, confidence, input/output usage, attempt status and cost. Invalid business answers never become judgments, but valid reported usage is still charged to the ledger. Missing usage keeps the full reservation. A `failed_contract` result needs contract investigation, not blind retries. Compare with human labels before increasing the limit or enabling routing.
 
-`--limit` bounds processing attempts per command invocation. It does not bypass persisted cooldowns, backoff, daily counts, cumulative money, the three-attempt ceiling or evidence checks. Future runs skip work until its deadline is due. Mock and live cache identities are distinct.
+`--limit` bounds processing attempts per command invocation. It does not bypass persisted cooldowns, the UTC-day dollar allowance, the three-attempt per-evaluation ceiling or evidence checks. Future runs skip work until its deadline is due. Mock and live cache identities are distinct.
 
 ## Enable a small company pilot after reviewing shadow results
 
@@ -107,11 +117,13 @@ Only a fresh company-level technology/provider result meeting the fixed probabil
 | Control | Implemented bound / behavior |
 |---|---|
 | Defaults | Mode off, capture off, routing off; a key alone does nothing |
-| Money | $1 cumulative allowance across UTC days; integer nano-USD; raising allowance is explicit and audited |
+| Money | $2 per UTC day by default; settled cost plus unresolved reservations; integer nano-USD |
 | Admission reserve | 66,000 input tokens × 42 nano-USD = $0.002772 per attempted call; conservative full-context reservation |
-| Daily requests | At most 100 attempted calls per UTC day; configurable downward; retries count |
+| Attempt counts | No daily or cumulative paid-attempt admission ceiling; per-evaluation retry bounds remain |
+| Daily money | `JEV_DAILY_ALLOWANCE_USD` caps each UTC day's settled charges plus unresolved reservations. Admission requires room for the full conservative reservation; live mode fails closed without a positive cap. |
+| Cumulative ledger | Lifetime spend and attempts remain durable and auditable but do not stop admission |
 | Concurrency / pacing | One locally active paid request; next admission at least one second after completion |
-| Retries | Up to 3 attempts per evaluation, plus an optional cumulative wallet attempt ceiling; automatic retry only with known usage for 429/529/500/502/503/504. Unknown usage/transport failure requires explicit recovery; persisted jitter and Retry-After remain. |
+| Retries | Up to 3 attempts per evaluation; automatic retry only with known usage for 429/529/500/502/503/504. Unknown usage/transport failure requires explicit recovery; persisted jitter and Retry-After remain. |
 | Transport | Fixed HTTPS endpoint; zero transport retries; redirects disabled; 30-second total API timeout; 256 KiB response bound |
 | Evidence | Hashes, exact character spans, retrieval time, parser/extraction version, current approved scope; payload/cache separates mock/live |
 | Company work | 10 pages, depth at most 2, 30 fetch attempts including robots/redirects/retries, 5 distinct evaluation packets, 10 paid attempts, 24-hour default job deadline |
@@ -126,7 +138,6 @@ Reservations are debited before the only Jev HTTP call. Response usage reconcile
 ```bash
 .venv/bin/python manage.py jev pause --reason "Review initial calibration"
 .venv/bin/python manage.py jev resume --reason "Account and evidence checked"
-.venv/bin/python manage.py jev budget 1.00 --reason "Keep cumulative one-dollar pilot"
 .venv/bin/python manage.py jev pilot-state PILOT_ID pause --reason "Review outcomes"
 .venv/bin/python manage.py jev pilot-state PILOT_ID resume --reason "Continue existing limits"
 ```

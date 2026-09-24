@@ -25,7 +25,7 @@ def huge_counter(request):
 
 
 LIVE = dict(JEV_MODE='live', TYPESAFE_API_KEY='synthetic-test-key', JEV_PRICE_CONFIRMED=True,
-            JEV_ALLOW_ESTIMATED_TOKENS=True, JEV_TOKEN_COUNTER='', JEV_DAILY_ATTEMPTS=100)
+            JEV_ALLOW_ESTIMATED_TOKENS=True, JEV_TOKEN_COUNTER='')
 
 
 @override_settings(JEV_MODE='mock', JEV_TOKEN_COUNTER='')
@@ -220,6 +220,12 @@ class AccountingTests(TestCase):
                 self.reserve()
         self.assertFalse(Attempt.objects.exists())
 
+    @override_settings(JEV_DAILY_ALLOWANCE_NUSD=0)
+    def test_live_requires_daily_money_gate(self):
+        self.assertIn('Configure a positive daily spending allowance.', accounting.readiness())
+        with self.assertRaises(accounting.Deferred):
+            self.reserve()
+
     def test_unverified_token_counter_blocks_default_live(self):
         with override_settings(JEV_ALLOW_ESTIMATED_TOKENS=False):
             with self.assertRaises(accounting.Deferred):
@@ -231,17 +237,37 @@ class AccountingTests(TestCase):
                 self.reserve()
         self.assertFalse(Attempt.objects.exists())
 
-    def test_daily_limit_is_attempts_not_successes(self):
+    def test_attempt_history_does_not_stop_daily_money_budget(self):
         DailyUsage.objects.create(day=timezone.now().date(), attempts=100)
+        attempt = self.reserve()
+        self.assertEqual(attempt.state, 'reserved')
+
+    @override_settings(JEV_DAILY_ALLOWANCE_NUSD=accounting.RESERVATION_NUSD)
+    def test_daily_money_limit_blocks_next_reservation(self):
+        Attempt.objects.create(evaluation=self.evaluation, ordinal=99, day=timezone.now().date(),
+            state='settled', lease_token='prior', request_hash='prior', reserved_nusd=accounting.RESERVATION_NUSD,
+            cost_nusd=1, estimated_tokens=1, counter='test')
+        JevControl.objects.update(spent_nusd=1)
+
         with self.assertRaises(accounting.Deferred) as caught:
             self.reserve()
-        self.assertEqual(caught.exception.until.hour, 0)
-        self.assertFalse(Attempt.objects.exists())
 
-    def test_cumulative_wallet_does_not_reset_at_midnight(self):
+        self.assertIn('Daily spending allowance', str(caught.exception))
+        self.assertEqual(caught.exception.until.hour, 0)
+        self.assertEqual(Attempt.objects.count(), 1)
+
+    @override_settings(JEV_DAILY_ALLOWANCE_NUSD=2_000_000_000)
+    def test_daily_only_mode_ignores_legacy_attempt_and_cumulative_money_stops(self):
+        JevControl.objects.update(allowance_nusd=1, cumulative_attempt_limit=0)
+
+        attempt = self.reserve()
+
+        self.assertEqual(attempt.state, 'reserved')
+
+    def test_legacy_cumulative_wallet_does_not_stop_daily_budget(self):
         JevControl.objects.update(allowance_nusd=1)
-        with self.assertRaises(accounting.Deferred):
-            self.reserve()
+        attempt = self.reserve()
+        self.assertEqual(attempt.state, 'reserved')
         self.assertEqual(JevControl.objects.get().allowance_nusd, 1)
 
     def test_inconsistent_ledger_fails_closed(self):

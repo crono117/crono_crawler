@@ -89,10 +89,10 @@ class RolloutRegressions(TestCase):
         self.assertEqual(candidate.decision, 'pending')
         self.assertIsNone(candidate.source_id)
 
-    def test_doctor_reports_exhausted_wallet_as_not_ready(self):
-        accounting.set_allowance('0', 'test', 'No spending authorized')
+    def test_doctor_reports_missing_daily_allowance_as_not_ready(self):
         output = io.StringIO()
-        call_command('jev', 'doctor', stdout=output)
+        with override_settings(JEV_DAILY_ALLOWANCE_NUSD=0):
+            call_command('jev', 'doctor', stdout=output)
         result = json.loads(output.getvalue())
         self.assertFalse(result['live_ready'])
         self.assertIn('allowance', ' '.join(result['checks']))
@@ -149,13 +149,12 @@ class RolloutRegressions(TestCase):
             with self.subTest(config=config), override_settings(**config):
                 self.assertIn(expected, ' '.join(accounting.diagnostics(JevControl.objects.get())))
         JevControl.objects.update(paused=True, active_attempt=uuid.uuid4(), next_allowed_at=timezone.now()+timedelta(hours=1))
-        DailyUsage.objects.create(day=timezone.now().date(), attempts=100)
         text = ' '.join(accounting.diagnostics(JevControl.objects.get()))
-        for word in ('paused', 'owns dispatch', 'cooldown', 'Daily'):
+        for word in ('paused', 'owns dispatch', 'cooldown'):
             self.assertIn(word, text)
 
-    def test_three_cumulative_attempts_survive_days_and_recovery(self):
-        accounting.set_allowance('0.01', 'test', 'Future pilot', attempt_limit=3)
+    def test_attempt_history_survives_days_without_becoming_an_admission_stop(self):
+        JevControl.objects.update(cumulative_attempt_limit=3)
         original = timezone.now()
         for day in range(3):
             now = original + timedelta(days=day)
@@ -171,11 +170,9 @@ class RolloutRegressions(TestCase):
         with patch('django.utils.timezone.now', return_value=now):
             WorkerLease.objects.update(heartbeat_at=now)
             other = Evaluation.objects.filter(provider='live').exclude(pk=self.evaluation.pk).first()
-            with self.assertRaisesMessage(accounting.Deferred, 'Cumulative attempt'):
-                accounting.reserve(other.pk, self.token)
-            self.assertIn('Cumulative attempt', ' '.join(accounting.diagnostics(JevControl.objects.get())))
-        self.assertEqual(Attempt.objects.count(), 3)
-        self.assertEqual(JevControl.objects.get().allowance_nusd, 10_000_000)
+            fourth = accounting.reserve(other.pk, self.token)
+            self.assertEqual(fourth.state, 'reserved')
+        self.assertEqual(Attempt.objects.count(), 4)
 
 
 @override_settings(JEV_MODE='mock', JEV_TOKEN_COUNTER='', JEV_ROUTING_ENABLED=True)
@@ -325,11 +322,11 @@ class SyntheticRegressions(TestCase):
 @override_settings(**LIVE)
 class AdditionalMoneyRegressions(TestCase):
     setUp = RolloutRegressions.setUp
-    def test_lowered_allowance_revokes_unsent_permit(self):
+    def test_lowered_daily_allowance_revokes_unsent_permit(self):
         attempt = accounting.reserve(self.evaluation.pk, self.token)
-        accounting.set_allowance('0', 'test', 'Revoked spending')
-        with self.assertRaises(accounting.Deferred):
-            accounting.dispatch(attempt.pk, self.evaluation.request, self.token)
+        with override_settings(JEV_DAILY_ALLOWANCE_NUSD=accounting.RESERVATION_NUSD - 1):
+            with self.assertRaises(accounting.Deferred):
+                accounting.dispatch(attempt.pk, self.evaluation.request, self.token)
         self.assertTrue(accounting.abort_unsent(attempt.pk, 'revoked'))
         accounting.verify_ledger(JevControl.objects.get())
 
@@ -395,7 +392,7 @@ class AdditionalMoneyRegressions(TestCase):
         with self.assertRaises(ValueError):
             accounting.recover_attempt(first.pk, 'test', 'Repeated recovery must be rejected')
 
-    def test_spent_allowance_does_not_reset_on_next_utc_day(self):
+    def test_daily_allowance_resets_on_next_utc_day_while_lifetime_spend_remains(self):
         accounting.set_allowance('0.002772', 'test', 'One reservation only')
         attempt=accounting.reserve(self.evaluation.pk, self.token)
         accounting.dispatch(attempt.pk, self.evaluation.request, self.token)
@@ -404,7 +401,7 @@ class AdditionalMoneyRegressions(TestCase):
         with patch('django.utils.timezone.now', return_value=tomorrow):
             WorkerLease.objects.update(heartbeat_at=tomorrow)
             other=Evaluation.objects.filter(provider='live').exclude(pk=self.evaluation.pk).first()
-            with self.assertRaisesMessage(accounting.Deferred, 'allowance'):
-                accounting.reserve(other.pk, self.token)
+            second = accounting.reserve(other.pk, self.token)
+            self.assertEqual(second.state, 'reserved')
         self.assertEqual(JevControl.objects.get().spent_nusd, 5040)
-        self.assertEqual(Attempt.objects.count(), 1)
+        self.assertEqual(Attempt.objects.count(), 2)

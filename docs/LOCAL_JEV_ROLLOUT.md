@@ -21,10 +21,10 @@ Tests below are in `classification/tests/test_rollout.py` unless otherwise speci
 | A list/dict winning choice raised `TypeError`, escaping contract handling | Require a string choice before dictionary membership/indexing | `test_unhashable_choice_is_contract_failure_and_usage_still_settles`; malformed-response matrix |
 | An enormous integer probability raised `OverflowError` in `isfinite` | Check type and range before finite conversion | `test_large_numeric_probability_is_contract_error` |
 | Existing evidence remained spendable after its campaign policy was revoked | Recheck current policy, snapshot, membership and scope at capture, admission and dispatch | `test_revoked_policy_blocks_paid_admission_of_existing_evidence`; `test_dispatch_rechecks_revoked_policy_after_reservation` |
-| Doctor reported live readiness with an exhausted wallet and threw an exception on inconsistent accounting | Shared read-only diagnostics cover config, ledger, pause, dispatch owner, full-reservation allowance, daily/cumulative ceilings and cooldown; doctor emits `ledger_consistent=false` safely | Exhausted/inconsistent doctor tests and `test_diagnostics_distinguish_all_admission_gates` |
+| Doctor reported readiness without an effective money gate and threw an exception on inconsistent accounting | Shared read-only diagnostics cover config, ledger, pause, dispatch owner, UTC-day full-reservation allowance and cooldown; doctor emits `ledger_consistent=false` safely | Missing-daily-allowance and inconsistent-ledger tests |
 | Timeouts and retryable HTTP responses with unknown usage automatically re-entered the send queue | Unknown billing retains the full reservation and becomes `uncertain`; admission also blocks legacy unresolved attempts. Only explicit audited recovery permits retry | `test_uncertain_transport_never_automatically_retries`; `test_legacy_retry_wait_with_uncertain_attempt_requires_explicit_recovery` |
-| Daily and per-evaluation ceilings could not bound a pilot to three total calls across UTC days | Add nullable persisted `cumulative_attempt_limit`; compare it to all attempt rows under the wallet lock; expose an audited CLI setting | `test_three_cumulative_attempts_survive_days_and_recovery` |
-| Lowering a wallet limit after reservation did not revoke the unsent permit | Dispatch rechecks ledger and reduced money/attempt allowance | `test_lowered_allowance_revokes_unsent_permit` |
+| Legacy attempt history could stop otherwise affordable daily work | Retain historical counts for audit but remove them from admission | `test_attempt_history_survives_days_without_becoming_an_admission_stop` |
+| Lowering the UTC-day dollar limit after reservation did not revoke the unsent permit | Dispatch rechecks current-day exposure against the effective daily limit | `test_lowered_daily_allowance_revokes_unsent_permit` |
 | Reconciling an old attempt changed a newer active evaluation to `waiting` | Only the latest attempt can reschedule its evaluation; reject repeated/no-op recovery; retain backoff and dispatch owner | `test_reconciling_old_attempt_never_disturbs_new_dispatch` |
 | Calibration drift could be accepted or a changed fixture URL replaced; supplied arbitrary HTML could be labelled synthetic | Fixed source configuration/body/hash checks, previous synthetic-source check and no restoration of revoked/edited permissions | Synthetic fixture change, URL edit and body-contract tests |
 | Retention fallback could select a fetched document for a synthetic fingerprint | Include provenance in retained-document lookup; preserve the original hashes/parser/signature/timestamp | `test_expired_synthetic_cannot_reuse_fetched_provenance` |
@@ -43,13 +43,13 @@ Correct interrupted changes were retained. The incomplete doctor precheck was re
 
 Official documentation was retrieved without credentials during repair: [TypeSafe API reference](https://docs.typesafe.ai/api) and [model reference](https://docs.typesafe.ai/models). They document `POST https://api.typesafe.ai/v1/systemone`, named Choice answers, the actual model and token usage. The pinned `jev-1.13.0` remains documented at $0.042 per million input tokens, with free output tokens. No price/model change was needed. Recheck these terms and account access before a future pilot; this retrieval did not verify an account or make an inference request.
 
-The adapter retains fixed HTTPS, no redirects, no hidden retries, a bounded response and one paid-call gateway. Each send needs a persisted reservation and current collector lease. A reservation is 66,000 input tokens × 42 nano-USD = **$0.002772**. Three unreconciled reservations total **$0.008316**, within a deliberately configured $0.01 cumulative allowance. The estimate is not a provider tokenizer guarantee; reported input overruns pause admission and still record actual reported charges.
+The adapter retains fixed HTTPS, no redirects, no hidden retries, a bounded response and one paid-call gateway. Each send needs a persisted reservation and current collector lease. A reservation is 66,000 input tokens × 42 nano-USD = **$0.002772**. Under the current policy, reservations and settled costs count against the **$2 UTC-day allowance**. The estimate is not a provider tokenizer guarantee; reported input overruns pause admission and still record actual reported charges.
 
-Malformed business answers create no judgments, while valid usage still settles money. Timeout/crash/missing usage never refunds a reservation automatically. A retry with known usage still consumes another reservation and attempt and preserves Retry-After/backoff. Recovery of an uncertain attempt without billing marks it `recovered`, retaining the reservation; later verified billing can reconcile that same row without disturbing newer work. Three-attempt enforcement counts all historical admission rows, including failed, recovered and provably-unsent attempts; it does not reset on UTC day changes, restart, wallet resume or changing the dollar allowance.
+Malformed business answers create no judgments, while valid usage still settles money. Timeout/crash/missing usage never refunds a reservation automatically. A retry with known usage still consumes another reservation and preserves Retry-After/backoff. Recovery of an uncertain attempt without billing marks it `recovered`, retaining the reservation; later verified billing can reconcile that same row without disturbing newer work. The three-attempt ceiling is per evaluation and counts that evaluation's historical admissions; global attempt history does not stop other affordable work.
 
-The default existing $1 wallet value is unchanged for compatibility. It does not activate calls: live mode, price confirmation, token mode and credentials remain separate gates. The new cumulative attempt ceiling defaults to null for existing installations and is configured explicitly for the future pilot. Lowering a configured ceiling does not delete/reset attempt history. Raising it is an explicit audited change.
+The legacy cumulative wallet and attempt-ceiling columns remain unchanged for compatibility and audit history, but no longer gate admission. Live mode, a positive UTC-day dollar allowance, price confirmation, token mode and credentials remain separate gates.
 
-Doctor and the UI distinguish missing key, mode off, unconfirmed price, unconfirmed token mode, paused wallet, inconsistent ledger, active dispatch owner, insufficient full-reservation allowance, daily exhaustion, cumulative exhaustion and cooldown. Doctor checks configuration/wallet only, never provider access or a particular evaluation's eligibility.
+Doctor and the UI distinguish missing key, mode off, unconfirmed price, unconfirmed token mode, paused state, inconsistent ledger, active dispatch owner, insufficient current-day full-reservation allowance and cooldown. Doctor checks configuration/ledger only, never provider access or a particular evaluation's eligibility.
 
 ## Synthetic calibration and evidence compatibility
 
@@ -115,52 +115,34 @@ All logs are under `test-results/repair/` and excluded from Git. `final-source.s
 
 A separate agent performed an **independent static review** of authorization, money, synthetic isolation, input/cap concurrency and additive migration safety, then reviewed the repaired diff and final recovery fix. That review found the old-attempt reconciliation defect, which was reproduced and fixed. Final review also checked the origin-dismissal guards: no remaining blocking findings. Test execution and final integration/self-review were performed by the implementation agent; the reviewer did not independently run the suite. No claim is made about real model accuracy, billing, site yield, PostgreSQL contention or production stability.
 
-## Future $0.01 / three-attempt calibration — not activated
+## Current daily-dollar live policy
 
-These commands are a handoff for a later, separately authorized action. Keep the current service stopped for a one-shot calibration, so an ordinary worker cannot consume other queued evaluations. Never copy a key into commands, logs or this document. An operator would configure credentials privately only after permission to proceed.
+The earlier one-cent / three-attempt calibration described in prior revisions is superseded. Paid admission now has **no daily or cumulative attempt-count ceiling** and does not use the legacy cumulative allowance as a stop. Lifetime attempt and spend fields remain audit history.
 
-Safe defaults remain:
+Live work is governed by `JEV_DAILY_ALLOWANCE_USD`, measured per UTC day as settled cost plus unresolved reservations. The current authorized runtime value is `$2`. Admission reserves the full conservative request amount before network I/O, remains single-flight, and keeps the one-second minimum pacing and three-attempt per-evaluation retry ceiling.
 
 ```dotenv
-JEV_MODE=off
-JEV_CAPTURE_ENABLED=0
+JEV_MODE=live
+JEV_CAPTURE_ENABLED=1
+JEV_LAYERED_BLOCKS_ENABLED=1
 JEV_ROUTING_ENABLED=0
-JEV_PRICE_CONFIRMED=0
-JEV_ALLOW_ESTIMATED_TOKENS=0
-JEV_TOKEN_COUNTER=
-JEV_DAILY_ATTEMPTS=3
+JEV_PRICE_CONFIRMED=1
+JEV_ALLOW_ESTIMATED_TOKENS=1
+JEV_DAILY_ALLOWANCE_USD=2
 EXTRACTION_PACKS_ENABLED=0
 BRAVE_SEARCH_ENABLED=0
 ```
 
-After explicit future spending approval, while mode/capture/routing are still off:
+Use `jev doctor` and `jev report` to verify the effective daily allowance, current-day exposure, unresolved reservation state and ledger consistency. There is no `jev budget` command and no `--attempt-limit` option. A missing or zero daily allowance fails closed. Pause/resume never erases charges, reservations, cooldowns, retry history or evidence checks.
 
 ```bash
-.venv/bin/python manage.py jev report
-.venv/bin/python manage.py jev pause --reason "Prepare separately authorized one-cent calibration"
-.venv/bin/python manage.py jev budget 0.01 --attempt-limit 3 \
-  --reason "Explicit authorization: one cent cumulative, at most three total admitted attempts"
-.venv/bin/python manage.py jev seed-synthetic --provider live
 .venv/bin/python manage.py jev doctor
-```
-
-The budget and attempt ceiling are absolute cumulative limits. Existing spend/attempts count; these commands do not replenish anything. Select one returned **company** evaluation UUID from the console; seeding itself dispatches nothing. The wallet stays paused until deliberately resumed. Re-verify current provider/account/price assumptions before setting live gates. Choose either a genuinely verified full-envelope token counter or an explicitly authorized estimated-token calibration; none is implicitly supplied by this repair.
-
-For the estimated-token option only, after that additional explicit choice and private credential configuration:
-
-```bash
-.venv/bin/python manage.py jev resume --reason "Account, pricing and one-cent limits explicitly reviewed"
-JEV_MODE=live JEV_PRICE_CONFIRMED=1 JEV_ALLOW_ESTIMATED_TOKENS=1 \
-JEV_TOKEN_COUNTER= JEV_CAPTURE_ENABLED=0 JEV_ROUTING_ENABLED=0 JEV_DAILY_ATTEMPTS=3 \
-  .venv/bin/python manage.py jev doctor
-JEV_MODE=live JEV_PRICE_CONFIRMED=1 JEV_ALLOW_ESTIMATED_TOKENS=1 \
-JEV_TOKEN_COUNTER= JEV_CAPTURE_ENABLED=0 JEV_ROUTING_ENABLED=0 JEV_DAILY_ATTEMPTS=3 \
-  .venv/bin/python manage.py jev run --live --evaluation EVALUATION_UUID --limit 1
-.venv/bin/python manage.py jev pause --reason "Review calibration result before any further attempt"
 .venv/bin/python manage.py jev report
+.venv/bin/python manage.py jev pause --reason "Review live results"
+.venv/bin/python manage.py jev resume --reason "Evidence and account state reviewed"
 ```
 
-Stop if doctor is not ready; it does not prove provider access. Inspect actual model, contract, usage, reservation/charge and evidence before considering another attempt. A timeout/unknown usage requires account investigation and explicit recovery, not repeated `run`. All three total attempts may be consumed by retries/failures. A successful synthetic result still cannot authorize real discovery.
+A timeout or unknown usage requires provider-account investigation and explicit recovery, not blind retries. Model success does not authorize discovery, source approval, routing, contact promotion or recipe changes.
 
 ## Upgrade checklist — requires separate go-ahead
 
@@ -173,13 +155,13 @@ Stop if doctor is not ready; it does not prove provider access. Inspect actual m
 7. Start the existing owning service once, with exactly one collector worker. Verify service health, private listener, sign-in, existing leads/reviews/suppression, queues, source/policy pauses and recipe versions. Run doctor (no provider request), confirm unchanged spend/reservations and inspect any uncertain owners. Observe stable lease/heartbeat and restart behavior before a separately approved workload.
 8. Installed/offline-tested does not mean credential-configured, live-provider-verified, live-discovery-enabled or production-stable. Reconfirm each state separately; stop on migration/accounting/authorization errors rather than resuming queues blindly.
 
-No production upgrade, service restart, key configuration, wallet activation, paid test or real discovery was performed by this repair.
+That original repair performed no production upgrade, service restart, key configuration, paid test or real discovery. Current runtime status must be established from `jev report`, process state and the live database rather than this historical sentence.
 
 ## Rollback and recovery
 
 For a failed deployment, stop both new processes first. The reliable rollback is the pre-upgrade complete database/config/service/code backup; retaining the upgraded database separately preserves evidence collected after that backup for deliberate reconciliation. Restore database/WAL/SHM as a consistent set, never mix versions or overwrite a running writer. Do not reset an uncertain Jev ledger or assume a timeout was free.
 
-For code rollback while keeping the upgraded database, use the current build first to disable Jev paid/capture/routing work and company pilots, pause affected campaigns and regular schedules, and revoke approvals on automatic sources. Older code does not enforce these automatic setup/provenance gates or the new cumulative attempt ceiling. **Never run older code against enabled automatic/company job modes**, even if additive columns are technically readable. Keep those modes disabled until the matching newer code is restored. Avoid destructive reverse migrations and retain prior recipe versions, evidence, review state and ledger history.
+For code rollback while keeping the upgraded database, use the current build first to disable Jev paid/capture/routing work and company pilots, pause affected campaigns and regular schedules, and revoke approvals on automatic sources. Older code does not enforce these automatic setup/provenance gates or the current UTC-day money policy. **Never run older code against enabled automatic/company job modes**, even if additive columns are technically readable. Keep those modes disabled until the matching newer code is restored. Avoid destructive reverse migrations and retain prior recipe versions, evidence, review state and ledger history.
 
 For an uncertain attempt, first stop/verify the prior worker and transport, inspect the recorded attempt and account billing privately, then use an explicitly authorized recovery:
 
@@ -191,4 +173,4 @@ For an uncertain attempt, first stop/verify the prior worker and transport, insp
   --reason "Specific attempt billing independently verified"
 ```
 
-The first command keeps the full reservation and may make that evaluation eligible for another attempt; therefore keep the wallet paused until retry is authorized. The second reconciles only that attempt and cannot change a newer in-flight evaluation. Never supply zero without evidence of zero charge. Recovery preserves cumulative attempt counts, cooldown and evaluation backoff. Inspect `jev report` / `jev doctor` before resuming any permitted work.
+The first command keeps the full reservation and may make that evaluation eligible for another attempt; therefore keep Jev paused until retry is authorized. The second reconciles only that attempt and cannot change a newer in-flight evaluation. Never supply zero without evidence of zero charge. Recovery preserves lifetime attempt history, cooldown and evaluation backoff. Inspect `jev report` / `jev doctor` before resuming any permitted work.

@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -86,6 +87,7 @@ JEV_MODE = os.environ.get("JEV_MODE", "off")
 if JEV_MODE not in ("off", "mock", "live"):
     raise RuntimeError("JEV_MODE must be off, mock or live.")
 JEV_CAPTURE_ENABLED = os.environ.get("JEV_CAPTURE_ENABLED", "0") == "1"
+JEV_LAYERED_BLOCKS_ENABLED = os.environ.get("JEV_LAYERED_BLOCKS_ENABLED", "0") == "1"
 EXTRACTION_PACKS_ENABLED = os.environ.get("EXTRACTION_PACKS_ENABLED", "0") == "1"
 JEV_ROUTING_ENABLED = os.environ.get("JEV_ROUTING_ENABLED", "0") == "1"
 JEV_MODEL = "jev-1.13.0"
@@ -94,4 +96,12 @@ JEV_PRICE_CONFIRMED = os.environ.get("JEV_PRICE_CONFIRMED", "0") == "1"
 JEV_TOKEN_COUNTER = os.environ.get("JEV_TOKEN_COUNTER", "")
 JEV_ALLOW_ESTIMATED_TOKENS = os.environ.get("JEV_ALLOW_ESTIMATED_TOKENS", "0") == "1"
 JEV_MAX_INPUT_TOKENS = 5000
-JEV_DAILY_ATTEMPTS = min(100, max(1, int(os.environ.get("JEV_DAILY_ATTEMPTS", "100"))))
+try:
+    _jev_daily_usd = Decimal(os.environ.get("JEV_DAILY_ALLOWANCE_USD", "2"))
+    _jev_daily_nusd = _jev_daily_usd * 1_000_000_000
+    if (not _jev_daily_usd.is_finite() or _jev_daily_usd < 0 or _jev_daily_usd > 1000 or
+            _jev_daily_nusd != _jev_daily_nusd.to_integral_value()):
+        raise ValueError
+    JEV_DAILY_ALLOWANCE_NUSD = int(_jev_daily_nusd)
+except (InvalidOperation, ValueError):
+    raise RuntimeError("JEV_DAILY_ALLOWANCE_USD must be between 0 and 1000 with at most nine decimal places.")

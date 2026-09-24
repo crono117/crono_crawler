@@ -55,7 +55,8 @@ def evaluate_once(attempt_id, request, lease_token):
 
 def mock_response(request):
     """Synthetic heuristic for plumbing demos, never presented as Jev accuracy."""
-    text = ' '.join(item['text'] for item in request['state']['spans']).lower()
+    text = ' '.join(item['text'] for key in ('spans', 'blocks')
+                    for item in request['state'].get(key, [])).lower()
     selected = {}
     for key, question in request['questions'].items():
         label = 'unknown'
@@ -75,7 +76,9 @@ def mock_response(request):
             elif 'uses clover' in text:
                 label = 'merchant_user'
         elif key == 'page_purpose':
-            label = 'company_description'
+            label = 'individual_profile' if request['state'].get('blocks') else 'company_description'
+        elif key.startswith('candidate_block_'):
+            label = 'person_profile'
         elif key == 'person_affiliation' and request['state'].get('company', '').lower() in text:
             label = 'current_supported'
         elif key == 'person_sales_role':

@@ -37,6 +37,24 @@ def validate_request(request):
         raise ContractError('An exact configured model version is required.')
     if not isinstance(request['state'], dict) or not isinstance(request['questions'], dict) or not request['questions']:
         raise ContractError('Structured state and nonempty questions required.')
+    block_questions = {key.removeprefix('candidate_block_') for key in request['questions']
+                       if key.startswith('candidate_block_')}
+    if block_questions:
+        blocks = request['state'].get('blocks')
+        if not isinstance(blocks, list) or not 1 <= len(blocks) <= 6:
+            raise ContractError('Candidate block questions require one to six supplied blocks.')
+        block_ids = []
+        for block in blocks:
+            if (not isinstance(block, dict) or set(block) != {'id', 'span_id', 'text'} or
+                    not isinstance(block['id'], str) or not block['id'] or
+                    type(block['span_id']) is not int or block['span_id'] < 1 or
+                    not isinstance(block['text'], str) or not block['text'] or len(block['text']) > 500):
+                raise ContractError('Invalid supplied candidate block.')
+            block_ids.append(block['id'])
+        if len(block_ids) != len(set(block_ids)) or set(block_ids) != block_questions:
+            raise ContractError('Candidate block question IDs must exactly match supplied blocks.')
+        if sum(len(block['text']) for block in blocks) > 2400:
+            raise ContractError('Candidate block text exceeds the aggregate bound.')
     for question in request['questions'].values():
         if not isinstance(question, dict) or set(question) != {'type', 'instructions', 'criteria'} or question['type'] != 'choice':
             raise ContractError('Only the versioned Choice contract is enabled.')

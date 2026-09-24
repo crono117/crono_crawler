@@ -42,6 +42,8 @@ def readiness():
         problems.append('Confirm model/account access and the documented price before live mode.')
     if not settings.JEV_TOKEN_COUNTER and not settings.JEV_ALLOW_ESTIMATED_TOKENS:
         problems.append('Configure a verified token counter or explicitly opt into estimated-token calibration.')
+    if not settings.JEV_DAILY_ALLOWANCE_NUSD:
+        problems.append('Configure a positive daily spending allowance.')
     if connection.vendor == 'sqlite':
         with connection.cursor() as cursor:
             cursor.execute('PRAGMA synchronous')
@@ -59,6 +61,12 @@ def verify_ledger(control):
         raise Deferred('Ledger totals disagree; reconcile before dispatch.')
 
 
+def daily_exposure_nusd(day):
+    settled = Attempt.objects.filter(day=day).aggregate(total=Sum('cost_nusd'))['total'] or 0
+    reserved = Attempt.objects.filter(day=day, cost_nusd__isnull=True).aggregate(total=Sum('reserved_nusd'))['total'] or 0
+    return settled + reserved
+
+
 def diagnostics(control):
     """Read-only operator preflight; reserve/dispatch still recheck all gates."""
     problems = readiness()
@@ -70,15 +78,11 @@ def diagnostics(control):
         problems.append('Jev is paused; review the saved pause reason before resuming.')
     if control.active_attempt:
         problems.append('An attempt owns dispatch; uncertain owners require recovery.')
-    if control.remaining_nusd < RESERVATION_NUSD:
-        problems.append('Cumulative pilot allowance exhausted or reserved; a full $0.002772 reservation is required.')
-    if control.cumulative_attempt_limit is not None and Attempt.objects.count() >= control.cumulative_attempt_limit:
-        problems.append('Cumulative attempt allowance exhausted; UTC days and recovery do not reset it.')
     if control.next_allowed_at > timezone.now():
         problems.append('Global request cooldown is still active.')
-    usage = DailyUsage.objects.filter(day=timezone.now().astimezone(utc.utc).date()).first()
-    if usage and usage.attempts >= settings.JEV_DAILY_ATTEMPTS:
-        problems.append('Daily attempts exhausted; cumulative allowance is unchanged.')
+    today = timezone.now().astimezone(utc.utc).date()
+    if settings.JEV_DAILY_ALLOWANCE_NUSD and daily_exposure_nusd(today) + RESERVATION_NUSD > settings.JEV_DAILY_ALLOWANCE_NUSD:
+        problems.append('Daily spending allowance cannot cover another full reservation.')
     return problems
 
 
@@ -119,8 +123,7 @@ def reserve(evaluation_id, token):
     now = timezone.now()
     if control.active_attempt:
         raise Deferred('An attempt owns dispatch; uncertain owners require recovery.')
-    if control.cumulative_attempt_limit is not None and Attempt.objects.count() >= control.cumulative_attempt_limit:
-        raise Deferred('Cumulative attempt allowance exhausted.')
+
     if control.next_allowed_at > now:
         raise Deferred('Global request cooldown.', control.next_allowed_at)
     if evaluation.attempts >= 3:
@@ -133,10 +136,8 @@ def reserve(evaluation_id, token):
     if not exact and not settings.JEV_ALLOW_ESTIMATED_TOKENS:
         raise Deferred('Exact token counter required.')
     day, _ = DailyUsage.objects.get_or_create(day=now.astimezone(utc.utc).date())
-    if day.attempts >= settings.JEV_DAILY_ATTEMPTS:
-        raise Deferred('Daily attempts exhausted; cumulative allowance is unchanged.', tomorrow(now))
-    if control.remaining_nusd < RESERVATION_NUSD:
-        raise Deferred('Cumulative pilot allowance exhausted or reserved.')
+    if settings.JEV_DAILY_ALLOWANCE_NUSD and daily_exposure_nusd(day.day) + RESERVATION_NUSD > settings.JEV_DAILY_ALLOWANCE_NUSD:
+        raise Deferred('Daily spending allowance exhausted or reserved.', tomorrow(now))
     if evaluation.company_job_id:
         from .routing import reserve_model_attempt
         reserve_model_attempt(evaluation.company_job_id)
@@ -162,9 +163,8 @@ def dispatch(attempt_id, request, token):
     if readiness() or control.paused or control.active_attempt != attempt.pk:
         raise Deferred('Live dispatch gate changed.')
     verify_ledger(control)
-    if (control.remaining_nusd < 0 or (control.cumulative_attempt_limit is not None and
-            Attempt.objects.count() > control.cumulative_attempt_limit)):
-        raise Deferred('Cumulative allowance was reduced after admission.')
+    if settings.JEV_DAILY_ALLOWANCE_NUSD and daily_exposure_nusd(attempt.day) > settings.JEV_DAILY_ALLOWANCE_NUSD:
+        raise Deferred('A spending allowance was reduced after admission.')
     if attempt.state != 'reserved' or attempt.lease_token != token or attempt.request_hash != digest(request):
         raise ContractError('Spent, stale or mismatched admission permit.')
     if attempt.day != timezone.now().astimezone(utc.utc).date():
@@ -258,8 +258,6 @@ def recover_attempt(attempt_id, actor, reason, worker_stopped=False, billed_nusd
         attempt.state = 'recovered'
     attempt.save()
     control.next_allowed_at = max(control.next_allowed_at, timezone.now() + timedelta(seconds=1))
-    if control.remaining_nusd < 0:
-        control.paused, control.reason = True, 'Verified billing exceeds allowance.'
     control.save()
     evaluation = Evaluation.objects.select_for_update().get(pk=attempt.evaluation_id)
     if attempt.ordinal == evaluation.attempts and evaluation.state in ('running', 'uncertain'):
@@ -282,7 +280,7 @@ def set_paused(paused, actor, reason):
 
 
 @transaction.atomic
-def set_allowance(usd, actor, reason, *, attempt_limit=None):
+def set_allowance(usd, actor, reason):
     try:
         value = Decimal(usd) * 1_000_000_000
         if not value.is_finite() or value < 0 or value != value.to_integral_value() or value > 1_000_000_000_000:
@@ -290,16 +288,11 @@ def set_allowance(usd, actor, reason, *, attempt_limit=None):
     except (InvalidOperation, ValueError, TypeError):
         raise ValueError('Use a nonnegative USD amount with at most nine decimal places (maximum $1000).')
     control = JevControl.objects.select_for_update().get(pk='jev')
-    if attempt_limit is not None and (type(attempt_limit) is not int or not 0 <= attempt_limit <= 1_000_000):
-        raise ValueError('Use a cumulative attempt limit between 0 and 1000000.')
+
     if not reason.strip():
         raise ValueError('A budget change reason is required.')
     before = control.allowance_nusd
-    before_attempts = control.cumulative_attempt_limit
     control.allowance_nusd = int(value)
-    if attempt_limit is not None:
-        control.cumulative_attempt_limit = attempt_limit
-    control.save(update_fields=['allowance_nusd', 'cumulative_attempt_limit'])
+    control.save(update_fields=['allowance_nusd'])
     ControlEvent.objects.create(actor=actor, action='allowance', reason=reason, data={
-        'before_nusd': before, 'after_nusd': int(value), 'before_attempt_limit': before_attempts,
-        'after_attempt_limit': control.cumulative_attempt_limit})
+        'before_nusd': before, 'after_nusd': int(value), 'admission_gate': False})

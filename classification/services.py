@@ -10,18 +10,36 @@ from django.utils import timezone
 from . import accounting, provider
 from .contracts import ContractError, digest, input_count, validate_request, validate_response
 from .models import CompanyJob, Evaluation, EvaluationUse, Judgment
-from .questions import VERSION, company_questions, person_questions
+from .questions import LAYERED_VERSION, VERSION, company_questions, page_questions, person_questions
 
 
 @transaction.atomic
 def enqueue_subject(doc, company, span, *, person=None, contacts=(), provider='mock', company_job=None):
-    if provider not in ('mock', 'live'):
-        raise ValueError('Provider must be mock or live.')
     questions = person_questions(person.name, company.name, contacts) if person else company_questions(company.name)
     state = {'company': company.name, 'spans': [{'id': span.pk, 'text': span.text}],
              'contacts': [{'id': c.pk, 'value': c.value, 'kind': c.kind, 'shared_hint': c.shared_hint} for c in contacts]}
     if person:
         state['person'] = person.name
+    bindings = {key: [span.pk] for key in questions}
+    return _enqueue(doc, company, state, questions, bindings, person=person, provider=provider,
+                    company_job=company_job)
+
+
+@transaction.atomic
+def enqueue_page_blocks(doc, company, company_span, blocks, *, provider='mock'):
+    state = {'company': company.name, 'blocks': [
+        {'id': block['id'], 'span_id': block['span'].pk, 'text': block['span'].text} for block in blocks]}
+    questions = page_questions([block['id'] for block in blocks])
+    bindings = {'page_purpose': [company_span.pk] + [block['span'].pk for block in blocks]}
+    bindings.update({f"candidate_block_{block['id']}": [block['span'].pk] for block in blocks})
+    return _enqueue(doc, company, state, questions, bindings, provider=provider,
+                    catalog_version=LAYERED_VERSION)
+
+
+def _enqueue(doc, company, state, questions, bindings, *, person=None, provider='mock', company_job=None,
+             catalog_version=VERSION):
+    if provider not in ('mock', 'live'):
+        raise ValueError('Provider must be mock or live.')
     base = {'model': settings.JEV_MODEL, 'state': state, 'questions': {}}
     batches, current = [], {}
     for key, question in questions.items():
@@ -34,9 +52,24 @@ def enqueue_subject(doc, company, span, *, person=None, contacts=(), provider='m
         batches.append(current)
     results = []
     for group in batches:
-        request = base | {'questions': group}
+        request_state = state
+        group_bindings = {key: bindings[key] for key in group}
+        if state.get('blocks'):
+            group_ids = {key.removeprefix('candidate_block_') for key in group
+                         if key.startswith('candidate_block_')}
+            if group_ids:
+                request_state = state | {'blocks': [block for block in state['blocks']
+                                                   if block['id'] in group_ids]}
+            if 'page_purpose' in group:
+                all_block_spans = {block['span_id'] for block in state['blocks']}
+                company_spans = [span_id for span_id in bindings['page_purpose']
+                                 if span_id not in all_block_spans]
+                supplied_spans = [block['span_id'] for block in request_state['blocks']]
+                group_bindings['page_purpose'] = company_spans + supplied_spans
+        request = {'model': settings.JEV_MODEL, 'state': request_state, 'questions': group}
         cache_window = int(timezone.now().timestamp()) // (7 * 86400)
-        key = digest([doc.fingerprint, company.pk, person.pk if person else None, provider, VERSION, request, cache_window])
+        key = digest([doc.fingerprint, company.pk, person.pk if person else None, provider,
+                      catalog_version, request, cache_window])
         existing = Evaluation.objects.filter(cache_key=key).first()
         if company_job:
             if existing and existing.state != 'succeeded' and existing.company_job_id != company_job.pk:
@@ -49,8 +82,8 @@ def enqueue_subject(doc, company, span, *, person=None, contacts=(), provider='m
                 break
         evaluation, _ = Evaluation.objects.get_or_create(cache_key=key, defaults={
             'document': doc, 'company': company, 'person': person, 'company_job': company_job,
-            'provider': provider, 'catalog_version': VERSION, 'model': settings.JEV_MODEL,
-            'request': request, 'bindings': {k: [span.pk] for k in group},
+            'provider': provider, 'catalog_version': catalog_version, 'model': settings.JEV_MODEL,
+            'request': request, 'bindings': group_bindings,
             'state': 'queued' if input_count(request)[0] <= settings.JEV_MAX_INPUT_TOKENS else 'too_large',
             'reason': '' if input_count(request)[0] <= settings.JEV_MAX_INPUT_TOKENS else 'Evidence block/question needs a smaller packet.'})
         EvaluationUse.objects.create(evaluation=evaluation, document=doc, checked_at=doc.last_checked,

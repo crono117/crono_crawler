@@ -472,6 +472,8 @@ At company/page/time limits, keep remaining work pending under `paused_limit`. A
 
 ## 7. Shared admission, money and retries
 
+> **Superseded implementation note:** the table and cumulative-wallet discussion below describe the original proposal. The current implementation admits paid work solely under `JEV_DAILY_ALLOWANCE_USD` (default `$2` per UTC day), with no daily or cumulative attempt-count stop and no cumulative-money admission stop. Lifetime attempts/spend remain audit history. See `JEV_TESTING.md` for operational truth.
+
 ### Control defaults
 
 | Setting, proposed name | Initial value |
@@ -482,9 +484,9 @@ At company/page/time limits, keep remaining work pending under `paused_limit`. A
 | `JEV_MODEL` | `jev-1.13.0` |
 | `JEV_MAX_ATTEMPTS_PER_SECOND` | 1 across the application |
 | `JEV_MAX_CONCURRENT_ATTEMPTS` | 2 ceiling; pilot dispatcher deliberately runs at most **1** |
-| `JEV_DAILY_ATTEMPTS` | 100 total attempts, UTC |
+| `JEV_DAILY_ALLOWANCE_USD` | `2.00` per UTC day; settled cost plus unresolved reservations |
 | `JEV_MAX_INPUT_TOKENS` | 5,000 complete input, not just page text |
-| `JEV_PILOT_LIMIT_USD` | `1.00` cumulative; converted once to an initialized persistent allowance |
+| Legacy cumulative allowance | Retained as audit data; not an admission gate |
 | `JEV_MAX_RETRIES` | 2 after the initial attempt |
 | `JEV_ATTEMPT_TIMEOUT_SECONDS` | 30 total wall time; separate bounded connect/read/write/pool timeouts |
 | `JEV_CACHE_TTL_DAYS` | 7 for routing-eligible evidence; freshness and scope still checked |
@@ -567,8 +569,8 @@ Persist `available_at`. Suggested backoff after failed attempt n: random jitter 
 | After send, before response/commit | Attempt remains uncertain; preserve reserve. Never assume unbilled or replay automatically outside the retry budget. |
 | After settlement, before work acknowledgement | Read existing settled attempt/result; do not send or charge again. |
 | Scope/policy changed during request | Settle usage, retain audit, mark result stale/cancelled for routing. |
-| Daily attempts exhausted | Pending until next UTC day; no cumulative money reset. |
-| Pilot allowance exhausted | Remain paused until an explicit logged allowance adjustment or authoritative reconciliation frees money. Resume alone changes neither. |
+| Daily dollar allowance exhausted | Pending until next UTC day; lifetime ledger history remains unchanged. |
+| Legacy cumulative allowance exhausted | No admission effect; the value is audit-only. |
 | Old backup restored / separate clone started | Live mode stays off until accounting is reconciled with the latest ledger/account totals. Restoring old state cannot legitimately refill a spent allowance. |
 
 Cache key includes canonical supplied text/candidate values and their hashes, source URL/entity context, ordered question definitions, catalog/taxonomy/parser/packet versions, pinned model, provider namespace and relevant scope/policy signature. Mutable scheduling timestamps and budget balances are not semantic inputs. Put retrieval metadata in `EvaluationUse` so equal newly observed content can reuse a result without presenting the model evaluation as new.
@@ -579,9 +581,9 @@ Use one unique Evaluation key to coalesce concurrent enqueues. Other requesters 
 
 Add a **Jev evaluations** section using the existing staff templates and navigation. Extend `leads/views.py::console_context` and dashboard, plus discovery campaign and company-job pages. New `classification/views.py`, forms, URLs and templates own the detailed views; reuse `staff_required`, POST mutations and CSRF checks.
 
-Show mode, configured pinned model, credential-present boolean, catalog version, live-readiness blockers and routing state. Never show the key. Show attempts today / 100, active client calls / effective limit, next eligible time, successful evaluations, retries, timeouts, failures, cache hits, estimate versus reconciled spend, uncertain reserved spend, cumulative allowance and remaining money. Use at least six decimal places for small USD amounts; displaying every request as $0.00 hides the actual cost.
+Show mode, configured pinned model, credential-present boolean, catalog version, live-readiness blockers and routing state. Never show the key. Show current UTC-day exposure / allowance, active client call, next eligible time, successful evaluations, retries, timeouts, failures, cache hits, estimate versus reconciled spend, unresolved reservations and lifetime audit totals. Use at least six decimal places for small USD amounts; displaying every request as $0.00 hides the actual cost.
 
-Provide **Pause Jev** and **Resume eligible work** controls. Pause stops new admissions and routing; in-flight attempts still reconcile. A resume reruns all gates and cannot clear depleted budgets, uncertain reservations or source denials. Separate logged forms change limits or reconcile a specific attempt, showing old/new amount and requiring a reason. Configuration changes invalidate incompatible queued requests; they never rewrite historical usage.
+Provide **Pause Jev** and **Resume eligible work** controls. Pause stops new admissions and routing; in-flight attempts still reconcile. A resume reruns all gates and cannot clear the daily allowance, uncertain reservations or source denials. Configure the daily dollar cap in the private runtime environment; use explicit recovery for a specific uncertain attempt. Configuration changes never rewrite historical usage.
 
 On company/person views show the five distinct questions: technology business, affiliation, sales role, merchant-services company/person involvement, and contact association. Display immutable supporting text, source link, retrieval date if known, evidence age, probability distribution, nullable confidence, model/catalog versions, cached-evaluation time and human review. Keep “candidate,” “accepted lead,” “shared company contact,” and “deliverability not checked” visibly distinct.
 

@@ -1,8 +1,10 @@
 from decimal import Decimal
+from datetime import timezone as utc
 from django.conf import settings
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_POST
 from leads.views import staff_required
 from . import accounting
@@ -12,11 +14,14 @@ from .models import Attempt, CompanyDomain, CompanyJob, ControlEvent, Evaluation
 @staff_required
 def home(request):
     wallet = JevControl.objects.get(pk='jev')
+    today = timezone.now().astimezone(utc.utc).date()
     evaluations = Evaluation.objects.select_related('company', 'person', 'document__source').order_by('-created_at')
     return render(request, 'classification/home.html', {
         'mode': settings.JEV_MODE, 'capture': settings.JEV_CAPTURE_ENABLED, 'routing': settings.JEV_ROUTING_ENABLED,
         'wallet': wallet, 'spent': Decimal(wallet.spent_nusd) / 10**9,
-        'reserved': Decimal(wallet.reserved_nusd) / 10**9, 'remaining': Decimal(wallet.remaining_nusd) / 10**9,
+        'reserved': Decimal(wallet.reserved_nusd) / 10**9,
+        'daily_allowance': Decimal(settings.JEV_DAILY_ALLOWANCE_NUSD) / 10**9,
+        'daily_exposure': Decimal(accounting.daily_exposure_nusd(today)) / 10**9,
         'readiness': accounting.diagnostics(wallet), 'evaluations': Paginator(evaluations, 30).get_page(request.GET.get('page')),
         'domains': CompanyDomain.objects.select_related('company', 'span__document').filter(state='candidate')[:30],
         'jobs': CompanyJob.objects.select_related('company', 'pilot', 'source').order_by('-created_at')[:30],
@@ -43,8 +48,6 @@ def control(request):
         action = request.POST.get('action')
         if action in ('pause', 'resume'):
             accounting.set_paused(action == 'pause', request.user.username, reason)
-        elif action == 'allowance':
-            accounting.set_allowance(request.POST.get('usd', ''), request.user.username, reason)
         else:
             raise ValueError('Unknown control action.')
         messages.success(request, 'Control saved. Existing usage and retry deadlines are retained.')

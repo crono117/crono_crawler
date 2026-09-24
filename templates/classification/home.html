@@ -3,14 +3,13 @@
 {% block content %}
 <h1>Jev evidence review</h1>
 <p>Mode: <strong>{{ mode }}</strong> · Capture: {{ capture|yesno:'on,off' }} · Company routing: {{ routing|yesno:'on,off' }} · {% if readiness %}Admission blocked{% else %}Ready for admission; provider unverified{% endif %}{% if wallet.paused %} · Paused: {{ wallet.reason }}{% endif %}</p>
-<p>Spent ${{ spent }} · Reserved ${{ reserved }} · Remaining ${{ remaining }} · Active attempt: {{ wallet.active_attempt|default:'none' }}</p>
-<p>Cumulative attempt ceiling: {{ wallet.cumulative_attempt_limit|default_if_none:'not configured' }}. All prior paid attempts count, including failed and recovered attempts.</p>
+<p>Today’s UTC exposure: ${{ daily_exposure }} / ${{ daily_allowance }} · Lifetime settled: ${{ spent }} · Lifetime unresolved reservations: ${{ reserved }} · Active attempt: {{ wallet.active_attempt|default:'none' }}</p>
+<p>Legacy cumulative allowance and attempt-ceiling values are retained for audit compatibility only; neither stops admission. Admission is controlled by today’s dollar exposure.</p>
 <p>Mock results test the workflow; they do not measure Jev accuracy. Judgments remain separate from accepted contacts and human review.</p>
 {% for problem in readiness %}<p class="notice">{{ problem }}</p>{% endfor %}
 <form method="post" action="{% url 'classification:control' %}">{% csrf_token %}
 <label>Reason <input name="reason" required maxlength="1000"></label>
-<button name="action" value="pause">Pause Jev</button><button name="action" value="resume">Resume Jev</button>
-<label>Cumulative allowance (USD) <input name="usd" inputmode="decimal" placeholder="1.00"></label><button name="action" value="allowance">Set allowance</button></form>
+<button name="action" value="pause">Pause Jev</button><button name="action" value="resume">Resume Jev</button></form>
 <h2>Evaluations</h2><table><thead><tr><th>Company / person</th><th>Provider</th><th>State</th><th>Evidence</th></tr></thead><tbody>
 {% for item in evaluations %}<tr><td>{{ item.company }}{% if item.person %} / {{ item.person.name }}{% endif %}</td><td>{{ item.provider }}</td><td>{{ item.state }} {{ item.reason }}</td><td><a href="{% url 'classification:detail' item.pk %}">Inspect evidence and answers</a></td></tr>{% empty %}<tr><td colspan="4">No evaluations. Run the offline demo or enable evidence capture.</td></tr>{% endfor %}</tbody></table>
 <p>Page {{ evaluations.number }} of {{ evaluations.paginator.num_pages }} {% if evaluations.has_previous %}<a href="?page={{ evaluations.previous_page_number }}">Previous</a>{% endif %} {% if evaluations.has_next %}<a href="?page={{ evaluations.next_page_number }}">Next</a>{% endif %}</p>

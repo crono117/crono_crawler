@@ -18,7 +18,11 @@ from .models import (Affiliation, Company, CompanyDomain, ContactCandidate, Evid
                      EvidenceSpan, Person)
 
 VERSION = 'candidate-v1.0'
+LAYERED_VERSION = 'blocks-v1'
 PHONE = re.compile(r'(?<!\w)(?:\+\d[\d ().-]{6,20}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?!\w)')
+ROLE = re.compile(r'\b(?:chief|president|vice president|vp|director|manager|sales|engineer|founder|owner|partner|consultant|agent|advisor|broker|specialist|representative|account executive|business development)\b', re.I)
+BLOCK_TAGS = ('article', 'section', 'li', 'div', 'address')
+EXCLUDED_TAGS = {'header', 'nav', 'footer', 'form', 'dialog', 'template'}
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +51,93 @@ def add_span(doc, key, text, kind, locator=''):
     span, _ = EvidenceSpan.objects.get_or_create(document=doc, key=key, defaults={
         'start': start, 'end': start + len(text), 'text_hash': digest(text), 'kind': kind, 'locator': locator[:200]})
     return span
+
+
+def add_span_at(doc, key, start, end, kind, locator=''):
+    if not 0 <= start < end <= len(doc.text):
+        return None
+    text = doc.text[start:end]
+    span, _ = EvidenceSpan.objects.get_or_create(document=doc, key=key, defaults={
+        'start': start, 'end': end, 'text_hash': digest(text), 'kind': kind, 'locator': locator[:200]})
+    return span
+
+
+def _hidden_or_excluded(node):
+    for current in (node, *node.parents):
+        if getattr(current, 'name', None) in EXCLUDED_TAGS:
+            return True
+        attrs = getattr(current, 'attrs', {}) or {}
+        classes = {str(value).casefold() for value in attrs.get('class', [])}
+        style = str(attrs.get('style', '')).replace(' ', '').casefold()
+        if ('hidden' in attrs or str(attrs.get('aria-hidden', '')).casefold() == 'true' or
+                classes.intersection({'hidden', 'visually-hidden', 'sr-only'}) or
+                'display:none' in style or 'visibility:hidden' in style):
+            return True
+    return False
+
+
+def _bounded_block_text(node, text, name, limit):
+    if len(text) <= limit:
+        return text
+    role = ROLE.search(text)
+    contact = EMAIL.search(text) or PHONE.search(text)
+    if not role or not contact:
+        return ''
+    role_text = text[max(0, role.start() - 80):min(len(text), role.end() + 160)].strip()
+    contact_text = contact.group(0)
+    prefix = normalize(f'{name} {role_text}')
+    available = limit - len(contact_text) - 1
+    if available < len(name):
+        return ''
+    return normalize(f'{prefix[:available].rstrip()} {contact_text}')
+
+
+def candidate_blocks(soup):
+    candidates = []
+    for node in soup.find_all(BLOCK_TAGS, limit=2000):
+        if _hidden_or_excluded(node):
+            continue
+        text = contact_evidence(node)
+        if not text or len(text) < 12:
+            continue
+        heading = node.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+        name = normalize(heading.get_text(' ', strip=True)) if heading else ''
+        words = name.split()
+        plausible_name = (2 <= len(words) <= 8 and len(name) <= 100 and '@' not in name and
+                          name.casefold() not in {'contact us', 'our team', 'leadership team', 'meet the team'})
+        has_contact = bool(node.select_one('a[href^="mailto:"], a[href^="tel:"]') or EMAIL.search(text) or PHONE.search(text))
+        if plausible_name and ROLE.search(text) and has_contact:
+            candidates.append((node, text))
+    qualifying = {id(node) for node, _ in candidates}
+    blocks, seen, aggregate = [], set(), 0
+    for node, text in candidates:
+        if any(id(descendant) in qualifying for descendant in node.find_all(BLOCK_TAGS)):
+            continue
+        canonical = text.casefold()
+        if canonical in seen:
+            continue
+        remaining = 2400 - aggregate
+        if remaining <= 0 or len(blocks) == 6:
+            break
+        bounded = _bounded_block_text(node, text, normalize(node.find(
+            ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']).get_text(' ', strip=True)), min(500, remaining))
+        if not bounded:
+            continue
+        seen.add(canonical)
+        blocks.append({'id': f'b{len(blocks) + 1}', 'text': bounded})
+        aggregate += len(bounded)
+    return blocks
+
+
+def project_blocks(text, blocks):
+    offsets = []
+    for block in blocks:
+        text += f"\n[Candidate block {block['id']}]\n"
+        start = len(text)
+        text += block['text']
+        offsets.append((start, len(text)))
+        text += f"\n[/Candidate block {block['id']}]"
+    return text, offsets
 
 
 def contacts_for(span, company, person=None, shared=False):
@@ -79,11 +170,27 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
     soup = soup_for(html)
     visible_text = contact_evidence(soup)
     structured_items, structured_stats = entities(html)
+    selector = source.recipe.get('row') or DEFAULT_SELECTORS['row']
+    selectors = DEFAULT_SELECTORS | (source.recipe or {})
+    rows = [] if source.recipe.get('engine') else soup.select(selector, limit=100)
+    layered_blocks = []
+    if (settings.JEV_CAPTURE_ENABLED and settings.JEV_LAYERED_BLOCKS_ENABLED and not company_job and
+            not any(item['kind'] == 'Person' for item in structured_items) and not rows):
+        layered_blocks = candidate_blocks(soup)
     text = visible_text
     if structured_items:
         text += "\n[Parsed schema.org direct properties; canonical projection]\n"
         text += "\n".join(item['evidence'] for item in structured_items)
-    truncated = len(text) > 50000 or structured_stats['limit_reached']
+    block_offsets = []
+    original_length = len(text)
+    projection = ''
+    if layered_blocks:
+        projection, relative_offsets = project_blocks('', layered_blocks)
+        base = text[:max(0, 50000 - len(projection))]
+        shift = len(base)
+        text = base + projection
+        block_offsets = [(start + shift, end + shift) for start, end in relative_offsets]
+    truncated = original_length + (len(projection) if layered_blocks else 0) > 50000 or structured_stats['limit_reached']
     text = text[:50000]
     if not text:
         return []
@@ -100,9 +207,13 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
             links.append({'url': target, 'label': normalize(node.get_text(' ', strip=True))[:160]})
         if len(links) == 100:
             break
-    fingerprint = digest([source.pk, url, body_hash, sig, extraction_sig, VERSION])
+    fingerprint_parts = [source.pk, url, body_hash, sig, extraction_sig, VERSION]
+    if layered_blocks:
+        fingerprint_parts.append(LAYERED_VERSION)
+    fingerprint = digest(fingerprint_parts)
     provenance = ('synthetic-fixture' if synthetic else 'offline-demo' if source.collector == 'demo'
-                  else 'fetched+structured-v1' if structured_items else 'fetched')
+                  else 'fetched+structured-v1' if structured_items else
+                  f'fetched+{LAYERED_VERSION}' if layered_blocks else 'fetched')
     if synthetic:
         fingerprint = digest([fingerprint, 'synthetic-fixture'])
     previous = EvidenceDocument.objects.filter(fingerprint=fingerprint).first()
@@ -149,6 +260,16 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
         'origin': origin(source.url), 'span': company_span})
     from .services import enqueue_subject
     evaluations = enqueue_subject(doc, company, company_span, provider=provider, company_job=company_job)
+    if layered_blocks:
+        from .services import enqueue_page_blocks
+        saved_blocks = []
+        for block, (start, end) in zip(layered_blocks, block_offsets):
+            span = add_span_at(doc, f"candidate-block-{block['id']}", start, end,
+                               'candidate_block', block['id'])
+            if span:
+                saved_blocks.append({'id': block['id'], 'span': span})
+        if saved_blocks:
+            evaluations += enqueue_page_blocks(doc, company, company_span, saved_blocks, provider=provider)
     for index, item in enumerate(structured_items):
         fields = item['fields']
         # An unrelated author or a bare Person does not establish employment.
@@ -168,9 +289,6 @@ def capture_page(source, url, body_hash, html, *, provider=None, company_job=Non
         contacts = contacts_for(span, employer, person)
         evaluations += enqueue_subject(doc, employer, span, person=person, contacts=contacts[:2],
                                        provider=provider, company_job=company_job)
-    selector = source.recipe.get('row') or DEFAULT_SELECTORS['row']
-    selectors = DEFAULT_SELECTORS | (source.recipe or {})
-    rows = [] if source.recipe.get('engine') else soup.select(selector, limit=100)
     for index, row in enumerate(rows):
         if settings.EXTRACTION_PACKS_ENABLED and (row.get('itemtype', '').rstrip('/').endswith('/Person') or
                 row.find_parent(attrs={'itemscope': True})):

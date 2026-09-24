@@ -1,7 +1,7 @@
 """Operator controls and a fixed offline end-to-end demo. No independent daemon."""
 import hashlib
 import json
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -17,12 +17,18 @@ from classification.models import (Attempt, CompanyDomain, CompanyJob, ControlEv
 
 def report():
     control = JevControl.objects.get(pk='jev')
+    today = timezone.now().astimezone(dt_timezone.utc).date()
     return {'mode': settings.JEV_MODE, 'model': settings.JEV_MODEL, 'paused': control.paused,
-        'allowance_nusd': control.allowance_nusd, 'spent_nusd': control.spent_nusd,
-        'cumulative_attempt_limit': control.cumulative_attempt_limit,
-        'reserved_nusd': control.reserved_nusd, 'remaining_nusd': control.remaining_nusd,
+        'spent_nusd': control.spent_nusd, 'reserved_nusd': control.reserved_nusd,
+        'legacy_audit': {'cumulative_allowance_nusd': control.allowance_nusd,
+                         'cumulative_attempt_limit': control.cumulative_attempt_limit,
+                         'remaining_nusd': control.remaining_nusd, 'admission_effect': False},
         'active_attempt': str(control.active_attempt) if control.active_attempt else None,
         'next_allowed_at': control.next_allowed_at.isoformat(), 'paid_attempts': Attempt.objects.count(),
+        'daily_attempt_limit': None,
+        'daily_allowance_nusd': settings.JEV_DAILY_ALLOWANCE_NUSD,
+        'daily_exposure_nusd': accounting.daily_exposure_nusd(today),
+        'cumulative_allowance_enforced': False,
         'candidate_people': Person.objects.count(), 'evaluations': Evaluation.objects.count(),
         'succeeded': Evaluation.objects.filter(state='succeeded').count(), 'judgments': Judgment.objects.count(),
         'company_jobs': list(CompanyJob.objects.values('id', 'state', 'fetches', 'attempts', 'reason'))}
@@ -69,10 +75,7 @@ class Command(BaseCommand):
         for name in ('pause', 'resume'):
             command = sub.add_parser(name)
             command.add_argument('--reason', required=True)
-        budget = sub.add_parser('budget')
-        budget.add_argument('usd')
-        budget.add_argument('--reason', required=True)
-        budget.add_argument('--attempt-limit', type=int, help='Absolute cumulative attempt ceiling; does not reset history.')
+
         recover = sub.add_parser('recover')
         recover.add_argument('attempt_id')
         recover.add_argument('--worker-stopped', action='store_true')
@@ -99,7 +102,7 @@ class Command(BaseCommand):
             checks = accounting.diagnostics(wallet)
             self.stdout.write(json.dumps({'live_ready': not checks,
                 'checks': checks, 'token_counter': settings.JEV_TOKEN_COUNTER or 'unverified estimate',
-                'daily_attempt_limit': settings.JEV_DAILY_ATTEMPTS,
+                'daily_attempt_limit': None,
                 'reservation_nusd': accounting.RESERVATION_NUSD,
                 'scope': 'Configuration and wallet only; each evaluation rechecks evidence, authorization and lease.',
                 'key_present': bool(settings.TYPESAFE_API_KEY), 'ledger_consistent': consistent,
@@ -181,8 +184,6 @@ class Command(BaseCommand):
                 ControlEvent.objects.create(actor='local CLI', action='resume_company_job', reason=o['reason'], data={'job': job.pk})
         elif action in ('pause', 'resume'):
             accounting.set_paused(action == 'pause', 'local CLI', o['reason'])
-        elif action == 'budget':
-            accounting.set_allowance(o['usd'], 'local CLI', o['reason'], attempt_limit=o['attempt_limit'])
         elif action == 'recover':
             accounting.recover_attempt(o['attempt_id'], 'local CLI', o['reason'], o['worker_stopped'], o['billed_nusd'])
         elif action == 'purge':

@@ -1,5 +1,6 @@
 """Small independent judgments; the question itself identifies its subject."""
 VERSION = 'jev-leads-v1.0.0'
+LAYERED_VERSION = 'jev-layered-blocks-v1.0.0'
 TAXONOMY = {
     'software': 'Software and SaaS products', 'it_services': 'IT support, integration and managed services',
     'cloud': 'Cloud infrastructure, hosting or platforms', 'cybersecurity': 'Security products or services',
@@ -29,6 +30,22 @@ def company_questions(name):
             'people_directory': 'Multiple named professional profiles.', 'individual_profile': 'One professional profile.',
             'company_description': 'Company offering.', 'general_contact': 'General company contact.', 'other': 'Another purpose.'}),
     }
+
+
+def page_questions(block_ids):
+    questions = {
+        'page_purpose': choice('What does this supplied page describe?', {
+            'people_directory': 'Multiple named professional profiles.', 'individual_profile': 'One professional profile.',
+            'company_description': 'Company offering.', 'general_contact': 'General company contact.', 'other': 'Another purpose.'}),
+    }
+    for block_id in block_ids:
+        questions[f'candidate_block_{block_id}'] = choice(
+            f'What does candidate block {block_id} represent?', {
+                'person_profile': 'A named professional profile with a role and associated business contact.',
+                'people_directory': 'A directory block containing multiple professional profiles.',
+                'shared_company_contact': 'A general or shared company contact block.',
+                'not_people': 'Content that is not a professional person or people directory.'})
+    return questions
 
 
 def person_questions(name, company, contacts):
