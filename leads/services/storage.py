@@ -42,11 +42,24 @@ def hold_note(previous, url):
             "Review both records before changing this status.")
 
 
+def unique_card(record, records_by_name):
+    """Extraction saw exactly one selector-matched card with this name, before any filtering.
+
+    Records without that signal (local AI, structured recipes) never prove continuity.
+    """
+    return record.get("name_cards") == 1 and records_by_name[record["name"].casefold()] == 1
+
+
 @transaction.atomic
 def save_records(source, url, content_hash, records, company_tags):
     now = timezone.now()
-    Observation.objects.filter(source=source, page_url=url).update(present=False)
-    names_on_page = Counter(record["name"].casefold() for record in records)
+    observations = Observation.objects.filter(source=source, page_url=url)
+    # Observation history outlives identity changes, so it links a reviewed person on this
+    # page to later records whose email was added, lost, changed or became ambiguous.
+    observed_ids = set(observations.values_list("lead_id", flat=True))
+    page_history = list(Lead.objects.filter(pk__in=observed_ids).order_by("pk"))
+    observations.update(present=False)
+    records_by_name = Counter(record["name"].casefold() for record in records)
     for record in records:
         facts = {k: record[k] for k in LEAD_FIELDS}
         key = identity(record, source, url)
@@ -54,18 +67,21 @@ def save_records(source, url, content_hash, records, company_tags):
         previous = None
         if key != page_identity(record, source, url):
             previous = Lead.objects.select_for_update().filter(identity=page_identity(record, source, url)).first()
-        if lead is None and previous and names_on_page[record["name"].casefold()] == 1 and continuous(previous, record):
+        if lead is None and previous and unique_card(record, records_by_name) and continuous(previous, record):
             # The same card gained an email: keep the stored lead, its review state and notes.
             previous.identity = key
             lead = previous
         created = lead is None
         if created:
             lead = Lead(identity=key, **facts, last_seen=now)
-        if (previous and previous.pk != lead.pk and previous.status in HELD_STATUSES and lead.status == "new"
-                and f"lead #{previous.pk} " not in lead.notes):
-            # An unmatched successor must not become an exportable replacement for a held record.
-            lead.status = previous.status
-            lead.notes = "\n".join(filter(None, [lead.notes, hold_note(previous, url)]))
+        held = [other for other in page_history if other.status in HELD_STATUSES and other.pk != lead.pk
+                and other.name.casefold() == record["name"].casefold()]
+        if (held and lead.pk not in observed_ids and lead.status == "new"
+                and not any(f"lead #{other.pk} " in lead.notes for other in held)):
+            # A lead newly tied to this page must not become an exportable replacement for a
+            # held namesake; an operator decides whether they are the same person.
+            lead.status = held[0].status
+            lead.notes = "\n".join(filter(None, [lead.notes, hold_note(held[0], url)]))
         if not created:
             # Preserve review decisions/notes; retain older non-empty fields as historical hints.
             for field, value in facts.items():

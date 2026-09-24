@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from collections import Counter
 from urllib.parse import unquote
 from bs4 import BeautifulSoup, NavigableString
 import httpx
@@ -263,6 +264,10 @@ def extract_rules(html, source, diagnostics=None):
     if diagnostics is not None:
         diagnostics.update(extractor="rules", rows_checked=min(len(rows), 500), row_limit_reached=len(rows) > 500, rejected={})
     chrome = page_chrome_contacts(soup)
+    # Counted before evidence, contact and duplicate filtering, so storage can tell a unique
+    # card from one that merely survived validation. Unknown when the row limit truncates.
+    name_cards = None if len(rows) > 500 else Counter(
+        normalize(selected_text(row, selectors["name"]))[:200].casefold() for row in rows)
     cards, evidence_texts = [], []
     for row in rows[:500]:
         # Evidence can narrow a card, never escape it or fall back to the whole page.
@@ -279,6 +284,7 @@ def extract_rules(html, source, diagnostics=None):
         if accepted:
             accepted["contact_provenance"] = {kind: provenance[kind] for kind in CONTACT_FIELDS
                                               if accepted[kind] and kind in provenance}
+            accepted["name_cards"] = name_cards[accepted["name"].casefold()] if name_cards else None
             records.append(accepted)
     return records
 
