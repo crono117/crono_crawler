@@ -91,6 +91,13 @@ class Lead(models.Model):
     contact_scope = models.CharField(max_length=16, default="unknown", choices=[("person", "Person"), ("shared", "Shared business"), ("unknown", "Unconfirmed")])
     status = models.CharField(max_length=16, default="new", choices=[("new", "Needs review"), ("reviewed", "Reviewed"), ("rejected", "Rejected"), ("suppressed", "Do not contact")])
     notes = models.TextField(blank=True)
+    # Who set the current status: the default for new records, an operator's review, or a
+    # hold inherited from a suppressed/rejected same-name lead on a shared source page.
+    # Only an operator decision exempts a lead from later holds.
+    status_origin = models.CharField(max_length=16, default="default", choices=[
+        ("default", "Default"), ("operator", "Operator decision"), ("hold", "Inherited hold")])
+    held_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="held_leads")
+    status_decided_at = models.DateTimeField(null=True, blank=True)
     first_seen = models.DateTimeField(default=timezone.now)
     last_seen = models.DateTimeField(default=timezone.now)
     class Meta:
