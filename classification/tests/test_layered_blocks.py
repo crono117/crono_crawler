@@ -1,3 +1,4 @@
+import copy
 import hashlib
 from datetime import timedelta
 
@@ -6,6 +7,7 @@ from django.utils import timezone
 
 from automation.models import RecipeVersion
 from automation.policy import scope_hash
+from classification import accounting
 from classification.contracts import digest
 from classification.evidence import VERSION as EVIDENCE_VERSION, candidate_blocks, capture_page
 from classification.models import (Affiliation, Company, CompanyJob, ContactCandidate, Evaluation,
@@ -249,3 +251,34 @@ class LayeredBlockEvidenceTests(TestCase):
         bound_ids = page_evaluation.bindings['page_purpose']
         self.assertEqual(bound_ids[1:], supplied_span_ids)
         self.assertEqual(EvidenceSpan.objects.get(pk=bound_ids[0]).kind, 'company')
+        self.assertTrue(all(accounting.valid_evidence(item) for item in evaluations))
+
+        candidate_only = next(item for item in evaluations if 'page_purpose' not in item.request['questions'])
+        bindings = dict(candidate_only.bindings)
+        bindings[next(iter(bindings))] = page_evaluation.bindings['page_purpose'][:1]
+        candidate_only.bindings = bindings
+        candidate_only.save(update_fields=['bindings'])
+        candidate_only.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(candidate_only))
+
+    def test_malformed_layered_block_ids_fail_closed(self):
+        cards = ''.join(
+            f'<section class="employee-bio"><h2>Person {index}</h2><p>Sales Director</p>'
+            f'<a href="mailto:person{index}@example.test">Email</a></section>'
+            for index in range(2))
+        evaluation = next(item for item in self.capture(f'<h1>Example Payments</h1>{cards}')
+                          if item.request['state'].get('blocks'))
+        original = copy.deepcopy(evaluation.request)
+        for bad_id in (7, ''):
+            with self.subTest(bad_id=bad_id):
+                request = copy.deepcopy(original)
+                request['state']['blocks'][0]['id'] = bad_id
+                evaluation.request = request
+                evaluation.save(update_fields=['request'])
+                window = int(evaluation.created_at.timestamp()) // (7 * 86400)
+                evaluation.cache_key = digest([
+                    evaluation.document.fingerprint, evaluation.company_id, evaluation.person_id,
+                    evaluation.provider, evaluation.catalog_version, evaluation.request, window])
+                evaluation.save(update_fields=['cache_key'])
+                evaluation.refresh_from_db()
+                self.assertFalse(accounting.valid_evidence(evaluation))

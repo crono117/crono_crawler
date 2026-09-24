@@ -2,12 +2,18 @@
 import hashlib
 import json
 import math
+from decimal import Decimal
 from django.conf import settings
 from django.utils.module_loading import import_string
 
 
 class ContractError(ValueError):
     pass
+
+
+PROBABILITY_SUM_TOLERANCE = 0.001
+PROBABILITY_ROUNDING_NORMALIZATION_LIMIT = Decimal('0.01')
+PROBABILITY_EXACT_EPSILON = math.ulp(1.0)
 
 
 def canonical(value):
@@ -28,6 +34,23 @@ def input_count(request):
         return result, settings.JEV_TOKEN_COUNTER, True
     count = math.ceil(len(canonical(request).encode('utf-8')) * 1.25) + 512
     return count, 'utf8-envelope-plus-25pct-and-512-v1', False
+
+
+def packet_state(state, question_keys):
+    """Return only evidence referenced by this packet's question IDs."""
+    result = state
+    if 'contacts' in state:
+        contact_ids = {int(key.removeprefix('contact_')) for key in question_keys
+                       if key.startswith('contact_') and key.removeprefix('contact_').isdigit()}
+        result = result | {'contacts': [item for item in state['contacts'] if item['id'] in contact_ids]}
+    if state.get('blocks'):
+        block_ids = {key.removeprefix('candidate_block_') for key in question_keys
+                     if key.startswith('candidate_block_')}
+        if block_ids:
+            result = result | {'blocks': [block for block in state['blocks'] if block['id'] in block_ids]}
+            if 'page_purpose' not in question_keys:
+                result = {key: value for key, value in result.items() if key != 'spans'}
+    return result
 
 
 def validate_request(request):
@@ -74,7 +97,9 @@ def validate_response(request, response):
     answers = response.get('answers')
     if not isinstance(answers, dict) or set(answers) != set(request['questions']):
         raise ContractError('Response question IDs do not match.')
-    for key, answer in answers.items():
+    validated = {}
+    normalizations = []
+    for ordinal, (key, answer) in enumerate(answers.items(), start=1):
         if not isinstance(answer, dict) or answer.get('type') != 'choice':
             raise ContractError('Invalid answer type.')
         probabilities = answer.get('probabilities')
@@ -84,12 +109,32 @@ def validate_response(request, response):
         values = list(probabilities.values()) + [answer.get('confidence')]
         if any(type(v) not in (float, int) or not 0 <= v <= 1 or not math.isfinite(v) for v in values):
             raise ContractError('Invalid probability/confidence.')
-        if abs(sum(probabilities.values()) - 1) > 0.001:
-            raise ContractError('Probabilities must sum to one.')
+        total = math.fsum(probabilities.values())
+        decimal_delta = abs(sum((Decimal(str(value)) for value in probabilities.values()), Decimal()) - Decimal(1))
+        delta = float(decimal_delta)
+        if delta > PROBABILITY_EXACT_EPSILON:
+            if total > 0 and decimal_delta <= PROBABILITY_ROUNDING_NORMALIZATION_LIMIT:
+                normalized = {label: value / total for label, value in probabilities.items()}
+                peak = max(normalized.items(), key=lambda item: item[1])[0]
+                normalized[peak] += 1 - math.fsum(normalized.values())
+                probabilities = normalized
+                normalizations.append({
+                    'question_id': key, 'original_sum': total, 'delta': delta,
+                    'choices': len(probabilities),
+                })
+            else:
+                raise ContractError(
+                    f'Probability sum invalid at answer {ordinal}: choices={len(probabilities)} '
+                    f'sum={total:.6f} delta={delta:.6f}.')
         label = answer.get('choice')
-        if not isinstance(label, str) or label not in criteria or probabilities[label] < max(probabilities.values()) - 0.001:
+        if (not isinstance(label, str) or label not in criteria or
+                probabilities[label] < max(probabilities.values()) - PROBABILITY_SUM_TOLERANCE):
             raise ContractError('Invalid winning choice.')
-    return answers
+        validated[key] = {
+            'type': 'choice', 'choice': label, 'probabilities': probabilities,
+            'confidence': answer['confidence'],
+        }
+    return validated, normalizations
 
 
 def usage_of(response):

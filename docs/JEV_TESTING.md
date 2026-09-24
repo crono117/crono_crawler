@@ -94,7 +94,7 @@ Replace all placeholders and the example timestamp. Import makes no network requ
 .venv/bin/python manage.py jev report
 ```
 
-Inspect the result in the console: actual model, question IDs, labels, finite normalized probabilities, confidence, input/output usage, attempt status and cost. Invalid business answers never become judgments, but valid reported usage is still charged to the ledger. Missing usage keeps the full reservation. A `failed_contract` result needs contract investigation, not blind retries. Compare with human labels before increasing the limit or enabling routing.
+Inspect the result in the console: actual model, question IDs, labels, finite normalized probabilities, confidence, input/output usage, attempt status and cost. Invalid business answers never become judgments, but valid reported usage is still charged to the ledger. Missing usage keeps the full reservation. Choice probabilities must form a distribution. Exact/near-exact sums are accepted; bounded provider rounding drift of at most 0.01 is deterministically normalized, stored as normalized probabilities and recorded in a sanitized `normalize_provider_probabilities` control event. Larger drift remains `failed_contract` with only answer ordinal, choice count, sum and delta in the diagnostic. A `failed_contract` result needs contract investigation, not blind retries. Compare with human labels before increasing the limit or enabling routing.
 
 `--limit` bounds processing attempts per command invocation. It does not bypass persisted cooldowns, the UTC-day dollar allowance, the three-attempt per-evaluation ceiling or evidence checks. Future runs skip work until its deadline is due. Mock and live cache identities are distinct.
 
@@ -110,7 +110,7 @@ Create an active campaign with only the intended sources, then create a bounded 
 
 Set `JEV_CAPTURE_ENABLED=1` and `JEV_ROUTING_ENABLED=1`, retain the reviewed live gates, and restart the normal web/worker process. The original campaign scheduler also remains active with its own budgets; company-job limits apply to work owned by that company job, not to unrelated existing campaign runs. Use an isolated test campaign for measurement.
 
-Only a fresh company-level technology/provider result meeting the fixed probability, confidence and margin thresholds can trigger follow-up. An engineer's title is not treated as a sales role. Stored exact links and the approved seed are used; no guessed paths, generated domains, search calls or off-origin redirects are introduced by the company router. A job deduplicates across repeated triggers and does not recursively launch further company jobs from its own evaluations.
+Only a fresh **human-confirmed** company-level technology/provider result meeting the fixed probability, confidence and margin thresholds can trigger follow-up. `needs_review`, `needs_evidence` and rejected live judgments cannot route. The packaged offline demo remains the only mock/demo exception and cannot target real sources. An engineer's title is not treated as a sales role. Stored exact links and the approved seed are used; no guessed paths, generated domains, search calls or off-origin redirects are introduced by the company router. A job deduplicates across repeated triggers and does not recursively launch further company jobs from its own evaluations.
 
 ## Controls, accounting and recovery
 
@@ -133,7 +133,7 @@ Only a fresh company-level technology/provider result meeting the fixed probabil
 | Routing freshness | Both the latest evidence check and successful evaluation must be within 7 days; cache keys use seven-day windows. Original retrieval times remain immutable |
 | SQLite | WAL, synchronous FULL, IMMEDIATE write transactions for every app process |
 
-Reservations are debited before the only Jev HTTP call. Response usage reconciles money even if answers fail validation. Timeouts and missing usage keep reserved money. Authentication failures and reported token/reservation overruns pause admission. Unknown crashes retain the dispatch owner even after the worker lease expires; restart cannot silently refund or resend.
+Reservations are debited before the only Jev HTTP call. Admission and dispatch revalidate current approval/scope/extraction identity plus exact request-question bindings, persisted span ownership/hashes, transmitted span text and contact-candidate fields. Keep the capture-time collector, extractor, recipe and scope identity in place until selected evaluations finish; restoring it first correctly invalidates the queued evidence. Response usage reconciles money even if answers fail validation. Timeouts and missing usage keep reserved money. Authentication failures and reported token/reservation overruns pause admission. Unknown crashes retain the dispatch owner even after the worker lease expires; restart cannot silently refund or resend.
 
 ```bash
 .venv/bin/python manage.py jev pause --reason "Review initial calibration"

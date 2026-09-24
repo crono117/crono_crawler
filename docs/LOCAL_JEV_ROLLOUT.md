@@ -119,7 +119,7 @@ A separate agent performed an **independent static review** of authorization, mo
 
 The earlier one-cent / three-attempt calibration described in prior revisions is superseded. Paid admission now has **no daily or cumulative attempt-count ceiling** and does not use the legacy cumulative allowance as a stop. Lifetime attempt and spend fields remain audit history.
 
-Live work is governed by `JEV_DAILY_ALLOWANCE_USD`, measured per UTC day as settled cost plus unresolved reservations. The current authorized runtime value is `$2`. Admission reserves the full conservative request amount before network I/O, remains single-flight, and keeps the one-second minimum pacing and three-attempt per-evaluation retry ceiling.
+Live work is governed by `JEV_DAILY_ALLOWANCE_USD`, measured per UTC day as settled cost plus unresolved reservations. The current authorized runtime value is `$2`. Admission reserves the full conservative request amount before network I/O, remains single-flight, and keeps the one-second minimum pacing and three-attempt per-evaluation retry ceiling. Admission also requires exact request-question/binding correspondence and exact persisted evidence text/fields. Provider probability sums with bounded rounding drift of at most 0.01 are normalized with an audit event; larger drift fails closed with a sanitized diagnostic. Live routing requires human-confirmed judgments; unreviewed model output remains review-only.
 
 ```dotenv
 JEV_MODE=live

@@ -8,8 +8,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from . import accounting, provider
-from .contracts import ContractError, digest, input_count, validate_request, validate_response
-from .models import CompanyJob, Evaluation, EvaluationUse, Judgment
+from .contracts import ContractError, digest, input_count, packet_state, validate_request, validate_response
+from .models import CompanyJob, ControlEvent, Evaluation, EvaluationUse, Judgment
 from .questions import LAYERED_VERSION, VERSION, company_questions, page_questions, person_questions
 
 
@@ -27,7 +27,7 @@ def enqueue_subject(doc, company, span, *, person=None, contacts=(), provider='m
 
 @transaction.atomic
 def enqueue_page_blocks(doc, company, company_span, blocks, *, provider='mock'):
-    state = {'company': company.name, 'blocks': [
+    state = {'company': company.name, 'spans': [{'id': company_span.pk, 'text': company_span.text}], 'blocks': [
         {'id': block['id'], 'span_id': block['span'].pk, 'text': block['span'].text} for block in blocks]}
     questions = page_questions([block['id'] for block in blocks])
     bindings = {'page_purpose': [company_span.pk] + [block['span'].pk for block in blocks]}
@@ -43,7 +43,8 @@ def _enqueue(doc, company, state, questions, bindings, *, person=None, provider=
     base = {'model': settings.JEV_MODEL, 'state': state, 'questions': {}}
     batches, current = [], {}
     for key, question in questions.items():
-        candidate = base | {'questions': current | {key: question}}
+        candidate_group = current | {key: question}
+        candidate = base | {'state': packet_state(state, candidate_group), 'questions': candidate_group}
         if input_count(candidate)[0] > settings.JEV_MAX_INPUT_TOKENS and current:
             batches.append(current)
             current = {}
@@ -52,14 +53,11 @@ def _enqueue(doc, company, state, questions, bindings, *, person=None, provider=
         batches.append(current)
     results = []
     for group in batches:
-        request_state = state
+        request_state = packet_state(state, group)
         group_bindings = {key: bindings[key] for key in group}
         if state.get('blocks'):
             group_ids = {key.removeprefix('candidate_block_') for key in group
                          if key.startswith('candidate_block_')}
-            if group_ids:
-                request_state = state | {'blocks': [block for block in state['blocks']
-                                                   if block['id'] in group_ids]}
             if 'page_purpose' in group:
                 all_block_spans = {block['span_id'] for block in state['blocks']}
                 company_spans = [span_id for span_id in bindings['page_purpose']
@@ -67,7 +65,8 @@ def _enqueue(doc, company, state, questions, bindings, *, person=None, provider=
                 supplied_spans = [block['span_id'] for block in request_state['blocks']]
                 group_bindings['page_purpose'] = company_spans + supplied_spans
         request = {'model': settings.JEV_MODEL, 'state': request_state, 'questions': group}
-        cache_window = int(timezone.now().timestamp()) // (7 * 86400)
+        created_at = timezone.now()
+        cache_window = int(created_at.timestamp()) // (7 * 86400)
         key = digest([doc.fingerprint, company.pk, person.pk if person else None, provider,
                       catalog_version, request, cache_window])
         existing = Evaluation.objects.filter(cache_key=key).first()
@@ -84,6 +83,7 @@ def _enqueue(doc, company, state, questions, bindings, *, person=None, provider=
             'document': doc, 'company': company, 'person': person, 'company_job': company_job,
             'provider': provider, 'catalog_version': catalog_version, 'model': settings.JEV_MODEL,
             'request': request, 'bindings': group_bindings,
+            'created_at': created_at,
             'state': 'queued' if input_count(request)[0] <= settings.JEV_MAX_INPUT_TOKENS else 'too_large',
             'reason': '' if input_count(request)[0] <= settings.JEV_MAX_INPUT_TOKENS else 'Evidence block/question needs a smaller packet.'})
         EvaluationUse.objects.create(evaluation=evaluation, document=doc, checked_at=doc.last_checked,
@@ -124,13 +124,18 @@ def save_answers(evaluation_id, response, token):
     accounting.check_lease(token)
     if evaluation.lease_token != token or evaluation.state != 'running' or not accounting.valid_evidence(evaluation):
         raise ContractError('Stale evaluation/lease or revoked evidence.')
-    answers = validate_response(evaluation.request, response)
+    answers, normalizations = validate_response(evaluation.request, response)
     for key, answer in answers.items():
         label = answer['choice']
         review = 'needs_evidence' if label == 'unknown' else 'needs_review'
         Judgment.objects.update_or_create(evaluation=evaluation, question_id=key, defaults={
             'label': label, 'probabilities': answer['probabilities'], 'confidence': answer['confidence'],
             'evidence_ids': evaluation.bindings[key], 'review_state': review})
+    for normalization in normalizations:
+        ControlEvent.objects.create(actor='provider adapter', action='normalize_provider_probabilities',
+            reason='Normalized bounded provider rounding drift to a probability distribution.', data={
+                'evaluation': str(evaluation.pk), **normalization,
+            })
     evaluation.actual_model = response['model']
     evaluation.state, evaluation.completed_at, evaluation.reason = 'succeeded', timezone.now(), ''
     evaluation.save(update_fields=['actual_model', 'state', 'completed_at', 'reason'])
@@ -193,6 +198,11 @@ def process(evaluation, token, *, mock_only=False):
         # Unknown failures after admission may be billable. Leave the dispatch owner
         # and reservation intact; recovery requires an explicit operator action.
         if attempt:
+            if attempt.cost_nusd is not None:
+                Evaluation.objects.filter(pk=evaluation.pk, lease_token=token).update(
+                    state='failed_persistence', lease_token='',
+                    reason='Paid response settled but local result persistence failed; explicit requeue required.')
+                return True
             Evaluation.objects.filter(pk=evaluation.pk, lease_token=token).update(
                 state='uncertain', reason='Unexpected failure after reservation; inspect attempt and recover explicitly.')
         raise
