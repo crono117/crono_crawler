@@ -135,3 +135,114 @@ class VisibleContactTests(TestCase):
         records, _, _ = evaluate(html, self.source, {'row': '.team-member', 'name': 'h3'})
 
         self.assertEqual([r['email'] for r in records], ['alex@example.test'])
+
+
+class SelectedVisibleContactSafeguardTests(TestCase):
+    """The same safeguards apply whether the visible address is wrapped or bare."""
+    EMAIL_WRAPPERS = ('<span class="email">{}</span>', '<span itemprop="email">{}</span>', '<p>{}</p>')
+    PHONE_WRAPPERS = ('<span class="phone">{}</span>', '<span itemprop="telephone">{}</span>', '<p>{}</p>')
+
+    def setUp(self):
+        self.source = Source.objects.create(name='Safeguard fixture', company='Example Payments',
+                                            url='https://example.test/team/', approved=True)
+
+    def outcomes(self, html):
+        self.source.recipe = {}
+        ordinary = extract(html, self.source)[0]
+        local = evaluate(html, self.source, {'row': '.team-member', 'name': 'h3'})[0]
+        generated = []
+        for recipe in proposals([html]):
+            try:
+                generated.extend(evaluate(html, self.source, recipe)[0])
+            except ValueError:
+                continue
+        return {'ordinary': sorted((r['name'], r['email'], r['phone']) for r in ordinary),
+                'local': sorted((r['name'], r['email'], r['phone']) for r in local),
+                'generated': sorted({(r['name'], r['email'], r['phone']) for r in generated})}
+
+    def assert_none(self, html):
+        self.assertEqual(self.outcomes(html), {'ordinary': [], 'local': [], 'generated': []})
+
+    def test_two_addresses_in_one_element_are_ambiguous(self):
+        for wrapper in self.EMAIL_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', wrapper.format('alex@example.test jordan@example.test'))))
+        for wrapper in self.PHONE_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', wrapper.format('(555) 010-1234 (555) 010-5678'))))
+
+    def test_second_person_heading_blocks_assignment(self):
+        for wrapper in self.EMAIL_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', '<h3>Jordan Sample</h3>' + wrapper.format('jordan@example.test'))))
+
+    def test_nested_footer_address_is_ignored(self):
+        for wrapper in self.EMAIL_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', '<footer>' + wrapper.format('frontdesk@example.test') + '</footer>')))
+        for wrapper in self.PHONE_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', '<footer>' + wrapper.format('(555) 010-7777') + '</footer>')))
+
+    def test_generic_inbox_is_not_assigned(self):
+        for wrapper in self.EMAIL_WRAPPERS:
+            with self.subTest(wrapper=wrapper):
+                self.assert_none(page(card('Alex Example', wrapper.format('info@example.test'))))
+
+    def test_page_footer_address_is_not_assigned(self):
+        footer = '<footer>frontdesk@examplepayments.test (555) 010-9999</footer>'
+        for email, phone in zip(self.EMAIL_WRAPPERS, self.PHONE_WRAPPERS):
+            with self.subTest(wrapper=email):
+                body = email.format('frontdesk@examplepayments.test') + phone.format('(555) 010-9999')
+                self.assert_none(page(card('Alex Example', body), footer=footer))
+
+    def test_repeated_switchboard_phone_is_dropped_everywhere(self):
+        expected = [('Alex Example', 'alex@example.test', ''), ('Jordan Sample', 'jordan@example.test', '')]
+        for email, phone in zip(self.EMAIL_WRAPPERS, self.PHONE_WRAPPERS):
+            with self.subTest(wrapper=phone):
+                html = page(card('Alex Example', email.format('alex@example.test') + phone.format('(555) 010-1000')),
+                            card('Jordan Sample', email.format('jordan@example.test') + phone.format('(555) 010-1000')))
+                outcome = self.outcomes(html)
+                self.assertEqual(outcome['ordinary'], expected)
+                self.assertEqual(outcome['local'], expected)
+                self.assertEqual(outcome['generated'], expected)
+
+    def test_single_wrapped_or_bare_address_is_accepted_everywhere(self):
+        for email, phone in zip(self.EMAIL_WRAPPERS, self.PHONE_WRAPPERS):
+            with self.subTest(wrapper=email):
+                html = page(card('Alex Example', email.format('alex@example.test') + phone.format('(555) 010-1234')))
+                expected = [('Alex Example', 'alex@example.test', '(555) 010-1234')]
+                self.assertEqual(self.outcomes(html), {'ordinary': expected, 'local': expected, 'generated': expected})
+
+
+class ExplicitSelectorTests(TestCase):
+    """An operator's explicit selector keeps its own selection; nothing is inferred around it."""
+
+    def setUp(self):
+        self.source = Source.objects.create(name='Explicit fixture', company='Example Payments',
+                                            url='https://example.test/team/', approved=True)
+
+    def records(self, html, recipe):
+        self.source.recipe = recipe
+        return [(r['name'], r['email'], r['phone']) for r in extract(html, self.source)[0]]
+
+    def test_explicit_selector_for_an_exact_address_still_works(self):
+        html = page(card('Alex Example', '<span class="email">alex@example.test</span>'))
+        self.assertEqual(self.records(html, {'email': '.email'}), [('Alex Example', 'alex@example.test', '')])
+
+    def test_explicit_selector_does_not_pick_one_of_several_addresses(self):
+        html = page(card('Alex Example', '<span class="email">alex@example.test jordan@example.test</span>'))
+        self.assertEqual(self.records(html, {'email': '.email'}), [])
+
+    def test_empty_explicit_selector_disables_email_inference(self):
+        html = page(card('Alex Example', '<p>alex@example.test</p><a href="tel:+15550101234">Call</a>'))
+        self.assertEqual(self.records(html, {'email': ''}), [('Alex Example', '', '+15550101234')])
+
+    def test_non_matching_explicit_selector_is_not_replaced_by_inference(self):
+        html = page(card('Alex Example', '<p>alex@example.test</p>'))
+        self.assertEqual(self.records(html, {'email': '.work-email'}), [])
+
+    def test_legacy_generated_link_selector_allows_inference(self):
+        html = page(card('Alex Example', '<p>alex@example.test</p>'))
+        self.assertEqual(self.records(html, {'row': '.team-member', 'email': "a[href^='mailto:']"}),
+                         [('Alex Example', 'alex@example.test', '')])
