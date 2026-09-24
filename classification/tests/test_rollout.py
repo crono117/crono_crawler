@@ -35,6 +35,18 @@ class RolloutRegressions(TestCase):
                                        body.text, provider='live')[0]
         self.token = acquire_lease()
 
+    def fresh_valid_evaluation(self, ordinal):
+        created_at = timezone.now() - timedelta(days=8 * (ordinal + 1))
+        cache_window = int(created_at.timestamp()) // (7 * 86400)
+        cache_key = contracts.digest([
+            self.evaluation.document.fingerprint, self.evaluation.company_id, None, 'live',
+            self.evaluation.catalog_version, self.evaluation.request, cache_window,
+        ])
+        return Evaluation.objects.create(document=self.evaluation.document,
+            company=self.evaluation.company, provider='live', request=self.evaluation.request,
+            bindings=self.evaluation.bindings, model=self.evaluation.model,
+            catalog_version=self.evaluation.catalog_version, cache_key=cache_key, created_at=created_at)
+
     def test_unhashable_choice_is_contract_failure_and_usage_still_settles(self):
         body = provider.mock_response(self.evaluation.request)
         body['usage'] = {'input_tokens': 120, 'output_tokens': 10}
@@ -102,10 +114,8 @@ class RolloutRegressions(TestCase):
                        provider.Result(503, {'error': 'RAW-SECRET'}), provider.Result(429, None)):
             with self.subTest(status=result.status, error=result.error):
                 # A fresh packet for each distinct failed request.
-                evaluation = type(self.evaluation).objects.create(document=self.evaluation.document,
-                    company=self.evaluation.company, provider='live', request=self.evaluation.request,
-                    bindings=self.evaluation.bindings, model=self.evaluation.model,
-                    catalog_version=self.evaluation.catalog_version, cache_key=str(result))
+                evaluation = self.fresh_valid_evaluation(
+                    (result.status or 0) + {'timeout': 1, 'transport_error': 2}.get(result.error, 3))
                 JevControl.objects.update(next_allowed_at=timezone.now())
                 with patch('classification.provider._post', new=AsyncMock(return_value=result)) as post:
                     services.process(evaluation, self.token)
@@ -322,6 +332,7 @@ class SyntheticRegressions(TestCase):
 @override_settings(**LIVE)
 class AdditionalMoneyRegressions(TestCase):
     setUp = RolloutRegressions.setUp
+    fresh_valid_evaluation = RolloutRegressions.fresh_valid_evaluation
     def test_lowered_daily_allowance_revokes_unsent_permit(self):
         attempt = accounting.reserve(self.evaluation.pk, self.token)
         with override_settings(JEV_DAILY_ALLOWANCE_NUSD=accounting.RESERVATION_NUSD - 1):
@@ -354,10 +365,7 @@ class AdditionalMoneyRegressions(TestCase):
             lambda r: next(iter(r['answers'].values())).update(confidence='0.9')]
         for index, mutate in enumerate(mutations):
             with self.subTest(index=index):
-                evaluation = Evaluation.objects.create(document=self.evaluation.document,
-                    company=self.evaluation.company, provider='live', request=self.evaluation.request,
-                    bindings=self.evaluation.bindings, model=self.evaluation.model,
-                    catalog_version=self.evaluation.catalog_version, cache_key=f'malformed-{index}')
+                evaluation = self.fresh_valid_evaluation(index + 100)
                 body=provider.mock_response(evaluation.request); body['usage']={'input_tokens': 120, 'output_tokens': 10}
                 mutate(body)
                 JevControl.objects.update(next_allowed_at=timezone.now())

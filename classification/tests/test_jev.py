@@ -16,12 +16,23 @@ from leads.services.worker import acquire_lease, release_lease
 from classification import accounting, contracts, provider, routing, services
 from classification.evidence import capture_page, purge_expired, valid_span
 from classification.fixtures import DEMO_ORIGIN, demo_response, seed_demo
-from classification.models import (Attempt, CompanyDomain, CompanyJob, ContactCandidate, DailyUsage,
+from classification.models import (Attempt, Company, CompanyDomain, CompanyJob, ContactCandidate, DailyUsage,
     Evaluation, EvidenceDocument, EvidenceSpan, JevControl, Judgment, Person)
 
 
 def huge_counter(request):
     return 5001
+
+
+def recache(evaluation):
+    window = int(evaluation.created_at.timestamp()) // (7 * 86400)
+    evaluation.cache_key = contracts.digest([
+        evaluation.document.fingerprint, evaluation.company_id, evaluation.person_id,
+        evaluation.provider, evaluation.catalog_version, evaluation.request, window,
+    ])
+    evaluation.save(update_fields=['cache_key'])
+    evaluation.refresh_from_db()
+    return evaluation
 
 
 LIVE = dict(JEV_MODE='live', TYPESAFE_API_KEY='synthetic-test-key', JEV_PRICE_CONFIRMED=True,
@@ -79,6 +90,135 @@ class EvidenceTests(TestCase):
         EvidenceDocument.objects.update(text='tampered')
         fresh = Evaluation.objects.select_related('document__source').get(pk=self.evaluations[0].pk)
         self.assertFalse(accounting.valid_evidence(fresh))
+
+    def test_request_state_tampering_is_detected_even_when_spans_remain_valid(self):
+        evaluation = self.evaluations[0]
+        request = copy.deepcopy(evaluation.request)
+        request['state']['spans'][0]['text'] = 'unrelated replacement text'
+        evaluation.request = request
+        evaluation.save(update_fields=['request'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_request_and_binding_question_keys_must_match_exactly(self):
+        evaluation = self.evaluations[0]
+        bindings = copy.deepcopy(evaluation.bindings)
+        bindings.pop(next(iter(bindings)))
+        evaluation.bindings = bindings
+        evaluation.save(update_fields=['bindings'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_contact_questions_must_match_transmitted_contact_state(self):
+        subject = Evaluation.objects.filter(person__isnull=False).first()
+        span = EvidenceSpan.objects.get(pk=next(iter(subject.bindings.values()))[0])
+        candidate = ContactCandidate.objects.create(
+            span=span, person=subject.person, company=subject.company, kind='email',
+            value='person@example.test', normalized='person@example.test')
+        evaluation = services.enqueue_subject(
+            subject.document, subject.company, span, person=subject.person, contacts=[candidate])[0]
+        request = copy.deepcopy(evaluation.request)
+        request['state']['contacts'] = []
+        evaluation.request = request
+        evaluation.save(update_fields=['request'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    @override_settings(JEV_MAX_INPUT_TOKENS=2000)
+    def test_split_person_packets_keep_only_packet_local_contacts(self):
+        subject = Evaluation.objects.filter(person__isnull=False).first()
+        span = EvidenceSpan.objects.get(pk=next(iter(subject.bindings.values()))[0])
+        candidate = ContactCandidate.objects.create(
+            span=span, person=subject.person, company=subject.company, kind='email',
+            value='split@example.test', normalized='split@example.test')
+        evaluations = services.enqueue_subject(
+            subject.document, subject.company, span, person=subject.person, contacts=[candidate])
+        self.assertGreater(len(evaluations), 1)
+        self.assertTrue(all(accounting.valid_evidence(item) for item in evaluations))
+        for item in evaluations:
+            has_contact_question = f'contact_{candidate.pk}' in item.request['questions']
+            self.assertEqual(bool(item.request['state']['contacts']), has_contact_question)
+
+    def test_versioned_question_body_tampering_is_detected(self):
+        evaluation = self.evaluations[0]
+        request = copy.deepcopy(evaluation.request)
+        next(iter(request['questions'].values()))['instructions'] = 'replacement question'
+        evaluation.request = request
+        evaluation.save(update_fields=['request'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_removing_question_and_binding_is_detected(self):
+        evaluation = self.evaluations[0]
+        request, bindings = copy.deepcopy(evaluation.request), copy.deepcopy(evaluation.bindings)
+        key = next(iter(request['questions']))
+        request['questions'].pop(key)
+        bindings.pop(key)
+        evaluation.request, evaluation.bindings = request, bindings
+        evaluation.save(update_fields=['request', 'bindings'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_malformed_state_collections_fail_closed(self):
+        evaluation = self.evaluations[0]
+        original = copy.deepcopy(evaluation.request)
+        for field in ('spans', 'contacts'):
+            with self.subTest(field=field):
+                request = copy.deepcopy(original)
+                request['state'][field] = None
+                evaluation.request = request
+                evaluation.save(update_fields=['request'])
+                evaluation.refresh_from_db()
+                self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_unhashable_contact_id_fails_closed(self):
+        subject = Evaluation.objects.filter(person__isnull=False).first()
+        span = EvidenceSpan.objects.get(pk=next(iter(subject.bindings.values()))[0])
+        candidate = ContactCandidate.objects.create(
+            span=span, person=subject.person, company=subject.company, kind='email',
+            value='badid@example.test', normalized='badid@example.test')
+        evaluation = services.enqueue_subject(
+            subject.document, subject.company, span, person=subject.person, contacts=[candidate])[0]
+        request = copy.deepcopy(evaluation.request)
+        request['state']['contacts'][0]['id'] = []
+        evaluation.request = request
+        evaluation.save(update_fields=['request'])
+        recache(evaluation)
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_shared_company_contact_is_valid_in_person_packet(self):
+        subject = Evaluation.objects.filter(person__isnull=False).first()
+        span = EvidenceSpan.objects.get(pk=next(iter(subject.bindings.values()))[0])
+        candidate = ContactCandidate.objects.create(
+            span=span, person=None, company=subject.company, kind='email',
+            value='shared@example.test', normalized='shared@example.test', shared_hint=True)
+        evaluation = services.enqueue_subject(
+            subject.document, subject.company, span, person=subject.person, contacts=[candidate])[0]
+        self.assertTrue(accounting.valid_evidence(evaluation))
+
+    def test_unknown_catalog_and_same_name_subject_swap_are_detected(self):
+        evaluation = self.evaluations[0]
+        original_company = evaluation.company
+        evaluation.catalog_version = 'forged-version'
+        evaluation.save(update_fields=['catalog_version'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+        evaluation.catalog_version = services.VERSION
+        evaluation.company = Company.objects.create(identity='same-name-swap', name=original_company.name)
+        evaluation.save(update_fields=['catalog_version', 'company'])
+        evaluation.refresh_from_db()
+        self.assertFalse(accounting.valid_evidence(evaluation))
+
+    def test_every_bound_span_is_transmitted_with_exact_text(self):
+        for evaluation in self.evaluations:
+            state = evaluation.request['state']
+            supplied = {item['id']: item['text'] for item in state.get('spans', [])}
+            supplied.update({item['span_id']: item['text'] for item in state.get('blocks', [])})
+            bound_ids = {span_id for values in evaluation.bindings.values() for span_id in values}
+            spans = EvidenceSpan.objects.in_bulk(bound_ids)
+            self.assertEqual(set(supplied), bound_ids)
+            self.assertTrue(all(supplied[span_id] == spans[span_id].document.text[
+                spans[span_id].start:spans[span_id].end] for span_id in bound_ids))
 
     def test_expiry_removes_contact_values_and_payload(self):
         EvidenceDocument.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
@@ -340,6 +480,74 @@ class AccountingTests(TestCase):
         self.assertFalse(self.evaluation.judgments.exists())
         self.assertEqual(JevControl.objects.get().spent_nusd, 5040)
 
+    def test_small_provider_rounding_drift_is_normalized_and_audited(self):
+        from classification.models import ControlEvent
+        result = self.result()
+        answer = next(iter(result.body['answers'].values()))
+        answer['probabilities'] = {key: value * .99 for key, value in answer['probabilities'].items()}
+        with patch('classification.provider._post', new=AsyncMock(return_value=result)):
+            services.process(self.evaluation, self.token)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.state, 'succeeded')
+        self.assertTrue(all(abs(sum(j.probabilities.values()) - 1) < 1e-12
+                            for j in self.evaluation.judgments.all()))
+        event = ControlEvent.objects.get(action='normalize_provider_probabilities')
+        self.assertEqual(event.data['evaluation'], str(self.evaluation.pk))
+        self.assertAlmostEqual(event.data['original_sum'], .99)
+        self.assertAlmostEqual(event.data['delta'], .01)
+
+    def test_sub_tolerance_nonzero_drift_is_still_normalized_and_audited(self):
+        from classification.models import ControlEvent
+        result = self.result()
+        answer = next(iter(result.body['answers'].values()))
+        answer['probabilities'] = {key: value * .9995 for key, value in answer['probabilities'].items()}
+        with patch('classification.provider._post', new=AsyncMock(return_value=result)):
+            services.process(self.evaluation, self.token)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.state, 'succeeded')
+        self.assertTrue(ControlEvent.objects.filter(action='normalize_provider_probabilities').exists())
+
+    def test_above_machine_epsilon_drift_is_normalized_and_audited(self):
+        from classification.models import ControlEvent
+        result = self.result()
+        answer = next(iter(result.body['answers'].values()))
+        answer['probabilities'] = {
+            key: value * .9999999999995 for key, value in answer['probabilities'].items()}
+        with patch('classification.provider._post', new=AsyncMock(return_value=result)):
+            services.process(self.evaluation, self.token)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.state, 'succeeded')
+        self.assertTrue(ControlEvent.objects.filter(action='normalize_provider_probabilities').exists())
+
+    def test_post_settlement_persistence_failure_has_explicit_recovery(self):
+        result = self.result()
+        answer = next(iter(result.body['answers'].values()))
+        answer['probabilities'] = {key: value * .99 for key, value in answer['probabilities'].items()}
+        with patch('classification.provider._post', new=AsyncMock(return_value=result)), \
+                patch('classification.services.ControlEvent.objects.create', side_effect=RuntimeError('db write')):
+            self.assertTrue(services.process(self.evaluation, self.token))
+        self.evaluation.refresh_from_db()
+        attempt = self.evaluation.attempt_history.get()
+        self.assertEqual(self.evaluation.state, 'failed_persistence')
+        self.assertEqual(attempt.state, 'settled')
+        self.assertIsNotNone(attempt.cost_nusd)
+        self.assertFalse(self.evaluation.judgments.exists())
+        self.assertIsNone(JevControl.objects.get().active_attempt)
+        accounting.retry_settled_persistence(self.evaluation.pk, 'test', 'retry paid persistence failure')
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.state, 'waiting')
+
+    def test_provider_cannot_spoof_internal_normalization_audit(self):
+        from classification.models import ControlEvent
+        result = self.result()
+        answer = next(iter(result.body['answers'].values()))
+        answer['_probability_normalization'] = {'original_sum': 'forged'}
+        with patch('classification.provider._post', new=AsyncMock(return_value=result)):
+            services.process(self.evaluation, self.token)
+        self.evaluation.refresh_from_db()
+        self.assertEqual(self.evaluation.state, 'succeeded')
+        self.assertFalse(ControlEvent.objects.filter(action='normalize_provider_probabilities').exists())
+
     def test_success_keeps_legacy_review_untouched(self):
         lead = Lead.objects.create(identity='fixture-suppressed', name='Prior Example', status='suppressed', notes='keep')
         with patch('classification.provider._post', new=AsyncMock(return_value=self.result())):
@@ -371,7 +579,18 @@ class RoutingTests(TestCase):
         self.trigger = Evaluation.objects.filter(person__isnull=True).first()
 
     def job(self):
+        self.trigger.judgments.update(review_state='confirmed')
         return routing.queue_company(self.pilot.pk, self.trigger.pk)
+
+    def test_unreviewed_model_judgment_cannot_route(self):
+        self.real_trigger()
+        self.assertTrue(self.trigger.judgments.filter(review_state='needs_review').exists())
+        self.assertFalse(routing.eligible(self.trigger))
+
+    def test_confirmed_model_judgment_can_route(self):
+        self.real_trigger()
+        self.trigger.judgments.update(review_state='confirmed')
+        self.assertTrue(routing.eligible(self.trigger))
 
     def test_engineer_role_not_inferred_from_company(self):
         self.assertEqual(Judgment.objects.get(question_id='person_sales_role').label, 'non_sales')
@@ -538,6 +757,24 @@ class ContractAndConsoleTests(TestCase):
             next(iter(response['answers'].values()))['confidence'] = bad
             with self.subTest(value=bad), self.assertRaises(contracts.ContractError):
                 contracts.validate_response(self.evaluation.request, response)
+
+    def test_material_probability_drift_has_bounded_sanitized_diagnostic(self):
+        answer = next(iter(self.response['answers'].values()))
+        answer['probabilities'] = {key: value * .95 for key, value in answer['probabilities'].items()}
+        with self.assertRaises(contracts.ContractError) as failure:
+            contracts.validate_response(self.evaluation.request, self.response)
+        message = str(failure.exception)
+        self.assertIn('choices=', message)
+        self.assertIn('sum=0.950000', message)
+        self.assertIn('delta=0.050000', message)
+        self.assertLessEqual(len(message), 180)
+        self.assertNotIn(self.evaluation.document.text[:20], message)
+
+    def test_probability_drift_just_over_one_percent_is_rejected(self):
+        answer = next(iter(self.response['answers'].values()))
+        answer['probabilities'] = {key: value * .9899999995 for key, value in answer['probabilities'].items()}
+        with self.assertRaises(contracts.ContractError):
+            contracts.validate_response(self.evaluation.request, self.response)
 
     def test_null_and_missing_usage_are_unknown(self):
         for body in (None, [], {'usage': None}, {'usage': {'input_tokens': True, 'output_tokens': 2}}):

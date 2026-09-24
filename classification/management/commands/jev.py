@@ -81,6 +81,9 @@ class Command(BaseCommand):
         recover.add_argument('--worker-stopped', action='store_true')
         recover.add_argument('--billed-nusd', type=int)
         recover.add_argument('--reason', required=True)
+        retry_persistence = sub.add_parser('retry-persistence')
+        retry_persistence.add_argument('evaluation_id')
+        retry_persistence.add_argument('--reason', required=True)
         sub.add_parser('purge', help='Expire retained candidate text; money/audit records remain.')
 
     def handle(self, *args, **options):
@@ -186,6 +189,8 @@ class Command(BaseCommand):
             accounting.set_paused(action == 'pause', 'local CLI', o['reason'])
         elif action == 'recover':
             accounting.recover_attempt(o['attempt_id'], 'local CLI', o['reason'], o['worker_stopped'], o['billed_nusd'])
+        elif action == 'retry-persistence':
+            accounting.retry_settled_persistence(o['evaluation_id'], 'local CLI', o['reason'])
         elif action == 'purge':
             from classification.evidence import purge_expired
             purge_expired()

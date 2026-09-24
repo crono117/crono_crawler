@@ -31,8 +31,11 @@ def eligible(evaluation):
         return False
     if evaluation.provider == 'mock' and evaluation.document.source.collector != 'demo':
         return False
+    offline_demo = evaluation.provider == 'mock' and evaluation.document.source.collector == 'demo'
     for answer in evaluation.judgments.all():
         if answer.review_state == 'rejected':
+            continue
+        if answer.review_state != 'confirmed' and not offline_demo:
             continue
         if ((answer.question_id == 'company_technology' and answer.label == 'technology') or
                 (answer.question_id == 'company_merchant_services' and answer.label in ('provider', 'both'))):
