@@ -4,15 +4,14 @@ import hashlib
 import json
 import re
 from urllib.parse import urljoin, urlsplit
-from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_ROLE, contact_evidence,
-    evidence_node, normalize, selected_text, soup_for, tags, validate_recipe, validate_record)
+from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_ROLE, card_record, contact_evidence,
+    evidence_node, normalize, soup_for, tags, validate_recipe, validate_record)
 from leads.services.network import in_scope
 from discovery.ranking import clean_url, rank
 from .packs import hints as pack_hints, suggestions
 from leads.services.structured import entities
 
 PROBE_VERSION = "1.0"
-FIELDS = ("name", "title", "email", "phone", "company")
 PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d ().-]{6,}\d)(?!\w)")
 FIELD_OPTIONS = [
     {"name": DEFAULT_SELECTORS["name"], "title": DEFAULT_SELECTORS["title"]},
@@ -55,7 +54,11 @@ def evaluate(html, source, recipe):
     global_phones = {re.sub(r"\D", "", value) for value in PHONE.findall(global_text)}
     signals = Counter()
     for row in rows[:500]:
-        fields = row["fields"] if structured else {key: selected_text(row, selectors[key]) for key in FIELDS}
+        if structured:
+            fields = row["fields"]
+        else:
+            # Shared, generic and page-chrome contacts are removed after validation below.
+            fields, _ = card_record(row, selectors, evidence_node(row, selectors["evidence"]))
         signals["name"] += int(len(fields["name"].split()) >= 2)
         signals["role"] += int(bool(fields["title"] and SALES_ROLE.search(fields["title"])))
         signals["contact"] += int(bool(fields["email"] or fields["phone"]))

@@ -1,6 +1,6 @@
 """First-party DOM recipe suggestions, not imported technology fingerprint data."""
 from django.conf import settings
-from leads.services.extraction import soup_for
+from leads.services.extraction import DEFAULT_SELECTORS, soup_for
 from leads.services.structured import RECIPE, entities
 
 VERSION = "packs-v1"
@@ -37,7 +37,7 @@ def suggestions(html_pages):
             row, name, title = PACKS[platform]
             if platform not in seen and soup.select_one(row):
                 result.append({"row": row, "name": name, "title": title,
-                               "email": 'a[href^="mailto:"]', "phone": 'a[href^="tel:"]',
+                               "email": DEFAULT_SELECTORS["email"], "phone": DEFAULT_SELECTORS["phone"],
                                "company": '.company', "evidence": ""})
                 seen.add(platform)
     return result
