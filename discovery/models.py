@@ -104,6 +104,7 @@ class DiscoveryJob(models.Model):
     attempts = models.PositiveIntegerField(default=0)
     message = models.CharField(max_length=1000, blank=True)
     contacts_seen = models.PositiveIntegerField(default=0)
+    new_contacts = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["-priority", "id"]

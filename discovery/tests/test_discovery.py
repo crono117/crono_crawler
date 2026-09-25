@@ -141,6 +141,9 @@ class DiscoveryTests(TestCase):
         self.assertEqual(run.status, "completed")
         self.assertEqual(set(Lead.objects.values_list("name", flat=True)), {"Dana Discovery", "Riley Example", "Casey Sample"})
         self.assertEqual(run.new_contacts, 3)
+        # Per-page split of new vs. seen contacts sums to the run total.
+        self.assertEqual(sum(run.jobs.values_list("new_contacts", flat=True)), 3)
+        self.assertTrue(all(job.new_contacts <= job.contacts_seen for job in run.jobs.all()))
         self.assertTrue(run.jobs.filter(url__endswith="/team/hidden/", status="done").exists())
         external = self.campaign.urls.get(origin="https://new-vendor.example.org")
         self.assertEqual(external.url, "https://new-vendor.example.org/reps/")
@@ -152,6 +155,7 @@ class DiscoveryTests(TestCase):
             self.finish(rerun)
         self.assertEqual(rerun.status, "completed")
         self.assertEqual(rerun.new_contacts, 0)
+        self.assertEqual(sum(rerun.jobs.values_list("new_contacts", flat=True)), 0)
         self.assertEqual(Lead.objects.count(), 3)
         self.assertEqual(Lead.objects.get(name="Dana Discovery").status, "suppressed")
         self.assertGreater(rerun.duplicates_seen, 0)
@@ -646,8 +650,11 @@ class DiscoveryTests(TestCase):
         yield_queries = [query["sql"] for query in queries.captured_queries
                          if 'as "fetched"' in query["sql"].lower()]
         self.assertEqual(len(observation_queries), 1)
+        canary_queries = [query["sql"] for query in queries.captured_queries
+                          if "automation_probepage" in query["sql"].lower()]
         self.assertEqual(len(yield_queries), 1)
-        self.assertLessEqual(len(queries), 4)
+        self.assertEqual(len(canary_queries), 1)  # one batched canary-evidence lookup, not per item
+        self.assertLessEqual(len(queries), 5)
         for candidate in candidates:
             self.assertEqual(candidate.score, 45)
             self.assertEqual(candidate.reasons.count("Source has human-reviewed contacts (+10)"), 1)
