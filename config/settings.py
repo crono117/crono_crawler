@@ -81,6 +81,8 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
 BRAVE_SEARCH_ENABLED = os.environ.get("BRAVE_SEARCH_ENABLED", "0") == "1"
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 BRAVE_DAILY_SEARCH_LIMIT = max(0, int(os.environ.get("BRAVE_DAILY_SEARCH_LIMIT", "20")))
+# Rolling window of completed discovery page jobs used for per-origin yield priority.
+DISCOVERY_YIELD_WINDOW_DAYS = max(1, int(os.environ.get("DISCOVERY_YIELD_WINDOW_DAYS", "60")))
 
 # Merely installing this app or supplying a key never enables paid work.
 JEV_MODE = os.environ.get("JEV_MODE", "off")

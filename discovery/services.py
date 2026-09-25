@@ -16,6 +16,7 @@ from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, Discovery
 from .providers import BRAVE_ORIGIN, MAX_SITEMAP_BYTES, brave_search, search_ready, sitemap_entries
 from .ranking import (canonical_exact_start, clean_url, current_candidate_score, ordinary_page_eligible,
                       rank, reviewed_sources)
+from .yields import origin_yields as lookup_origin_yields, safe_origin
 
 logger = logging.getLogger(__name__)
 OPEN = ("queued", "running", "paused")
@@ -72,16 +73,18 @@ def hinted_source(campaign, url, source_hint):
     return approved_source(campaign, url)
 
 
-def refresh_priorities(campaign, reviewed_source_ids=None):
+def refresh_priorities(campaign, reviewed_source_ids=None, origin_yields=None):
     """Re-score saved URLs without changing operator approvals or dismissals."""
     candidates = list(campaign.urls.select_related("source")[:10000])
     if reviewed_source_ids is None:
         reviewed_source_ids = reviewed_sources(candidate.source_id for candidate in candidates if candidate.source_id)
+    if origin_yields is None:
+        origin_yields = lookup_origin_yields(candidate.origin for candidate in candidates)
     changed = []
     for candidate in candidates:
         score, reasons = current_candidate_score(
             campaign, candidate.url, candidate.label, candidate.context, candidate.source,
-            reviewed_source_ids=reviewed_source_ids,
+            reviewed_source_ids=reviewed_source_ids, origin_yields=origin_yields,
             explicit_start=(candidate.method == "seed" and candidate.source is not None and
                             canonical_exact_start(candidate.url, candidate.source.url)))
         if (candidate.score, candidate.reasons) != (score, reasons):
@@ -148,6 +151,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
         ] + invalid
     if reviewed_source_ids is None:
         reviewed_source_ids = reviewed_sources(source_map)
+    origin_yields = lookup_origin_yields(safe_origin(url) for url in urls)
     candidates = {candidate.url: candidate for candidate in
                   campaign.urls.filter(url__in=urls).select_related("source")}
     inventory_count = campaign.urls.count()
@@ -178,7 +182,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
         exact_seed = bool(seed and source and canonical_exact_start(url, source.url))
         score, reasons = current_candidate_score(
             campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
-            explicit_start=exact_seed)
+            explicit_start=exact_seed, origin_yields=origin_yields)
         manual = bool(company_job and not in_scope(company_job.source, url))
         if manual:
             from classification.models import Lineage
@@ -246,7 +250,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 candidate.save(update_fields=["source", "decision"])
             queue_candidate(
                 run_state, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job,
-                reviewed_source_ids=reviewed_source_ids, job_priority=job_priority, capacity=queue_state)
+                reviewed_source_ids=reviewed_source_ids, job_priority=job_priority, capacity=queue_state,
+                origin_yields=origin_yields)
         elif candidate.decision == "pending":
             pending.append(candidate)
         results.append(candidate)
@@ -282,7 +287,7 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
 
 
 def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None,
-                    reviewed_source_ids=None, job_priority=None, capacity=None):
+                    reviewed_source_ids=None, job_priority=None, capacity=None, origin_yields=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
     if candidate.manual_review_required:
@@ -296,7 +301,7 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
     exact_start = bool(candidate.source and canonical_exact_start(candidate.url, candidate.source.url))
     eligible, score, reasons = ordinary_page_eligible(
         campaign, candidate.url, candidate.label, candidate.context, candidate.source,
-        reviewed_source_ids=reviewed_source_ids,
+        reviewed_source_ids=reviewed_source_ids, origin_yields=origin_yields,
         explicit_start=(candidate.method == "seed" and exact_start))
     if (candidate.score, candidate.reasons) != (score, reasons):
         candidate.score, candidate.reasons = score, reasons
@@ -363,7 +368,9 @@ def start(campaign):
     register_batch(run, seed_specs, campaign=campaign, order=True, approved_sources=sources,
                    reviewed_source_ids=reviewed_source_ids)
     # Reviewed deeper paths remain useful even if their original directory disappears.
-    remembered = [candidate for candidate in refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
+    saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
+    origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
+    remembered = [candidate for candidate in saved
                   if candidate.decision == "approved" and candidate.method != "seed"]
     selected_ids = set(source.pk for source in sources)
     remembered_in_scope = []
@@ -378,7 +385,7 @@ def start(campaign):
         if queue_state["count"] >= campaign.max_pages:
             break
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
-                        capacity=queue_state)
+                        capacity=queue_state, origin_yields=origin_yields)
     if campaign.search_enabled:
         for query in list(dict.fromkeys(q.strip() for q in campaign.search_queries.splitlines() if q.strip()))[:10]:
             DiscoveryJob.objects.create(run=run, kind="search", url=query, priority=85)
@@ -411,13 +418,16 @@ def approve(candidate, source):
     candidate.manual_review_required = False
     candidate.save(update_fields=["decision", "source", "dismissal_scope", "manual_review_required"])
     run = candidate.campaign.runs.filter(status__in=("queued", "running")).first()
-    reviewed_source_ids = reviewed_sources({source.pk}) if run and candidate.campaign.active else None
+    active = bool(run and candidate.campaign.active)
+    reviewed_source_ids = reviewed_sources({source.pk}) if active else None
+    origin_yields = lookup_origin_yields({origin(source.url)}) if active else None
     for sibling in candidate.campaign.urls.filter(origin=origin(source.url), manual_review_required=False).exclude(decision="dismissed"):
         if in_scope(source, sibling.url):
             sibling.decision, sibling.source = "approved", source
             sibling.save(update_fields=["decision", "source"])
             if run and candidate.campaign.active:
-                queue_candidate(run, sibling, kind=sibling.kind, reviewed_source_ids=reviewed_source_ids)
+                queue_candidate(run, sibling, kind=sibling.kind, reviewed_source_ids=reviewed_source_ids,
+                                origin_yields=origin_yields)
 
 
 def schedule_due():

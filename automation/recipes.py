@@ -6,7 +6,7 @@ import re
 from urllib.parse import urljoin, urlsplit
 from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_ROLE, card_record, contact_evidence,
     evidence_node, normalize, soup_for, tags, validate_recipe, validate_record)
-from leads.services.network import in_scope
+from leads.services.network import in_scope, origin
 from discovery.ranking import (clean_url, current_candidate_score, direct_contact_page_intent,
                                reviewed_sources)
 from .packs import hints as pack_hints, suggestions
@@ -164,6 +164,9 @@ def recon_page(response, source, campaign):
             metadata["candidate_containers"].append({"selector": container, "matches": stats["matched_cards"], "signals": stats["signals"]})
     links = {}
     reviewed_source_ids = reviewed_sources({source.pk})
+    from discovery.yields import origin_yields as lookup_origin_yields
+    # Links are filtered to this source's scope below, so one origin lookup covers them.
+    origin_yields = lookup_origin_yields({origin(source.url)})
     for node in soup.select("a[href]")[:2000]:
         try:
             url = clean_url(urljoin(response.url, node["href"]))
@@ -172,7 +175,8 @@ def recon_page(response, source, campaign):
         if in_scope(source, url) and not urlsplit(url).query:
             label = node.get_text(" ", strip=True)[:200]
             score, _ = current_candidate_score(
-                campaign, url, label, source=source, reviewed_source_ids=reviewed_source_ids)
+                campaign, url, label, source=source, reviewed_source_ids=reviewed_source_ids,
+                origin_yields=origin_yields)
             if score >= campaign.min_score and direct_contact_page_intent(url, label):
                 links[url] = score
     return metadata, sorted(links, key=links.get, reverse=True)[:50]
