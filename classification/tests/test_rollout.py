@@ -8,7 +8,9 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from automation.models import SitePolicy
@@ -21,7 +23,9 @@ from classification.models import (Attempt, CompanyDomain, JevControl, DailyUsag
                                    EvidenceDocument, CompanyJob, Pilot)
 from classification.tests.test_jev import LIVE
 from discovery.models import DiscoveredURL, Campaign, DiscoveryJob
-from leads.models import Lead, PageJob, Run, Source, WorkerLease
+from discovery import services as discovery_services
+from leads.models import Lead, Observation, PageJob, Run, Source, WorkerLease
+from leads.services.network import Response
 from leads.services.worker import acquire_lease
 
 
@@ -291,6 +295,87 @@ class SyntheticRegressions(TestCase):
         routing.advance(job.pk)
         self.assertEqual(campaign.urls.count(), 1)
         self.assertEqual(DiscoveryJob.objects.filter(company_job=job).count(), 1)
+
+    def test_company_routing_does_not_create_ineligible_ordinary_page_job(self):
+        pilot, _ = seed_demo()
+        source = pilot.campaign.sources.get()
+        source.allowed_paths = '/'
+        source.save(update_fields=['allowed_paths'])
+        body = demo_response(source.url)
+        evaluation = capture_page(source, source.url, hashlib.sha256(body.body).hexdigest(),
+                                  body.text, provider='mock')[0]
+        token = acquire_lease()
+        services.process(evaluation, token, mock_only=True)
+        campaign = pilot.campaign
+        campaign.min_score = 40
+        campaign.save(update_fields=['min_score'])
+        document = evaluation.document
+        document.links = [{'url': 'https://jev.example.test/resources/',
+                           'label': 'Merchant services representative overview'}]
+        document.save(update_fields=['links'])
+        job = routing.queue_company(pilot.pk, evaluation.pk)
+        routing.advance(job.pk)
+        self.assertFalse(DiscoveryJob.objects.filter(
+            company_job=job, url='https://jev.example.test/resources/').exists())
+
+    def test_company_routing_updates_stale_metadata_before_dispatch(self):
+        pilot, _ = seed_demo()
+        source = pilot.campaign.sources.get()
+        source.allowed_paths = '/'
+        source.save(update_fields=['allowed_paths'])
+        body = demo_response(source.url)
+        evaluation = capture_page(source, source.url, hashlib.sha256(body.body).hexdigest(),
+                                  body.text, provider='mock')[0]
+        token = acquire_lease()
+        services.process(evaluation, token, mock_only=True)
+        campaign = pilot.campaign
+        campaign.min_score = 35
+        campaign.save(update_fields=['min_score'])
+        url = 'https://jev.example.test/resources/'
+        candidate = DiscoveredURL.objects.create(campaign=campaign, url=url,
+            origin='https://jev.example.test', source=source, decision='approved',
+            label='Quarterly sales collateral', context='Old collateral context')
+        evaluation.document.links = [{'url': url, 'label': 'Sales representatives'}]
+        evaluation.document.save(update_fields=['links'])
+        company_job = routing.queue_company(pilot.pk, evaluation.pk)
+        routing.advance(company_job.pk)
+        page = DiscoveryJob.objects.get(company_job=company_job, url=url)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.label, 'Sales representatives')
+        self.assertEqual(candidate.context, 'Old collateral context')
+        response = Response(url, 200, {'content-type': 'text/html'}, b'<h1>No contacts</h1>')
+        with patch('classification.fixtures.demo_response', return_value=response) as fetch:
+            discovery_services.process(page)
+        self.assertEqual(fetch.call_count, 1)
+        page.refresh_from_db()
+        self.assertEqual(page.status, 'done')
+
+    def test_company_routing_precomputes_reviewed_source_once(self):
+        pilot, _ = seed_demo()
+        source = pilot.campaign.sources.get()
+        source.allowed_paths = '/'
+        source.save(update_fields=['allowed_paths'])
+        body = demo_response(source.url)
+        evaluation = capture_page(source, source.url, hashlib.sha256(body.body).hexdigest(),
+                                  body.text, provider='mock')[0]
+        token = acquire_lease()
+        services.process(evaluation, token, mock_only=True)
+        lead = Lead.objects.create(identity='routing-reviewed-source', name='Reviewed', status='reviewed')
+        Observation.objects.create(lead=lead, source=source, page_url=source.url, facts={},
+            source_category=source.category, evidence='Reviewed', content_hash='routing-reviewed', present=True)
+        evaluation.document.links = [
+            {'url': f'https://jev.example.test/team/{index}/', 'label': 'Sales representatives'}
+            for index in range(5)
+        ]
+        evaluation.document.save(update_fields=['links'])
+        company_job = routing.queue_company(pilot.pk, evaluation.pk)
+        with CaptureQueriesContext(connection) as queries:
+            routing.advance(company_job.pk)
+        observation_queries = [query['sql'] for query in queries.captured_queries
+                               if 'leads_observation' in query['sql'].lower()]
+        self.assertEqual(len(observation_queries), 1)
+        for candidate in pilot.campaign.urls.exclude(url=source.url):
+            self.assertEqual(candidate.reasons.count('Source has human-reviewed contacts (+10)'), 1)
 
     def test_company_routing_cannot_add_new_url_to_full_inventory(self):
         pilot, evaluations = seed_demo()
