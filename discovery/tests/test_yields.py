@@ -214,3 +214,59 @@ class CollectorBridgeTests(TestCase):
         self.assertEqual(candidate.decision, "dismissed")
         self.assertLess(candidate.score, 0)
         self.assertFalse(candidate.jobs.exists())
+
+
+class SearchQueryAllocationTests(TestCase):
+    Q_GOOD, Q_BAD, Q_NEW = '"our team" merchant services', "payments blog", '"meet the team" ISO'
+
+    def setUp(self):
+        self.source = Source.objects.create(name="Found", url=ORIGIN + "/", approved=True)
+        self.campaign = Campaign.objects.create(name="Search", keywords="", sales_terms="")
+        self.run = DiscoveryRun.objects.create(campaign=self.campaign, status="completed")
+
+    def found(self, query, path, contacts):
+        candidate = DiscoveredURL.objects.create(campaign=self.campaign, url=ORIGIN + path, origin=ORIGIN,
+            source=self.source, decision="approved", method="search", search_query=query)
+        DiscoveryJob.objects.create(run=self.run, candidate=candidate, source=self.source, kind="page",
+                                    url=candidate.url, status="done", contacts_seen=contacts)
+
+    def history(self):
+        for index in range(4):
+            self.found(self.Q_GOOD, f"/team/{index}/", 2)
+            self.found(self.Q_BAD, f"/blog/{index}/", 0)
+
+    def test_query_yields_group_by_search_query(self):
+        from discovery.yields import query_yields
+        self.history()
+        stats = query_yields({self.Q_GOOD, self.Q_BAD, self.Q_NEW})
+        self.assertEqual(stats[self.Q_GOOD], OriginYield(4, 4))
+        self.assertEqual(stats[self.Q_BAD], OriginYield(4, 0))
+        self.assertNotIn(self.Q_NEW, stats)
+
+    def test_sampling_stays_in_band_and_favors_proven_queries(self):
+        import random
+        from discovery.yields import search_priority
+        rng = random.Random(7)
+        good = [search_priority(OriginYield(10, 9), rng) for _ in range(300)]
+        bad = [search_priority(OriginYield(10, 0), rng) for _ in range(300)]
+        new = [search_priority(EMPTY, rng) for _ in range(300)]
+        for values in (good, bad, new):
+            self.assertTrue(all(80 <= value <= 90 for value in values))
+        self.assertGreater(sum(good) / 300, sum(new) / 300)
+        self.assertGreater(sum(new) / 300, sum(bad) / 300)  # untried queries still get explored
+        self.assertGreater(len(set(new)), 3)
+
+    @override_settings(BRAVE_SEARCH_ENABLED=True, BRAVE_SEARCH_API_KEY="synthetic-key")
+    def test_start_orders_search_jobs_by_sampled_yield(self):
+        from unittest.mock import patch
+        from discovery.services import start
+        self.history()
+        self.campaign.search_enabled = True
+        self.campaign.search_queries = "\n".join([self.Q_BAD, self.Q_NEW, self.Q_GOOD])
+        self.campaign.save()
+        mean = lambda stats, rng=None: 80 + round(10 * stats.rate)  # deterministic stand-in for sampling
+        with patch("discovery.yields.search_priority", side_effect=mean):
+            run = start(self.campaign)
+        jobs = list(run.jobs.filter(kind="search").order_by("-priority", "id").values_list("url", "priority", "message"))
+        self.assertEqual([url for url, _, _ in jobs], [self.Q_GOOD, self.Q_NEW, self.Q_BAD])
+        self.assertIn("4/4 fetched result pages", jobs[0][2])
