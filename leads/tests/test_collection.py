@@ -235,6 +235,43 @@ class HttpPipelineTests(TestCase):
         self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/team")
         self.assertEqual(mocked.call_count, 1)
 
+    @patch("leads.services.worker.fetch")
+    def test_external_links_reach_open_campaign_run_without_fetching(self, mocked):
+        from discovery.models import Campaign, DiscoveryRun
+        self.source.approved = True
+        self.source.save()
+        campaign = Campaign.objects.create(name="Bridge", active=True)
+        campaign.sources.add(self.source)
+        run_d = DiscoveryRun.objects.create(campaign=campaign)
+        self.ready_domain()
+        body = b'<a href="https://vendor.example.org/our-team/">Merchant services sales team</a>'
+        mocked.return_value = Response(self.source.url, 200, {"content-type": "text/html"}, body)
+        enqueue(self.source)
+        tick(self.token)
+        candidate = campaign.urls.get(url="https://vendor.example.org/our-team/")
+        self.assertEqual(candidate.method, "collector")
+        self.assertEqual(candidate.decision, "pending")  # new domain: ordinary review/policy path
+        self.assertFalse(candidate.jobs.exists())
+        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(run_d.campaign_id, campaign.pk)
+
+    @patch("leads.services.worker.fetch")
+    def test_link_hand_off_failure_never_fails_saved_page(self, mocked):
+        from discovery.models import Campaign, DiscoveryRun
+        self.source.approved = True
+        self.source.save()
+        campaign = Campaign.objects.create(name="Bridge", active=True)
+        campaign.sources.add(self.source)
+        DiscoveryRun.objects.create(campaign=campaign)
+        self.ready_domain()
+        body = b'<a href="https://vendor.example.org/team">Vendor</a>'
+        mocked.return_value = Response(self.source.url, 200, {"content-type": "text/html"}, body)
+        run = enqueue(self.source)
+        with patch("discovery.services.register_batch", side_effect=RuntimeError("boom")):
+            tick(self.token)
+        self.assertEqual(run.jobs.get(url=self.source.url).status, "done")
+        self.assertEqual(SourceCandidate.objects.get().url, "https://vendor.example.org/team")
+
     def test_retry_after_invalid_header_is_bounded(self):
         self.assertEqual(retry_delay(1, "nonsense"), 30)
         self.assertEqual(retry_delay(1, "999999999"), 86400)

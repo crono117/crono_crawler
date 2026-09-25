@@ -333,6 +333,45 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
         capacity["count"] += int(created)
 
 
+COLLECTOR_IMPORT_LIMIT = 200
+
+
+def collector_link_specs(sources, since=None):
+    """Recent unreviewed external links the regular collector found on these approved sources."""
+    from leads.models import SourceCandidate
+    from .yields import window_days
+    since = since or timezone.now() - timedelta(days=window_days())
+    rows = (SourceCandidate.objects.filter(status="new", discovered_from__in=sources, created_at__gte=since)
+            .order_by("-created_at")[:COLLECTOR_IMPORT_LIMIT])
+    return [{"url": row.url, "label": row.label, "context": "", "found_on": row.evidence_url,
+             "method": "collector", "depth": 1, "kind": "page"} for row in rows]
+
+
+def bridge_collector_links(source, links, found_on):
+    """Hand external links from regular collection to each active campaign's open run.
+
+    ``links`` is [(url, label)]. Registration uses the ordinary batch path, so scoring,
+    exclusions, pending review for new domains, policy authorization and every queueing
+    gate apply exactly as for links found by discovery itself. Nothing is fetched here.
+    Returns the number of campaigns that received the links.
+    """
+    if not links:
+        return 0
+    specs = [{"url": url, "label": label, "context": "", "found_on": found_on, "method": "collector",
+              "depth": 1, "kind": "page"} for url, label in links]
+    handed = 0
+    for campaign_id in (Campaign.objects.filter(active=True, sources=source, sources__approved=True)
+                        .values_list("pk", flat=True).distinct()):
+        with transaction.atomic():
+            campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+            run = campaign.runs.filter(status__in=("queued", "running")).first()
+            if not campaign.active or not run:
+                continue  # the next start() imports recent collector links
+            register_batch(run, specs, campaign=campaign)
+            handed += 1
+    return handed
+
+
 @transaction.atomic
 def queue_activated_source(source, campaign):
     """Queue a newly active source's approved URLs into the campaign's open run.
@@ -406,6 +445,11 @@ def start(campaign):
         spec.update(seed=True, job_priority=spec["priority"], source_hint=spec.pop("source_id"))
     register_batch(run, seed_specs, campaign=campaign, order=True, approved_sources=sources,
                    reviewed_source_ids=reviewed_source_ids)
+    # External links the regular collector found on these sources since they were last reviewed.
+    collector_specs = collector_link_specs(sources)
+    if collector_specs:
+        register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
+                       reviewed_source_ids=reviewed_source_ids)
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
     origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
