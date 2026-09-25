@@ -287,9 +287,11 @@ def advance(job_id):
     for edge in job.lineage.select_related('document'):
         links.extend(edge.document.links)
     reviewed_source_ids = reviewed_sources({job.source_id})
+    from discovery.yields import origin_yields as lookup_origin_yields, safe_origin
+    origin_yields = lookup_origin_yields({safe_origin(item.get('url', '')) for item in links})
     links.sort(key=lambda x: current_candidate_score(
         campaign, x['url'], x.get('label', ''), x.get('context', ''), source=job.source,
-        reviewed_source_ids=reviewed_source_ids)[0], reverse=True)
+        reviewed_source_ids=reviewed_source_ids, origin_yields=origin_yields)[0], reverse=True)
     queued = 0
     for item in links:
         url = item['url']
@@ -299,7 +301,8 @@ def advance(job_id):
         label = new_label or (existing.label if existing else '')
         context = new_context or (existing.context if existing else '')
         eligible, score, reasons = ordinary_page_eligible(
-            campaign, url, label, context, source=job.source, reviewed_source_ids=reviewed_source_ids)
+            campaign, url, label, context, source=job.source, reviewed_source_ids=reviewed_source_ids,
+            origin_yields=origin_yields)
         exact_start = canonical_exact_start(url, job.source.url)
         if (score < 0 or (not exact_start and not eligible) or not can_queue(job, url, 0) or
                 run.jobs.count() >= campaign.max_pages):

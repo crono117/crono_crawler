@@ -154,9 +154,21 @@ def reviewed_sources(source_ids):
 
 
 def current_candidate_score(campaign, url, label="", context="", source=None, reviewed_source_ids=None,
-                            explicit_start=False):
-    """Current score, including the one documented reviewed-source preference."""
+                            explicit_start=False, origin_yields=None):
+    """Current score, including the documented reviewed-source and observed-yield adjustments.
+
+    ``origin_yields`` is an optional precomputed {origin: OriginYield} map for batch callers;
+    single-URL callers leave it None and one bounded lookup is made.
+    """
     score, reasons = rank(campaign, url, label, context)
+    if score >= 0:
+        from .yields import EMPTY, origin_yields as lookup, safe_origin, yield_adjustment
+        item_origin = safe_origin(url)
+        stats = (origin_yields if origin_yields is not None else lookup({item_origin})).get(item_origin, EMPTY)
+        delta, reason = yield_adjustment(stats)
+        if delta:
+            score = max(0, min(100, score + delta))
+            reasons = reasons + [reason]
     if source and score >= 0:
         reviewed = (source.pk in reviewed_source_ids if reviewed_source_ids is not None else
                     bool(reviewed_sources({source.pk})))
@@ -171,10 +183,10 @@ def current_candidate_score(campaign, url, label="", context="", source=None, re
 
 
 def ordinary_page_eligible(campaign, url, label="", context="", source=None, reviewed_source_ids=None,
-                           explicit_start=False):
+                           explicit_start=False, origin_yields=None):
     score, reasons = current_candidate_score(
         campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
-        explicit_start=explicit_start)
+        explicit_start=explicit_start, origin_yields=origin_yields)
     return score >= campaign.min_score and direct_contact_page_intent(url, label), score, reasons
 
 

@@ -432,10 +432,13 @@ class DiscoveryTests(TestCase):
         observation_queries = [query for query in sql if "leads_observation" in query]
         campaign_source_queries = [query for query in sql
                                    if "discovery_campaign_sources" in query and "leads_source" in query]
+        yield_queries = [query for query in sql if 'as "fetched"' in query]
         per_item_job_counts = [query for query in sql
-                               if "count(" in query and "discovery_discoveryjob" in query]
+                               if "count(" in query and "discovery_discoveryjob" in query
+                               and query not in yield_queries]
         self.assertEqual(len(observation_queries), 1)
         self.assertEqual(len(campaign_source_queries), 1)
+        self.assertEqual(len(yield_queries), 1)  # one batched origin-yield aggregate, not per item
         self.assertEqual(per_item_job_counts, [])
         self.assertLessEqual(len(queries), 70)
         self.assertEqual(run.jobs.count(), 10)
@@ -640,8 +643,11 @@ class DiscoveryTests(TestCase):
             candidates = refresh_priorities(self.campaign)
         observation_queries = [query["sql"] for query in queries.captured_queries
                                if "leads_observation" in query["sql"].lower()]
+        yield_queries = [query["sql"] for query in queries.captured_queries
+                         if 'as "fetched"' in query["sql"].lower()]
         self.assertEqual(len(observation_queries), 1)
-        self.assertLessEqual(len(queries), 3)
+        self.assertEqual(len(yield_queries), 1)
+        self.assertLessEqual(len(queries), 4)
         for candidate in candidates:
             self.assertEqual(candidate.score, 45)
             self.assertEqual(candidate.reasons.count("Source has human-reviewed contacts (+10)"), 1)
