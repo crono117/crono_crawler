@@ -4,7 +4,7 @@ import json
 from urllib.parse import urlsplit
 from django.db import transaction
 from django.utils import timezone
-from discovery.ranking import lines, rank
+from discovery.ranking import direct_contact_page_intent, lines, rank
 from leads.models import Source
 from leads.services.network import in_scope, origin
 from .models import DEFAULT_DENY, SiteAutomationJob, SitePolicy
@@ -71,7 +71,8 @@ def consider(candidate):
     if not policy or not campaign.active or denied(policy, candidate.url) or urlsplit(candidate.url).query:
         return None
     score, _ = rank(campaign, candidate.url, candidate.label, candidate.context)
-    if score < policy.min_url_score or not in_scope(policy_scope(policy, candidate.url), candidate.url):
+    if (score < policy.min_url_score or not direct_contact_page_intent(candidate.url, candidate.label) or
+            not in_scope(policy_scope(policy, candidate.url), candidate.url)):
         return None
     # Preserve unreviewed/operator-created sources and previous explicit dismissals.
     if Source.objects.filter(url__startswith=candidate.origin + "/").exists() or campaign.urls.filter(origin=candidate.origin, dismissal_scope="origin").exists():

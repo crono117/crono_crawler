@@ -12,11 +12,22 @@ CONTACT_EXCLUSIONS = (
     "path:blog", "path:article", "path:emv-credit-card-machines", "path:product", "path:software",
     "domain:facebook.com", "domain:linkedin.com", "domain:x.com", "domain:twitter.com",
 )
-TARGETS = ("team", "staff", "people", "representative", "rep", "dealer", "partner", "agent",
-           "executive", "sales", "contact", "about", "directory", "member")
-PROFILE_TARGETS = ("profile", "bio", "biography", "leadership")
+DIRECT_TARGETS = ("team", "staff", "people", "profile", "bio", "biography", "leadership")
+PLURAL_ROLE_TARGETS = ("agents", "reps", "representatives")
+SALES_ROLE_TARGETS = ("sales team", "sales representative", "sales rep", "sales agent")
+PRIORITY_TARGETS = ("team", "staff", "people", "representative", "rep", "dealer", "partner", "agent",
+                    "executive", "sales", "contact", "about", "directory", "member", "profile", "bio",
+                    "biography", "leadership")
 EDITORIAL = ("blog", "article", "news", "careers", "vacancies", "privacy", "terms")
 PRODUCT = ("product", "device", "software", "emv credit card machines")
+DIRECT_NOISE = ("collateral", "document", "document sharing", "social", "deck", "sheet", "playbook",
+                "brochure", "schedule", "scheduling", "calendar", "booking", "appointment", "login",
+                "sign in", "signin", "business agent", "business rep", "business representative")
+SOCIAL_HOSTS = ("facebook.com", "linkedin.com", "x.com", "twitter.com", "instagram.com", "tiktok.com",
+                "youtube.com", "reddit.com", "bsky.app")
+DOCUMENT_HOSTS = ("docs.google.com", "drive.google.com", "dropbox.com", "box.com", "docsend.com",
+                  "slideshare.net", "scribd.com", "notion.site", "notion.so")
+SCHEDULING_HOSTS = ("calendly.com", "cal.com", "acuityscheduling.com", "calendar.google.com")
 
 
 def lines(text):
@@ -62,6 +73,33 @@ def phrase_matches(text, term):
     return contains(text, term) or (len(term) > 2 and not term.endswith("s") and contains(text, term + "s"))
 
 
+def direct_contact_page_intent(url, label=""):
+    """Whether the exact path/label directly describes a contact or person page."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if any(host == domain or host.endswith("." + domain)
+           for domain in SOCIAL_HOSTS + DOCUMENT_HOSTS + SCHEDULING_HOSTS):
+        return False
+    direct = " ".join((unquote(parsed.path), label))
+    if any(phrase_matches(direct, term) for term in DIRECT_NOISE):
+        return False
+    if any(phrase_matches(direct, term) for term in DIRECT_TARGETS + PLURAL_ROLE_TARGETS + SALES_ROLE_TARGETS):
+        return True
+    segments = [words(segment) for segment in unquote(parsed.path).strip("/").split("/") if segment]
+    generic = {"login", "portal", "business", "directory", "search", "find", "contact", "about",
+               "apply", "application", "support", "resources"}
+    return any(segment in ("rep", "representative") and index + 1 < len(segments) and
+               segments[index + 1] not in generic for index, segment in enumerate(segments))
+
+
+def canonical_exact_start(url, source_url):
+    """Compare cleaned URLs and fail closed when either cannot be canonicalized."""
+    try:
+        return clean_url(url) == clean_url(source_url)
+    except (ValueError, UnicodeError):
+        return False
+
+
 def exclusion_matches(rule, url, label, context):
     parsed = urlsplit(url)
     host, path = parsed.hostname.lower().rstrip("."), unquote(parsed.path)
@@ -82,9 +120,9 @@ def rank(campaign, url, label="", context=""):
         return -100, ["Excluded phrase: " + term for term in excluded[:3]]
     score, reasons = 0, []
     # Nearby sales/team prose must not turn every product link into a team page.
-    if any(phrase_matches(direct, word) for word in TARGETS):
+    if direct_contact_page_intent(url, label):
         score += 35
-        reasons.append("Team, contact, partner or directory page (+35)")
+        reasons.append("Direct contact or person page (+35)")
     matched = [term for term in lines(campaign.keywords) if phrase_matches(text, term)]
     if matched:
         score += 25
@@ -105,10 +143,45 @@ def rank(campaign, url, label="", context=""):
     return score, reasons or ["No strong relevance signal yet"]
 
 
+def reviewed_sources(source_ids):
+    """Return source IDs with at least one present human-reviewed contact."""
+    source_ids = set(source_ids)
+    if not source_ids:
+        return set()
+    from leads.models import Observation
+    return set(Observation.objects.filter(source_id__in=source_ids, lead__status="reviewed", present=True)
+               .values_list("source_id", flat=True).distinct())
+
+
+def current_candidate_score(campaign, url, label="", context="", source=None, reviewed_source_ids=None,
+                            explicit_start=False):
+    """Current score, including the one documented reviewed-source preference."""
+    score, reasons = rank(campaign, url, label, context)
+    if source and score >= 0:
+        reviewed = (source.pk in reviewed_source_ids if reviewed_source_ids is not None else
+                    bool(reviewed_sources({source.pk})))
+        if reviewed:
+            score = min(100, score + 10)
+            reasons = reasons + ["Source has human-reviewed contacts (+10)"]
+    if explicit_start and score >= 0:
+        score = max(score, 90)
+        if "Explicit starting source" not in reasons:
+            reasons = reasons + ["Explicit starting source"]
+    return score, reasons
+
+
+def ordinary_page_eligible(campaign, url, label="", context="", source=None, reviewed_source_ids=None,
+                           explicit_start=False):
+    score, reasons = current_candidate_score(
+        campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
+        explicit_start=explicit_start)
+    return score >= campaign.min_score and direct_contact_page_intent(url, label), score, reasons
+
+
 def link_priority(url, label=""):
     """Campaign-free crawl order for an already in-scope link. Never an exclusion."""
     direct = " ".join((unquote(urlsplit(url).path), label))
-    score = 35 if any(phrase_matches(direct, word) for word in TARGETS + PROFILE_TARGETS) else 0
+    score = 35 if any(phrase_matches(direct, word) for word in PRIORITY_TARGETS) else 0
     if any(phrase_matches(direct, word) for word in EDITORIAL):
         score -= 20
     if any(phrase_matches(direct, word) for word in PRODUCT):

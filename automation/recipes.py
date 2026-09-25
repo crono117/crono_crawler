@@ -7,7 +7,8 @@ from urllib.parse import urljoin, urlsplit
 from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_ROLE, card_record, contact_evidence,
     evidence_node, normalize, soup_for, tags, validate_recipe, validate_record)
 from leads.services.network import in_scope
-from discovery.ranking import clean_url, rank
+from discovery.ranking import (clean_url, current_candidate_score, direct_contact_page_intent,
+                               reviewed_sources)
 from .packs import hints as pack_hints, suggestions
 from leads.services.structured import entities
 
@@ -162,13 +163,16 @@ def recon_page(response, source, campaign):
         if stats["matched_cards"]:
             metadata["candidate_containers"].append({"selector": container, "matches": stats["matched_cards"], "signals": stats["signals"]})
     links = {}
+    reviewed_source_ids = reviewed_sources({source.pk})
     for node in soup.select("a[href]")[:2000]:
         try:
             url = clean_url(urljoin(response.url, node["href"]))
         except (ValueError, UnicodeError):
             continue
         if in_scope(source, url) and not urlsplit(url).query:
-            score, _ = rank(campaign, url, node.get_text(" ", strip=True)[:200])
-            if score >= campaign.min_score:
+            label = node.get_text(" ", strip=True)[:200]
+            score, _ = current_candidate_score(
+                campaign, url, label, source=source, reviewed_source_ids=reviewed_source_ids)
+            if score >= campaign.min_score and direct_contact_page_intent(url, label):
                 links[url] = score
     return metadata, sorted(links, key=links.get, reverse=True)[:50]

@@ -8,17 +8,50 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import F, Sum
 from django.utils import timezone
-from leads.models import DomainState, Lead, Observation, PageSnapshot, Source
+from leads.models import DomainState, Lead, PageSnapshot, Source
 from leads.services.extraction import diagnostic_message, extract, signature, soup_for
 from leads.services.network import FetchError, Response, fetch, in_scope, origin, require_success
 from leads.services.storage import save_records, touch_unchanged
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, DiscoveryRun
 from .providers import BRAVE_ORIGIN, MAX_SITEMAP_BYTES, brave_search, search_ready, sitemap_entries
-from .ranking import clean_url, rank
+from .ranking import (canonical_exact_start, clean_url, current_candidate_score, ordinary_page_eligible,
+                      rank, reviewed_sources)
 
 logger = logging.getLogger(__name__)
 OPEN = ("queued", "running", "paused")
 DEMO_ORIGIN = "https://discovery.example.test"
+
+
+def order_discovery_batch(items, *, url, source_id, priority):
+    """Order exact payload objects by novelty, then fair origin rotation."""
+    items = list(items)
+    sourced = [(source_id(item), url(item)) for item in items if source_id(item) is not None]
+    fetched = set()
+    if sourced:
+        source_ids = {item_source_id for item_source_id, _ in sourced}
+        urls = {item_url for _, item_url in sourced}
+        fetched = set(PageSnapshot.objects.filter(source_id__in=source_ids, url__in=urls)
+                      .values_list("source_id", "url"))
+
+    tiers = ([], [])
+    for position, item in enumerate(items):
+        item_url = url(item)
+        item_source_id = source_id(item)
+        previously_fetched = item_source_id is not None and (item_source_id, item_url) in fetched
+        tiers[int(previously_fetched)].append((position, item, item_url))
+
+    ordered = []
+    for tier in tiers:
+        by_origin = {}
+        for position, item, item_url in tier:
+            by_origin.setdefault(origin(item_url), []).append((position, item))
+        groups = [(item_origin, sorted(group, key=lambda row: (-priority(row[1]), row[0])))
+                  for item_origin, group in by_origin.items()]
+        groups.sort(key=lambda bucket: (-priority(bucket[1][0][1]), bucket[1][0][0], bucket[0]))
+        sorted_groups = [group for _, group in groups]
+        for offset in range(max((len(group) for group in sorted_groups), default=0)):
+            ordered.extend(group[offset][1] for group in sorted_groups if offset < len(group))
+    return ordered
 
 
 def tomorrow():
@@ -29,90 +62,227 @@ def approved_source(campaign, url):
     return next((source for source in campaign.sources.filter(approved=True).order_by("id") if in_scope(source, url)), None)
 
 
-def refresh_priorities(campaign):
+def hinted_source(campaign, url, source_hint):
+    """Use a caller's exact source only when its current campaign scope still authorizes the URL."""
+    if source_hint is not None:
+        source_id = source_hint.pk if isinstance(source_hint, Source) else source_hint
+        source = campaign.sources.filter(pk=source_id, approved=True).first()
+        if source and in_scope(source, url):
+            return source
+    return approved_source(campaign, url)
+
+
+def refresh_priorities(campaign, reviewed_source_ids=None):
     """Re-score saved URLs without changing operator approvals or dismissals."""
-    candidates = list(campaign.urls.select_related("source"))
+    candidates = list(campaign.urls.select_related("source")[:10000])
+    if reviewed_source_ids is None:
+        reviewed_source_ids = reviewed_sources(candidate.source_id for candidate in candidates if candidate.source_id)
+    changed = []
     for candidate in candidates:
-        candidate.score, candidate.reasons = rank(campaign, candidate.url, candidate.label, candidate.context)
-    DiscoveredURL.objects.bulk_update(candidates, ["score", "reasons"], batch_size=200)
+        score, reasons = current_candidate_score(
+            campaign, candidate.url, candidate.label, candidate.context, candidate.source,
+            reviewed_source_ids=reviewed_source_ids,
+            explicit_start=(candidate.method == "seed" and candidate.source is not None and
+                            canonical_exact_start(candidate.url, candidate.source.url)))
+        if (candidate.score, candidate.reasons) != (score, reasons):
+            candidate.score, candidate.reasons = score, reasons
+            changed.append(candidate)
+    if changed:
+        DiscoveredURL.objects.bulk_update(changed, ["score", "reasons"], batch_size=200)
     return candidates
 
 
+def _source_for_url(sources, source_map, url, source_hint=None):
+    if source_hint is not None:
+        source_id = source_hint.pk if isinstance(source_hint, Source) else source_hint
+        source = source_map.get(source_id)
+        if source and in_scope(source, url):
+            return source
+    return next((source for source in sources if in_scope(source, url)), None)
+
+
+def _queue_state(run):
+    keys = set(run.jobs.exclude(kind="search").values_list("kind", "url"))
+    return {"count": len(keys), "keys": keys, "collection_allowed": {}}
+
+
 @transaction.atomic
-def register(run, raw_url, *, label="", context="", found_on="", method="link", query="", depth=0, kind="page", seed=False, company_job=None):
-    """Record an exact URL, without fetching or DNS-resolving a new domain."""
-    try:
-        url = clean_url(raw_url)
-    except (ValueError, UnicodeError):
-        return None
-    campaign = Campaign.objects.select_for_update().get(pk=run.campaign_id)
-    score, reasons = rank(campaign, url, label, context)
-    if seed and score >= 0:
-        score, reasons = max(score, 90), reasons + ["Explicit starting source"]
-    source = approved_source(campaign, url)
-    manual = bool(company_job and not in_scope(company_job.source, url))
-    if manual:
-        from classification.models import Lineage
-        if (Lineage.objects.filter(company_job=company_job, relation='external_proposal').count() >= 5 or
-                Lineage.objects.filter(company_job__pilot=company_job.pilot, relation__in=('external_proposal', 'domain_proposal')).count() >= 25):
-            return None
-    if source and score >= 0 and Observation.objects.filter(source=source, lead__status="reviewed", present=True).exists():
-        score = min(100, score + 10)
-        reasons.append("Source has human-reviewed contacts (+10)")
-    candidate = DiscoveredURL.objects.filter(campaign=campaign, url=url).first()
-    preserve_existing_approval = bool(candidate and candidate.decision == 'approved')
-    if source and not preserve_existing_approval and campaign.urls.filter(origin=origin(url), dismissal_scope='origin').exists():
-        return candidate  # Only an explicit approval of this exact URL overrides an origin dismissal.
-    if candidate:
-        DiscoveryRun.objects.filter(pk=run.pk).update(duplicates_seen=F("duplicates_seen") + 1)
-        candidate.last_seen = timezone.now()
-        candidate.score, candidate.reasons = score, reasons
-        if label or context:
-            candidate.label, candidate.context = str(label)[:200], str(context)[:600]
-        if found_on or query:
-            candidate.found_on, candidate.search_query = found_on[:1500], query[:600]
-            candidate.method = method
-        if kind == "sitemap":
-            candidate.kind = kind
-        candidate.save()
+def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
+                   approved_sources=None, reviewed_source_ids=None):
+    """Register an ordered batch while holding one campaign capacity lock."""
+    prepared = []
+    for original in specs:
+        spec = dict(original)
+        try:
+            spec["url"] = spec["url"] if cleaned else clean_url(spec["url"])
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            prepared.append((spec, None))
+            continue
+        prepared.append((spec, spec["url"]))
+    urls = {url for _, url in prepared if url is not None}
+    if campaign is None:
+        campaign = Campaign.objects.select_for_update().get(pk=run.campaign_id)
     else:
-        if campaign.urls.count() >= campaign.max_candidates:
-            DiscoveryRun.objects.filter(pk=run.pk).update(message="Saved URL limit reached; raise the campaign limit to expand further.")
-            return None
-        new_domain = not source and not campaign.urls.filter(origin=origin(url)).exists()
-        run.refresh_from_db(fields=["new_domains"])
-        if new_domain and run.new_domains >= campaign.max_new_domains:
-            return None
-        candidate = DiscoveredURL.objects.create(campaign=campaign, first_run=run, url=url, origin=origin(url),
-            label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
-            search_query=query[:600], score=score, reasons=reasons, kind=kind,
-            decision="dismissed" if score < 0 else ("approved" if source else "pending"), source=source)
-        DiscoveryRun.objects.filter(pk=run.pk).update(candidates_found=F("candidates_found") + 1, new_domains=F("new_domains") + int(new_domain))
-    if manual and not preserve_existing_approval:
-        candidate.manual_review_required = True
-        if candidate.decision != 'dismissed':
-            candidate.decision = 'pending'
-        candidate.save(update_fields=['manual_review_required', 'decision'])
-        from classification.models import Lineage
-        parent = company_job.lineage.first()
-        if parent:
-            Lineage.objects.get_or_create(company_job=company_job, document=parent.document, url=url, relation='external_proposal')
-    if candidate.manual_review_required:
-        return candidate
-    if manual:
-        return candidate  # Preserve existing approval without assigning it to this bounded job.
-    if candidate.decision != "dismissed" and source:
-        candidate.source, candidate.decision = source, "approved"
-        candidate.save(update_fields=["source", "decision"])
-        queue_candidate(run, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job)
-    elif candidate.decision == "pending":
+        if campaign.pk != run.campaign_id:
+            raise ValueError("Run and campaign must match.")
+    run_state = DiscoveryRun.objects.get(pk=run.pk)
+    run_state.campaign = campaign
+    sources = (list(approved_sources) if approved_sources is not None else
+               list(campaign.sources.filter(approved=True).order_by("id")))
+    source_map = {source.pk: source for source in sources}
+    if order:
+        valid = []
+        invalid = []
+        for spec, url in prepared:
+            if url is None:
+                invalid.append((spec, url))
+                continue
+            source = _source_for_url(sources, source_map, url, spec.get("source_hint"))
+            spec["source_hint"] = source.pk if source else None
+            valid.append((spec, url))
+        prepared = [
+            (spec, spec["url"]) for spec in order_discovery_batch(
+                [spec for spec, _ in valid], url=lambda item: item["url"],
+                source_id=lambda item: item.get("source_hint"),
+                priority=lambda item: item.get("priority", 0))
+        ] + invalid
+    if reviewed_source_ids is None:
+        reviewed_source_ids = reviewed_sources(source_map)
+    candidates = {candidate.url: candidate for candidate in
+                  campaign.urls.filter(url__in=urls).select_related("source")}
+    inventory_count = campaign.urls.count()
+    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope"))
+    known_origins = {item_origin for item_origin, _ in origin_rows}
+    dismissed_origins = {item_origin for item_origin, scope in origin_rows if scope == "origin"}
+    queue_state = _queue_state(run_state)
+    results = []
+    duplicate_count = candidate_count = new_domain_count = 0
+    inventory_full = False
+    pending = []
+
+    for spec, url in prepared:
+        if url is None:
+            results.append(None)
+            continue
+        label = spec.get("label", "")
+        context = spec.get("context", "")
+        found_on = spec.get("found_on", "")
+        method = spec.get("method", "link")
+        query = spec.get("query", "")
+        depth = spec.get("depth", 0)
+        kind = spec.get("kind", "page")
+        seed = spec.get("seed", False)
+        company_job = spec.get("company_job")
+        job_priority = spec.get("job_priority")
+        source = _source_for_url(sources, source_map, url, spec.get("source_hint"))
+        exact_seed = bool(seed and source and canonical_exact_start(url, source.url))
+        score, reasons = current_candidate_score(
+            campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
+            explicit_start=exact_seed)
+        manual = bool(company_job and not in_scope(company_job.source, url))
+        if manual:
+            from classification.models import Lineage
+            if (Lineage.objects.filter(company_job=company_job, relation="external_proposal").count() >= 5 or
+                    Lineage.objects.filter(company_job__pilot=company_job.pilot,
+                                           relation__in=("external_proposal", "domain_proposal")).count() >= 25):
+                results.append(None)
+                continue
+
+        candidate = candidates.get(url)
+        preserve_existing_approval = bool(candidate and candidate.decision == "approved")
+        item_origin = origin(url)
+        if source and not preserve_existing_approval and item_origin in dismissed_origins:
+            results.append(candidate)
+            continue
+        if candidate:
+            duplicate_count += 1
+            candidate.last_seen = timezone.now()
+            candidate.score, candidate.reasons = score, reasons
+            if label or context:
+                candidate.label, candidate.context = str(label)[:200], str(context)[:600]
+            if found_on or query:
+                candidate.found_on, candidate.search_query = found_on[:1500], query[:600]
+                candidate.method = method
+            elif seed:
+                candidate.method = method
+            if kind == "sitemap":
+                candidate.kind = kind
+            candidate.save()
+        else:
+            if inventory_count >= campaign.max_candidates:
+                inventory_full = True
+                results.append(None)
+                continue
+            new_domain = not source and item_origin not in known_origins
+            if new_domain and run_state.new_domains + new_domain_count >= campaign.max_new_domains:
+                results.append(None)
+                continue
+            candidate = DiscoveredURL.objects.create(
+                campaign=campaign, first_run=run_state, url=url, origin=item_origin,
+                label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
+                search_query=query[:600], score=score, reasons=reasons, kind=kind,
+                decision="dismissed" if score < 0 else ("approved" if source else "pending"), source=source)
+            candidates[url] = candidate
+            known_origins.add(item_origin)
+            inventory_count += 1
+            candidate_count += 1
+            new_domain_count += int(new_domain)
+        if manual and not preserve_existing_approval:
+            candidate.manual_review_required = True
+            if candidate.decision != "dismissed":
+                candidate.decision = "pending"
+            candidate.save(update_fields=["manual_review_required", "decision"])
+            from classification.models import Lineage
+            parent = company_job.lineage.first()
+            if parent:
+                Lineage.objects.get_or_create(company_job=company_job, document=parent.document, url=url,
+                                              relation="external_proposal")
+        if candidate.manual_review_required or manual:
+            results.append(candidate)
+            continue
+        if candidate.decision != "dismissed" and source:
+            if candidate.source_id != source.pk or candidate.decision != "approved":
+                candidate.source, candidate.decision = source, "approved"
+                candidate.save(update_fields=["source", "decision"])
+            queue_candidate(
+                run_state, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job,
+                reviewed_source_ids=reviewed_source_ids, job_priority=job_priority, capacity=queue_state)
+        elif candidate.decision == "pending":
+            pending.append(candidate)
+        results.append(candidate)
+
+    updates = {}
+    if duplicate_count:
+        updates["duplicates_seen"] = F("duplicates_seen") + duplicate_count
+    if candidate_count:
+        updates["candidates_found"] = F("candidates_found") + candidate_count
+    if new_domain_count:
+        updates["new_domains"] = F("new_domains") + new_domain_count
+    if inventory_full:
+        updates["message"] = "Saved URL limit reached; raise the campaign limit to expand further."
+    if updates:
+        DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
+    if pending:
         from automation.policy import consider
-        consider(candidate)
-        candidate.refresh_from_db()
-    return candidate
+        for candidate in pending:
+            consider(candidate)
+            candidate.refresh_from_db()
+    return results
 
 
-def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None):
+@transaction.atomic
+def register(run, raw_url, *, label="", context="", found_on="", method="link", query="", depth=0, kind="page", seed=False, company_job=None,
+             job_priority=None, source_hint=None):
+    """Record one exact URL through the shared batch registration path."""
+    return register_batch(run, [{
+        "url": raw_url, "label": label, "context": context, "found_on": found_on, "method": method,
+        "query": query, "depth": depth, "kind": kind, "seed": seed, "company_job": company_job,
+        "job_priority": job_priority, "source_hint": source_hint,
+    }])[0]
+
+
+def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None,
+                    reviewed_source_ids=None, job_priority=None, capacity=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
     if candidate.manual_review_required:
@@ -123,17 +293,39 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
             return
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
         return
-    if candidate.score < 0 or (not seed and kind == "page" and candidate.score < campaign.min_score):
+    exact_start = bool(candidate.source and canonical_exact_start(candidate.url, candidate.source.url))
+    eligible, score, reasons = ordinary_page_eligible(
+        campaign, candidate.url, candidate.label, candidate.context, candidate.source,
+        reviewed_source_ids=reviewed_source_ids,
+        explicit_start=(candidate.method == "seed" and exact_start))
+    if (candidate.score, candidate.reasons) != (score, reasons):
+        candidate.score, candidate.reasons = score, reasons
+        candidate.save(update_fields=["score", "reasons"])
+    if score < 0 or (kind == "page" and not exact_start and not eligible):
         return
-    if not collection_allowed(candidate.source):
+    allowed = None if capacity is None else capacity["collection_allowed"].get(candidate.source_id)
+    if allowed is None:
+        allowed = collection_allowed(candidate.source)
+        if capacity is not None:
+            capacity["collection_allowed"][candidate.source_id] = allowed
+    if not allowed:
         return
     if depth > (3 if kind == "sitemap" else campaign.max_depth):
         return
-    if run.jobs.exclude(kind="search").count() >= campaign.max_pages:
+    if capacity is None:
+        if run.jobs.exclude(kind="search").count() >= campaign.max_pages:
+            return
+    elif capacity["count"] >= campaign.max_pages:
         return
-    DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
+    key = (kind, candidate.url)
+    if capacity is not None and key in capacity["keys"]:
+        return
+    _, created = DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
         "candidate": candidate, "source": candidate.source, "depth": depth, "company_job": company_job,
-        "priority": 95 if kind == "sitemap" else candidate.score})
+        "priority": job_priority if job_priority is not None else (95 if kind == "sitemap" else score)})
+    if capacity is not None:
+        capacity["keys"].add(key)
+        capacity["count"] += int(created)
 
 
 @transaction.atomic
@@ -153,21 +345,40 @@ def start(campaign):
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         return run
     run = DiscoveryRun.objects.create(campaign=campaign)
-    for source in campaign.sources.filter(approved=True).order_by("id"):
-        register(run, source.url, label=source.name, context=source.company, method="seed", seed=True)
+    sources = list(campaign.sources.filter(approved=True).order_by("id"))
+    reviewed_source_ids = reviewed_sources(source.pk for source in sources)
+    seed_specs = []
+    for source in sources:
+        seed_specs.append({"url": source.url, "source_id": source.pk, "priority": 100,
+                           "label": source.name, "context": source.company, "found_on": "",
+                           "method": "seed", "kind": "page"})
         if campaign.use_sitemaps:
             sitemap = origin(source.url) + "/sitemap.xml"
             if in_scope(source, sitemap):
-                register(run, sitemap, found_on=source.url, method="sitemap", kind="sitemap", seed=True)
+                seed_specs.append({"url": sitemap, "source_id": source.pk, "priority": 95,
+                                   "label": "", "context": "", "found_on": source.url,
+                                   "method": "sitemap", "kind": "sitemap"})
+    for spec in seed_specs:
+        spec.update(seed=True, job_priority=spec["priority"], source_hint=spec.pop("source_id"))
+    register_batch(run, seed_specs, campaign=campaign, order=True, approved_sources=sources,
+                   reviewed_source_ids=reviewed_source_ids)
     # Reviewed deeper paths remain useful even if their original directory disappears.
-    remembered = [candidate for candidate in refresh_priorities(campaign)
+    remembered = [candidate for candidate in refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
                   if candidate.decision == "approved" and candidate.method != "seed"]
-    selected_ids = set(campaign.sources.filter(approved=True).values_list("id", flat=True))
-    for candidate in sorted(remembered, key=lambda item: item.score, reverse=True):
+    selected_ids = set(source.pk for source in sources)
+    remembered_in_scope = []
+    for candidate in remembered:
         if candidate.source_id in selected_ids and in_scope(candidate.source, candidate.url):
-            kind = candidate.kind
-            if kind != "sitemap" or campaign.use_sitemaps:
-                queue_candidate(run, candidate, kind=kind)
+            if candidate.kind != "sitemap" or campaign.use_sitemaps:
+                remembered_in_scope.append(candidate)
+    queue_state = _queue_state(run)
+    for candidate in order_discovery_batch(
+            remembered_in_scope, url=lambda item: item.url, source_id=lambda item: item.source_id,
+            priority=lambda item: item.score):
+        if queue_state["count"] >= campaign.max_pages:
+            break
+        queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
+                        capacity=queue_state)
     if campaign.search_enabled:
         for query in list(dict.fromkeys(q.strip() for q in campaign.search_queries.splitlines() if q.strip()))[:10]:
             DiscoveryJob.objects.create(run=run, kind="search", url=query, priority=85)
@@ -200,12 +411,13 @@ def approve(candidate, source):
     candidate.manual_review_required = False
     candidate.save(update_fields=["decision", "source", "dismissal_scope", "manual_review_required"])
     run = candidate.campaign.runs.filter(status__in=("queued", "running")).first()
+    reviewed_source_ids = reviewed_sources({source.pk}) if run and candidate.campaign.active else None
     for sibling in candidate.campaign.urls.filter(origin=origin(source.url), manual_review_required=False).exclude(decision="dismissed"):
         if in_scope(source, sibling.url):
             sibling.decision, sibling.source = "approved", source
             sibling.save(update_fields=["decision", "source"])
             if run and candidate.campaign.active:
-                queue_candidate(run, sibling, kind=sibling.kind)
+                queue_candidate(run, sibling, kind=sibling.kind, reviewed_source_ids=reviewed_source_ids)
 
 
 def schedule_due():
@@ -271,9 +483,10 @@ def record_links(job, html, base_url):
                     break
             context = " ".join(parts)[:600]
         score, _ = rank(campaign, url, label, context)
-        links.append((score, url, label, context))
-    for _, url, label, context in sorted(links, key=lambda row: row[0], reverse=True):
-        register(job.run, url, label=label, context=context, found_on=base_url, depth=job.depth + 1, company_job=job.company_job)
+        links.append({"priority": score, "url": url,
+                      "label": label, "context": context, "found_on": base_url,
+                      "depth": job.depth + 1, "company_job": job.company_job})
+    register_batch(job.run, links, cleaned=True, order=True)
 
 
 def demo_response(url):
@@ -349,13 +562,17 @@ def process(job):
     from leads.services.worker import prepare_domain, parse_robots, pause_source, retry_delay
     campaign = job.run.campaign
     try:
+        campaign.refresh_from_db()
         if job.company_job_id:
             from classification.models import JevControl
             if not job.company_job.pilot.active or JevControl.objects.filter(pk='jev', paused=True).exists():
                 defer(job, timezone.now() + timedelta(seconds=60), 'Company pilot/Jev is paused; queued work retained.')
                 return
         if job.kind == "search":
-            if not campaign.search_enabled or not search_ready():
+            if not campaign.active or not campaign.search_enabled:
+                done(job, "Campaign or search was disabled after this job was claimed; no search made.", "skipped")
+                return
+            if not search_ready():
                 pause(campaign, "Search disabled or missing API key; turn search off or configure it before resuming.")
                 defer(job, timezone.now(), "Search configuration required.")
                 return
@@ -367,26 +584,50 @@ def process(job):
                 return
             state.next_allowed_at = timezone.now() + timedelta(seconds=2)
             state.save()
+            results = []
             for result in brave_search(job.url):
-                register(job.run, result["url"], label=str(result.get("title", "")),
-                         context=soup_for(str(result.get("description", ""))).get_text(" ", strip=True),
-                         method="search", query=job.url)
+                if not isinstance(result, dict) or not isinstance(result.get("url"), str):
+                    continue
+                try:
+                    result_url = clean_url(result["url"])
+                except (ValueError, UnicodeError):
+                    continue
+                raw_title = result.get("title", "")
+                raw_description = result.get("description", "")
+                label = soup_for(raw_title if isinstance(raw_title, str) else "").get_text(" ", strip=True)
+                context = soup_for(raw_description if isinstance(raw_description, str) else "").get_text(" ", strip=True)
+                results.append({"url": result_url, "label": label, "context": context,
+                                "query": job.url, "method": "search",
+                                "priority": rank(campaign, result_url, label, context)[0]})
+            register_batch(job.run, results, cleaned=True, order=True)
             done(job, "Search results saved; new domains await source review.")
             return
-        source = job.source
+        source = Source.objects.filter(pk=job.source_id).first() if job.source_id else None
         if not source or not source.approved or not campaign.sources.filter(pk=source.pk).exists() or not in_scope(source, job.url):
             done(job, "Source approval or scope changed; no request made.", "skipped")
             return
+        job.source = source
         from automation.policy import collection_allowed
         if not collection_allowed(source):
             done(job, "Source awaits recipe setup or health review; no request made.", "skipped")
             return
+        if job.candidate:
+            job.candidate.refresh_from_db()
         if not job.candidate or job.candidate.decision != "approved":
             done(job, "URL was dismissed or is awaiting review.", "skipped")
             return
-        score, _ = rank(campaign, job.url, job.candidate.label, job.candidate.context)
+        exact_start = canonical_exact_start(job.url, source.url)
+        eligible, score, reasons = ordinary_page_eligible(
+            campaign, job.url, job.candidate.label, job.candidate.context, source,
+            explicit_start=(job.candidate.method == "seed" and exact_start))
+        if (job.candidate.score, job.candidate.reasons) != (score, reasons):
+            DiscoveredURL.objects.filter(pk=job.candidate_id).update(score=score, reasons=reasons)
+            job.candidate.score, job.candidate.reasons = score, reasons
         if score < 0:
             done(job, "URL excluded by current campaign filters; no request made.", "skipped")
+            return
+        if job.kind == "page" and not exact_start and not eligible:
+            done(job, "URL no longer meets the current score and direct contact-page intent gate; no request made.", "skipped")
             return
         if source.collector == "demo":
             from classification.fixtures import DEMO_ORIGIN as JEV_DEMO_ORIGIN, demo_response as jev_demo
@@ -412,7 +653,8 @@ def process(job):
                 state = DomainState.objects.get(origin=origin(source.url))
                 for sitemap in (parse_robots(state).site_maps() or [])[:20]:
                     if in_scope(source, sitemap):
-                        register(job.run, sitemap, found_on=state.origin + "/robots.txt", method="sitemap", kind="sitemap", seed=True)
+                        register(job.run, sitemap, found_on=state.origin + "/robots.txt", method="sitemap",
+                                 kind="sitemap", seed=True, source_hint=source)
             # Discovery is intentionally HTML-first. Existing browser sources can still
             # be collected separately, using the collector's browser option.
             from classification.routing import before_fetch
@@ -428,14 +670,17 @@ def process(job):
             entries = []
             for kind, url in sitemap_entries(response.body):
                 try:
-                    entries.append((kind, clean_url(url)))
+                    clean = clean_url(url)
                 except (ValueError, UnicodeError):
                     continue
-            # Rank all URLs before applying the bounded job budget.
-            entries.sort(key=lambda item: rank(campaign, item[1])[0], reverse=True)
-            for kind, url in entries:
-                register(job.run, url, found_on=response.url, method="sitemap", kind=kind,
-                         depth=job.depth + 1 if kind == "sitemap" else 1, company_job=job.company_job)
+                entries.append({"kind": kind, "url": clean,
+                                "priority": 95 if kind == "sitemap" else rank(campaign, clean)[0],
+                                "source_id": source.pk if in_scope(source, clean) else None})
+            for entry in entries:
+                entry.update(found_on=response.url, method="sitemap",
+                             depth=job.depth + 1 if entry["kind"] == "sitemap" else 1,
+                             company_job=job.company_job, source_hint=entry.pop("source_id"))
+            register_batch(job.run, entries, cleaned=True, order=True)
             done(job, f"Read {len(entries)} sitemap entries; queued matching approved paths within limits.")
         else:
             if "html" not in response.headers.get("content-type", "").lower():

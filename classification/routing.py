@@ -7,7 +7,8 @@ from django.utils import timezone
 from automation.policy import collection_allowed, scope_hash
 from leads.services.network import in_scope, origin
 from discovery.models import Campaign, DiscoveredURL, DiscoveryJob, DiscoveryRun
-from discovery.ranking import rank
+from discovery.ranking import (canonical_exact_start, current_candidate_score, ordinary_page_eligible,
+                               rank, reviewed_sources)
 from .accounting import Deferred, check_lease, valid_evidence
 from .contracts import digest
 from .models import (Company, CompanyDomain, CompanyJob, ControlEvent, Evaluation, Lineage,
@@ -285,14 +286,24 @@ def advance(job_id):
     links = [{'url': job.source.url, 'label': job.source.name}]
     for edge in job.lineage.select_related('document'):
         links.extend(edge.document.links)
-    links.sort(key=lambda x: rank(campaign, x['url'], x.get('label', ''))[0], reverse=True)
+    reviewed_source_ids = reviewed_sources({job.source_id})
+    links.sort(key=lambda x: current_candidate_score(
+        campaign, x['url'], x.get('label', ''), x.get('context', ''), source=job.source,
+        reviewed_source_ids=reviewed_source_ids)[0], reverse=True)
     queued = 0
     for item in links:
         url = item['url']
-        score, reasons = rank(campaign, url, item.get('label', ''))
-        if score < 0 or not can_queue(job, url, 0) or run.jobs.count() >= campaign.max_pages:
-            continue
         existing = campaign.urls.filter(url=url).first()
+        new_label = str(item.get('label') or '')[:200]
+        new_context = str(item.get('context') or '')[:600]
+        label = new_label or (existing.label if existing else '')
+        context = new_context or (existing.context if existing else '')
+        eligible, score, reasons = ordinary_page_eligible(
+            campaign, url, label, context, source=job.source, reviewed_source_ids=reviewed_source_ids)
+        exact_start = canonical_exact_start(url, job.source.url)
+        if (score < 0 or (not exact_start and not eligible) or not can_queue(job, url, 0) or
+                run.jobs.count() >= campaign.max_pages):
+            continue
         if ((not existing or existing.decision != 'approved') and
                 campaign.urls.filter(origin=origin(url), dismissal_scope='origin').exists()):
             continue
@@ -300,12 +311,24 @@ def advance(job_id):
             continue
         candidate, _ = DiscoveredURL.objects.get_or_create(campaign=campaign, url=url, defaults={
             'origin': origin(url), 'source': job.source, 'decision': 'approved', 'score': score,
-            'label': item.get('label', '')[:200], 'reasons': reasons, 'first_run': run, 'method': 'company'})
+            'label': label, 'context': context, 'reasons': reasons, 'first_run': run, 'method': 'company'})
         if candidate.decision == 'dismissed' or candidate.manual_review_required:
             continue
-        if candidate.source_id != job.source_id:
+        changed = []
+        if new_label and candidate.label != new_label:
+            candidate.label = new_label
+            changed.append('label')
+        if new_context and candidate.context != new_context:
+            candidate.context = new_context
+            changed.append('context')
+        if (candidate.score, candidate.reasons) != (score, reasons):
+            candidate.score, candidate.reasons = score, reasons
+            changed.extend(['score', 'reasons'])
+        if candidate.source_id != job.source_id or candidate.decision != 'approved':
             candidate.source, candidate.decision = job.source, 'approved'
-            candidate.save(update_fields=['source', 'decision'])
+            changed.extend(['source', 'decision'])
+        if changed:
+            candidate.save(update_fields=list(dict.fromkeys(changed)))
         page, created = DiscoveryJob.objects.get_or_create(run=run, kind='page', url=url, defaults={
             'source': job.source, 'candidate': candidate, 'priority': score + 10, 'company_job': job})
         if not created and page.company_job_id != job.pk:

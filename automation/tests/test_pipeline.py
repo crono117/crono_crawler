@@ -14,7 +14,7 @@ from automation import services
 from automation.models import ProbePage, RecipeVersion, SiteAutomationJob, SitePolicy
 from automation.policy import collection_allowed, consider, consider_pending
 from automation.private_pages import purge_expired, read_html
-from automation.recipes import evaluate
+from automation.recipes import evaluate, recon_page
 
 HTML = '''<html><main><article class="agent-tile"><h3>Alex Example</h3><p class="role">Merchant services sales consultant</p><a href="mailto:alex@example.com">Email Alex</a></article>
 <article class="agent-tile"><h3>Casey Fixture</h3><p class="role">POS sales representative</p><a href="mailto:casey@example.com">Email Casey</a></article></main>
@@ -172,6 +172,41 @@ class AutomationTests(AutomationCase):
         register(self.run, "https://low.example.org/contact/", label="Contact")
         self.assertIsNone(register(self.run, "http://127.0.0.1/team/", label="Merchant services sales team"))
         self.assertFalse(SiteAutomationJob.objects.exists())
+
+    def test_policy_cannot_onboard_high_scoring_generic_sales_collateral(self):
+        self.policy.allowed_paths = "/"
+        self.policy.min_url_score = 35
+        self.policy.save(update_fields=["allowed_paths", "min_url_score"])
+        candidate = register(self.run, "https://collateral.example.org/resources/sales-playbook/",
+            label="Merchant services sales representative playbook",
+            context="Payment processing sales team representatives")
+        self.assertGreaterEqual(candidate.score, self.policy.min_url_score)
+        self.assertEqual(candidate.decision, "pending")
+        self.assertIsNone(consider(candidate))
+        self.assertFalse(Source.objects.filter(url=candidate.url).exists())
+
+    def test_recon_proposes_only_scored_links_with_direct_contact_intent(self):
+        source = Source.objects.create(name="Recon", url="https://recon.example.org/", approved=True,
+                                       allowed_paths="/", allow_homepage=True)
+        campaign = Campaign.objects.create(name="Recon campaign", min_score=0)
+        response = Response(source.url, 200, {"content-type": "text/html"}, b'''
+            <a href="/resources/sales-playbook/">Merchant services sales representative playbook</a>
+            <a href="/leadership/">Leadership</a>
+        ''')
+        _, links = recon_page(response, source, campaign)
+        self.assertEqual(links, ["https://recon.example.org/leadership/"])
+
+    def test_recon_uses_reviewed_source_bonus_at_threshold(self):
+        source = Source.objects.create(name="Reviewed recon", url="https://reviewed-recon.example.org/",
+                                       approved=True, allowed_paths="/", allow_homepage=True)
+        campaign = Campaign.objects.create(name="Reviewed recon campaign", min_score=40)
+        lead = Lead.objects.create(identity="reviewed-recon", name="Reviewed Recon", status="reviewed")
+        Observation.objects.create(lead=lead, source=source, page_url=source.url, facts={},
+            source_category=source.category, evidence="Reviewed", content_hash="reviewed-recon", present=True)
+        response = Response(source.url, 200, {"content-type": "text/html"},
+                            b'<a href="/team/">Team</a>')
+        _, links = recon_page(response, source, campaign)
+        self.assertEqual(links, ["https://reviewed-recon.example.org/team/"])
 
     def test_no_per_site_approval_for_next_qualified_domain_but_daily_site_cap_persists(self):
         self.policy.max_sites_per_day = 1
