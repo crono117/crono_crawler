@@ -53,3 +53,58 @@ def brave_search(query):
     except (ValueError, AttributeError, TypeError) as exc:
         raise FetchError("Search provider returned an invalid JSON response.") from exc
     return [row for row in results[:20] if isinstance(row, dict) and isinstance(row.get("url"), str)]
+
+
+COMMON_CRAWL_ORIGIN = "https://index.commoncrawl.org"
+COMMON_CRAWL_MAX_URLS = 1000
+
+
+def common_crawl_ready():
+    return settings.COMMON_CRAWL_ENABLED
+
+
+def common_crawl_collection():
+    """Configured crawl ID, or the newest one listed by the public index."""
+    if settings.COMMON_CRAWL_COLLECTION:
+        return settings.COMMON_CRAWL_COLLECTION
+    url = COMMON_CRAWL_ORIGIN + "/collinfo.json"
+    response = fetch(url, settings.BOT_USER_AGENT, guard=lambda u: u == url, max_bytes=512 * 1024,
+                     allow_redirects=False)
+    require_success(response)
+    try:
+        rows = json.loads(response.body)
+        crawl = rows[0]["id"]
+    except (ValueError, LookupError, TypeError) as exc:
+        raise FetchError("Common Crawl returned an invalid collection list.") from exc
+    if not isinstance(crawl, str) or not crawl.startswith("CC-MAIN-") or "/" in crawl:
+        raise FetchError("Common Crawl returned an unexpected collection ID.")
+    return crawl
+
+
+def common_crawl_urls(host, collection):
+    """Archived HTML URLs (status 200) for one exact host, from the public CDX index.
+
+    Queries the index only; the target site is never contacted here.
+    """
+    if not common_crawl_ready():
+        raise ValueError("Common Crawl lookup is disabled.")
+    if not host or "/" in host or "*" in host:
+        raise ValueError("Expected one exact host.")
+    endpoint = f"{COMMON_CRAWL_ORIGIN}/{collection}-index"
+    url = endpoint + "?" + urlencode([("url", f"{host}/*"), ("output", "json"), ("fl", "url"),
+                                      ("filter", "status:200"), ("filter", "mime:text/html"),
+                                      ("limit", str(COMMON_CRAWL_MAX_URLS))])
+    response = fetch(url, settings.BOT_USER_AGENT, guard=lambda u: u.startswith(endpoint + "?"),
+                     max_bytes=4 * 1024 * 1024, timeout=60, allow_redirects=False)
+    if response.status == 404:
+        return []  # the index answers 404 when a host has no captures
+    require_success(response)
+    urls = []
+    for line in response.body.splitlines()[:COMMON_CRAWL_MAX_URLS]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("url"), str):
+            urls.append(row["url"])
+    return urls
