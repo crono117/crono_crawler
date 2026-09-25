@@ -3,7 +3,7 @@ import hashlib
 import logging
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urlsplit, urljoin
 from django.conf import settings
 from django.db import transaction
 from django.db.models import F, Sum
@@ -331,6 +331,58 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
     if capacity is not None:
         capacity["keys"].add(key)
         capacity["count"] += int(created)
+
+
+COMMON_CRAWL_MAX_SOURCES = 25
+
+
+def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
+    """Exact in-scope contact-page URLs from the Common Crawl index for approved sources.
+
+    Only the public index is queried; no target site is contacted. Archived ``http``
+    URLs are mapped to the source's own ``https`` origin. URLs must be in scope and
+    carry direct contact-page intent before they are even offered for registration.
+    Returns (specs, per-source counts).
+    """
+    import time
+    from .providers import common_crawl_urls
+    from .ranking import direct_contact_page_intent
+    lookup = lookup or common_crawl_urls
+    specs, seen, counts = [], set(), {}
+    sources = list(campaign.sources.filter(approved=True).order_by("id")[:COMMON_CRAWL_MAX_SOURCES])
+    for index, source in enumerate(sources):
+        if index and pause:
+            time.sleep(pause)
+        source_origin = origin(source.url)
+        host = urlsplit(source_origin).netloc
+        kept = 0
+        for raw in lookup(host, collection):
+            try:
+                url = clean_url(raw)
+                if url.startswith("http://") and source_origin.startswith("https://"):
+                    url = clean_url("https://" + url.removeprefix("http://"))
+            except (TypeError, ValueError, UnicodeError):
+                continue
+            if url in seen or not in_scope(source, url) or not direct_contact_page_intent(url):
+                continue
+            seen.add(url)
+            kept += 1
+            specs.append({"url": url, "label": "", "context": "", "found_on": "", "method": "commoncrawl",
+                          "depth": 1, "kind": "page"})
+        counts[source.name] = kept
+    return specs, counts
+
+
+@transaction.atomic
+def register_common_crawl(campaign, specs):
+    """Register index URLs into the campaign's open run through the ordinary gates."""
+    campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
+    run = campaign.runs.filter(status__in=("queued", "running")).first()
+    if not campaign.active or not run:
+        raise ValueError("Start the campaign first; Common Crawl URLs join an open run.")
+    before = campaign.urls.count()
+    register_batch(run, specs, campaign=campaign, order=True)
+    return campaign.urls.count() - before
 
 
 COLLECTOR_IMPORT_LIMIT = 200
