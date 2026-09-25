@@ -141,11 +141,12 @@ def prepare_domain(source, job):
     return guard_with_robots(source, rules)
 
 def collect_links(source, job, html, base_url):
+    """Queue in-scope follow-ups; record and return external links as [(url, label)]."""
     if not source.follow_links and not source.discover_external:
-        return
+        return []
     from discovery.ranking import link_priority
     remaining = max(0, source.max_pages - job.run.jobs.count())
-    seen, follow = set(), []
+    seen, follow, external = set(), [], []
     for link in soup_for(html).select("a[href]")[:2000]:
         try:
             url = canonical_url(urljoin(base_url, link["href"]))
@@ -165,15 +166,18 @@ def collect_links(source, job, html, base_url):
             # Preserve the actual useful path without fetching or approving it.
             candidate = url
             if not Source.objects.filter(url=candidate).exists():
+                label = link.get_text(" ", strip=True)[:200]
                 SourceCandidate.objects.get_or_create(url=candidate, defaults={
-                    "label": link.get_text(" ", strip=True)[:200], "discovered_from": source, "evidence_url": base_url,
+                    "label": label, "discovered_from": source, "evidence_url": base_url,
                 })
+                external.append((candidate, label))
     # Team/profile/contact links claim the page allowance first; ties keep document order.
     for _, _, url in sorted(follow):
         if not remaining:
             break
         _, created = PageJob.objects.get_or_create(run=job.run, url=url, defaults={"depth": job.depth + 1})
         remaining -= int(created)
+    return external
 
 def retry_delay(attempts, header):
     seconds = min(3600, 30 * (2 ** max(0, attempts - 1)))
@@ -265,7 +269,7 @@ def process(job):
             PageSnapshot.objects.update_or_create(source=source, url=response.url, defaults={
                 "content_hash": content_hash, "extraction_signature": sig, "last_checked": timezone.now(),
             })
-            collect_links(source, job, html, response.url)
+            external = collect_links(source, job, html, response.url)
             job.status = "done"
             job.message = f"{count} contact(s)." + (" Content unchanged." if cached else "")
             if not count:
@@ -275,6 +279,12 @@ def process(job):
             job.save()
             Run.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count)
         finish_run(job.run)
+        if external:
+            try:
+                from discovery.services import bridge_collector_links
+                bridge_collector_links(source, external, response.url)
+            except Exception as exc:  # the hand-off must never fail an already-saved collection page
+                logger.warning("Collector link hand-off for page %s: %s", job.pk, exc)
     except Exception as exc:
         logger.warning("Page %s: %s", job.pk, exc)
         handle_error(job, source, exc)

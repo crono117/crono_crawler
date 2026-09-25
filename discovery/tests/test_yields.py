@@ -162,3 +162,55 @@ class DiscoveryYieldCommandTests(YieldFixtureMixin, TestCase):
         call_command("discovery_yield", stdout=out)
         self.assertIn("Harvest rate: 1/1 pages (100%); 2 new contact(s)", out.getvalue())
         self.assertIn("1/1 pages (100%), 2 new", out.getvalue())
+
+
+class CollectorBridgeTests(TestCase):
+    def setUp(self):
+        self.source = Source.objects.create(name="Directory", url="https://dir.example/", approved=True)
+        self.campaign = Campaign.objects.create(name="Bridge", keywords="", sales_terms="")
+        self.campaign.sources.add(self.source)
+
+    def link(self, url, status="new", source=None, age_days=0):
+        from leads.models import SourceCandidate
+        row = SourceCandidate.objects.create(url=url, label="Merchant services sales team",
+                                             discovered_from=source or self.source,
+                                             evidence_url="https://dir.example/", status=status)
+        if age_days:
+            SourceCandidate.objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(days=age_days))
+        return row
+
+    def test_start_imports_recent_unreviewed_collector_links(self):
+        from discovery.services import start
+        other = Source.objects.create(name="Elsewhere", url="https://else.example/", approved=True)
+        self.link("https://rep-one.example/our-team/")
+        self.link("https://rep-two.example/our-team/", status="dismissed")
+        self.link("https://rep-three.example/our-team/", age_days=400)
+        self.link("https://rep-four.example/our-team/", source=other)
+        start(self.campaign)
+        imported = set(self.campaign.urls.filter(method="collector").values_list("url", flat=True))
+        self.assertEqual(imported, {"https://rep-one.example/our-team/"})
+        self.assertEqual(self.campaign.urls.get(url="https://rep-one.example/our-team/").decision, "pending")
+
+    def test_bridge_needs_active_campaign_with_open_run(self):
+        from discovery.services import bridge_collector_links
+        links = [("https://rep.example/our-team/", "Sales team")]
+        self.assertEqual(bridge_collector_links(self.source, links, "https://dir.example/"), 0)
+        self.campaign.active = True
+        self.campaign.save()
+        self.assertEqual(bridge_collector_links(self.source, links, "https://dir.example/"), 0)  # no open run
+        DiscoveryRun.objects.create(campaign=self.campaign)
+        self.assertEqual(bridge_collector_links(self.source, links, "https://dir.example/"), 1)
+        self.assertTrue(self.campaign.urls.filter(url="https://rep.example/our-team/", method="collector").exists())
+        self.assertEqual(bridge_collector_links(self.source, links, "https://dir.example/"), 1)
+        self.assertEqual(self.campaign.urls.filter(url="https://rep.example/our-team/").count(), 1)  # deduped
+
+    def test_bridge_respects_exclusions(self):
+        from discovery.services import bridge_collector_links
+        self.campaign.active, self.campaign.exclusions = True, "domain:rep.example"
+        self.campaign.save()
+        DiscoveryRun.objects.create(campaign=self.campaign)
+        bridge_collector_links(self.source, [("https://rep.example/our-team/", "Sales team")], "https://dir.example/")
+        candidate = self.campaign.urls.get(url="https://rep.example/our-team/")
+        self.assertEqual(candidate.decision, "dismissed")
+        self.assertLess(candidate.score, 0)
+        self.assertFalse(candidate.jobs.exists())
