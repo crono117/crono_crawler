@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "pages": [
+    {"url": "https://agent.example/our-team/", "label": "reps", "anchor": "Meet our sales team"},
+    {"url": "https://agent.example/leadership/", "label": "team_no_reps", "anchor": "Leadership"},
+    {"url": "https://agent.example/blog/pos-tips/", "label": "irrelevant", "anchor": "POS tips"},
+    {"url": "https://agent.example/careers/", "label": "", "anchor": "Careers"}
+  ],
+  "sites": ["https://expected-agent.example"]
+}
