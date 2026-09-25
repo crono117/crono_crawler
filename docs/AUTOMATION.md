@@ -11,7 +11,7 @@ Existing installations keep their previous behavior until a policy is enabled. E
 1. Open **Discovery → your campaign → Automation policy**.
 2. Enable automatic setup. Set the permitted paths, additional excluded domains, request delay, daily new-site limit and score thresholds. Save the policy.
 3. Start/resume the campaign. Eligible URLs already pending are reconsidered by the worker, including after the daily new-site allowance resets. Newly discovered qualifying URLs use the same policy.
-4. Open **Site automation** to see setup progress, validation results, versions and exceptions. A passing site joins normal collection on the campaign's schedule automatically.
+4. Open **Site automation** to see setup progress, validation results, versions and exceptions. A passing site joins normal collection automatically: its approved pages enter the campaign's open run right away, or the next run if the campaign is paused.
 5. To evaluate an existing source such as Host Merchant, use **Set up recipe automatically** next to that source on the campaign page. This retains its exact origin, paths, category, restrictions and delay, cancels its unfinished ordinary run, and pauses collection until setup passes.
 
 The worker leaves an origin with an existing Source alone during automatic onboarding. This preserves previously configured or revoked approvals; opt an existing source into setup explicitly. A policy never expands an existing source's paths. Edit its source scope deliberately if more paths are needed.
@@ -91,7 +91,7 @@ An operator can pause a job and submit a candidate recipe on its detail page. It
 
 ## Release, health and rollback
 
-A passing candidate is released only to the canary. The canary refetches bounded pages using existing delays and budgets. It checks accepted counts, container structure, evidence errors and the observed robots policy. No candidate/canary contacts are saved until the entire canary passes. Then the version becomes `known_good`, supported contacts are saved and normal campaign collection becomes eligible.
+A passing candidate is released only to the canary. The canary refetches bounded pages using existing delays and budgets. It checks accepted counts, container structure, evidence errors and the observed robots policy. No candidate/canary contacts are saved until the entire canary passes. Then the version becomes `known_good`, supported contacts are saved and normal campaign collection becomes eligible. In the same transaction, the site's already-approved in-scope URLs are queued into the campaign's open discovery run through the ordinary queueing gates (approval, score and direct intent, collection permission, depth, per-run page limit and dedup). URLs the canary just checked are skipped. A paused or finished campaign picks them up on its next start, as before. The site's event history records how many pages were handed off.
 
 Normal managed collection repeats strict validation before replacing observations. A sudden zero result on a previously productive page, a greater-than-half count loss, container drift, evidence errors, duplication or a rejection spike pauses collection and queues a bounded re-probe. Prior observations and operator decisions survive. If rebuilding is ambiguous, the source stays paused for review.
 

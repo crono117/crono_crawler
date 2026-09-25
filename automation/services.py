@@ -293,6 +293,12 @@ def validate_canary(job):
         job.save(update_fields=["last_good_recipe", "next_probe_at"])
         Source.objects.filter(pk=job.source_id).update(last_error="")
         transition(job, "active", "Canary passed. Normal discovery collection is enabled within this source's scope.")
+        # Hand already-approved URLs to the open discovery run instead of waiting for the next one.
+        from discovery.services import queue_activated_source
+        queued = queue_activated_source(job.source, job.campaign)
+        if queued:
+            AutomationEvent.objects.create(job=job, state="active",
+                                           message=f"Queued {queued} approved page(s) into the open discovery run.")
 
 
 def advance(job):

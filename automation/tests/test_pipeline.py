@@ -369,3 +369,65 @@ class AutomationTests(AutomationCase):
             decision="dismissed", dismissal_scope="origin")
         self.assertEqual(self.candidate().decision, "pending")
         self.assertFalse(SiteAutomationJob.objects.exists())
+
+
+class ActivationHandoffTests(AutomationCase):
+    """A newly active site's approved URLs join the open run instead of waiting for the next one."""
+    V = "https://vendor.example.org"
+
+    def setup_with_sibling(self, sibling="/team/east/", label="East sales team"):
+        self.responses[sibling] = HTML
+        candidate = self.candidate()
+        other = register(self.run, self.V + sibling, label=label)
+        self.assertEqual(other.decision, "approved")
+        self.assertFalse(other.jobs.exists())  # gated while setup runs
+        return candidate, other
+
+    def test_active_site_queues_approved_siblings_into_open_run(self):
+        candidate, sibling = self.setup_with_sibling()
+        job = candidate.source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        self.assertEqual(list(sibling.jobs.values_list("run_id", "status")), [(self.run.pk, "queued")])
+        self.assertFalse(candidate.jobs.exists())  # canary just checked it; no duplicate fetch
+        self.assertTrue(job.events.filter(message__startswith="Queued 1 approved page").exists())
+
+    def test_handoff_respects_dismissal_intent_and_page_limit(self):
+        candidate, sibling = self.setup_with_sibling()
+        DiscoveredURL.objects.filter(pk=sibling.pk).update(decision="dismissed", dismissal_scope="url")
+        generic = DiscoveredURL.objects.create(campaign=self.campaign, url=self.V + "/team/pricing-sheet/",
+            origin=self.V, source=candidate.source, decision="approved", label="Pricing sheet")
+        job = candidate.source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        self.assertFalse(sibling.jobs.exists())
+        self.assertFalse(generic.jobs.exists())  # no direct contact-page intent
+
+        self.campaign.max_pages = 1
+        self.campaign.save()
+        for index in range(3):
+            DiscoveredURL.objects.create(campaign=self.campaign, url=f"{self.V}/team/r{index}/", origin=self.V,
+                source=candidate.source, decision="approved", label="Sales team")
+        from discovery.services import queue_activated_source
+        self.assertEqual(queue_activated_source(candidate.source, self.campaign), 1)
+
+    def test_paused_campaign_defers_to_next_start(self):
+        candidate, sibling = self.setup_with_sibling()
+        job = candidate.source.automation_job
+        self.run_until(job, states=("canary", "paused", "failed"))
+        self.run.status = "paused"
+        self.run.save()
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        self.assertFalse(sibling.jobs.exists())
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(status="completed")
+        new_run = start(self.campaign)
+        self.assertTrue(sibling.jobs.filter(run=new_run).exists())
+
+    def test_failed_canary_queues_nothing(self):
+        candidate, sibling = self.setup_with_sibling()
+        self.responses["/team/"] = "<h1>Our team</h1><p>Call the office.</p>"
+        job = candidate.source.automation_job
+        self.run_until(job)
+        self.assertNotEqual(job.state, "active")
+        self.assertFalse(sibling.jobs.exists())
