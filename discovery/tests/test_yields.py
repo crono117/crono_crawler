@@ -143,7 +143,7 @@ class DiscoveryYieldCommandTests(YieldFixtureMixin, TestCase):
         out = StringIO()
         call_command("discovery_yield", stdout=out)
         text = out.getvalue()
-        self.assertIn("Harvest rate: 1/2 pages (50%)", text)
+        self.assertIn("Harvest rate: 1/2 pages (50%); 0 new contact(s)", text)
         self.assertIn('"our team" ISO', text)
         self.assertIn(ORIGIN, text)
 
@@ -152,3 +152,13 @@ class DiscoveryYieldCommandTests(YieldFixtureMixin, TestCase):
         out = StringIO()
         call_command("discovery_yield", campaign=other.pk, stdout=out)
         self.assertIn("No completed page jobs", out.getvalue())
+
+
+    def test_reports_new_contacts_per_group(self):
+        job = self.page("/team/a/", 3)
+        job.new_contacts = 2
+        job.save()
+        out = StringIO()
+        call_command("discovery_yield", stdout=out)
+        self.assertIn("Harvest rate: 1/1 pages (100%); 2 new contact(s)", out.getvalue())
+        self.assertIn("1/1 pages (100%), 2 new", out.getvalue())

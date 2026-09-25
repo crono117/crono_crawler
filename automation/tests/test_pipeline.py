@@ -431,3 +431,43 @@ class ActivationHandoffTests(AutomationCase):
         self.run_until(job)
         self.assertNotEqual(job.state, "active")
         self.assertFalse(sibling.jobs.exists())
+
+
+class CanaryYieldTests(AutomationCase):
+    V = "https://vendor.example.org"
+
+    def test_released_canary_seeds_site_yield(self):
+        from discovery.yields import origin_yields
+        candidate = self.candidate()
+        job = candidate.source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        stats = origin_yields({self.V})[self.V]
+        self.assertEqual((stats.fetched, stats.productive), (1, 1))
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("discovery_yield", stdout=out)
+        self.assertIn("Setup canaries", out.getvalue())
+        self.assertIn(self.V, out.getvalue())
+
+    def test_failed_canary_adds_no_yield(self):
+        from discovery.yields import origin_yields
+        self.responses["/team/"] = "<h1>Our team</h1><p>Call the office.</p>"
+        candidate = self.candidate()
+        self.run_until(candidate.source.automation_job)
+        self.assertEqual(origin_yields({self.V}), {})
+
+    def test_recrawled_canary_url_counts_once(self):
+        from discovery.models import DiscoveryJob
+        from discovery.yields import origin_yields
+        candidate = self.candidate()
+        job = candidate.source.automation_job
+        self.run_until(job)
+        canary_url = job.pages.get(phase="canary").metadata["url"]
+        DiscoveryJob.objects.create(run=self.run, candidate=candidate, source=candidate.source, kind="page",
+                                    url=canary_url, status="done", contacts_seen=0)
+        DiscoveryJob.objects.create(run=self.run, candidate=candidate, source=candidate.source, kind="page",
+                                    url=self.V + "/team/other/", status="done", contacts_seen=0)
+        stats = origin_yields({self.V})[self.V]
+        self.assertEqual((stats.fetched, stats.productive), (2, 1))

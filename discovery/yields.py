@@ -60,15 +60,56 @@ def page_jobs(since=None):
                                        run__created_at__gte=since)
 
 
+def canary_pages(since=None):
+    """Released setup-canary pages: fetched by automation, validated against the recipe.
+
+    Only canaries that passed carry ``metadata["validation"]``; failed canaries leave the
+    site paused and gated, so they cost no discovery budget and are not counted.
+    """
+    from automation.models import ProbePage
+    since = since or timezone.now() - timedelta(days=window_days())
+    return ProbePage.objects.filter(phase="canary", status="done", metadata__has_key="validation",
+                                    available_at__gte=since)
+
+
+def canary_evidence(origins, since=None):
+    """{origin: {url: productive}} for released canary pages on the given origins."""
+    evidence = {}
+    rows = canary_pages(since).values_list("job__source__url", "metadata__url", "url",
+                                           "metadata__validation__accepted_records")
+    for source_url, final_url, url, accepted in rows:
+        item_origin = safe_origin(source_url)
+        if item_origin in origins:
+            key = final_url or url
+            pages = evidence.setdefault(item_origin, {})
+            pages[key] = pages.get(key, False) or bool(accepted)
+    return evidence
+
+
 def origin_yields(origins):
-    """Return {origin: OriginYield} for the given exact origins (missing = no history)."""
+    """Return {origin: OriginYield} for the given exact origins (missing = no history).
+
+    Discovery page jobs and released setup canaries both count, as distinct exact URLs,
+    so a newly onboarded site starts with the evidence its canary already produced.
+    """
     origins = {item for item in origins if item}
     if not origins:
         return {}
-    rows = (page_jobs().filter(candidate__origin__in=origins).values("candidate__origin")
+    jobs = page_jobs().filter(candidate__origin__in=origins)
+    rows = (jobs.values("candidate__origin")
             .annotate(fetched=Count("url", distinct=True),
                       productive=Count("url", distinct=True, filter=Q(contacts_seen__gt=0))))
-    return {row["candidate__origin"]: OriginYield(row["fetched"], row["productive"]) for row in rows}
+    result = {row["candidate__origin"]: OriginYield(row["fetched"], row["productive"]) for row in rows}
+    canaries = canary_evidence(origins)
+    if canaries:
+        # Union exact URLs for the few origins with canary evidence, so a recrawled canary page counts once.
+        for url, item_origin, seen in (jobs.filter(candidate__origin__in=canaries)
+                                       .values_list("url", "candidate__origin", "contacts_seen")):
+            pages = canaries[item_origin]
+            pages[url] = pages.get(url, False) or seen > 0
+        for item_origin, pages in canaries.items():
+            result[item_origin] = OriginYield(len(pages), sum(pages.values()))
+    return result
 
 
 def yield_adjustment(stats):

@@ -584,7 +584,7 @@ def save_page(job, response):
             "content_hash": content_hash, "extraction_signature": sig, "last_checked": timezone.now()})
         record_links(job, response.text, response.url)
         DiscoveryRun.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count, new_contacts=F("new_contacts") + created)
-        job.contacts_seen = count
+        job.contacts_seen, job.new_contacts = count, created
         message = f"{count} contact(s); {created} new." if count else "No validated contacts; review page suitability and CSS recipe."
         if diagnostics:
             message += " " + diagnostic_message(diagnostics)
