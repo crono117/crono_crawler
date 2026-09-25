@@ -470,8 +470,16 @@ def start(campaign):
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
                         capacity=queue_state, origin_yields=origin_yields)
     if campaign.search_enabled:
-        for query in list(dict.fromkeys(q.strip() for q in campaign.search_queries.splitlines() if q.strip()))[:10]:
-            DiscoveryJob.objects.create(run=run, kind="search", url=query, priority=85)
+        from .yields import EMPTY, query_yields, search_priority
+        queries = list(dict.fromkeys(q.strip() for q in campaign.search_queries.splitlines() if q.strip()))[:10]
+        history = query_yields(queries)
+        for query in queries:
+            stats = history.get(query, EMPTY)
+            priority = search_priority(stats)
+            DiscoveryJob.objects.create(
+                run=run, kind="search", url=query, priority=priority,
+                message=(f"Query history: {stats.productive}/{stats.fetched} fetched result pages stored contacts; "
+                         f"sampled priority {priority}.")[:1000])
     finish(run)
     return run
 

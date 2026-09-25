@@ -11,6 +11,7 @@ skips and sitemap jobs are not evidence about page content and are ignored.
 Counts are global across campaigns because they describe the site, not a
 campaign's configuration.
 """
+import random
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -121,3 +122,34 @@ def yield_adjustment(stats):
         return PROVEN_BONUS, (f"Site stored contacts on {stats.productive} of {stats.fetched} fetched pages "
                               f"(+{PROVEN_BONUS})")
     return 0, ""
+
+
+SEARCH_PRIORITY_BASE = 80
+SEARCH_PRIORITY_SPAN = 10
+
+
+def query_yields(queries):
+    """Return {query: OriginYield} for pages found by each configured search query.
+
+    Credit follows each URL's latest discovery context (``DiscoveredURL.search_query``).
+    Results that were never fetched (for example new domains still awaiting review)
+    add no evidence, so such a query keeps its exploratory prior.
+    """
+    queries = {item for item in queries if item}
+    if not queries:
+        return {}
+    rows = (page_jobs().filter(candidate__method="search", candidate__search_query__in=queries)
+            .values("candidate__search_query")
+            .annotate(fetched=Count("url", distinct=True),
+                      productive=Count("url", distinct=True, filter=Q(contacts_seen__gt=0))))
+    return {row["candidate__search_query"]: OriginYield(row["fetched"], row["productive"]) for row in rows}
+
+
+def search_priority(stats, rng=random):
+    """Thompson sample from Beta(1 + productive, 1 + empty), mapped into the search band.
+
+    Proven queries usually run first when the daily search budget cannot cover every
+    query; untried queries keep a uniform prior so they still get explored.
+    """
+    theta = rng.betavariate(1 + stats.productive, 1 + stats.fetched - stats.productive)
+    return SEARCH_PRIORITY_BASE + round(SEARCH_PRIORITY_SPAN * theta)
