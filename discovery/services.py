@@ -334,6 +334,45 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
 
 
 @transaction.atomic
+def queue_activated_source(source, campaign):
+    """Queue a newly active source's approved URLs into the campaign's open run.
+
+    Policy authorization approves in-scope URLs before setup finishes, while
+    collection is still gated, so queue_candidate skips them. Without this
+    handoff they would wait for the campaign's next scheduled run. Every
+    ordinary gate still applies through queue_candidate: approval, score and
+    direct intent, collection_allowed, depth, per-run page limit and dedup.
+    URLs the canary just checked for this source are skipped to save budget.
+    Returns the number of jobs created.
+    """
+    campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
+    run = campaign.runs.filter(status__in=("queued", "running")).first()
+    if not campaign.active or not run:
+        return 0  # a paused or finished campaign picks these up on its next start()
+    run.campaign = campaign
+    checked = set(PageSnapshot.objects.filter(source=source).values_list("url", flat=True))
+    candidates = [candidate for candidate in
+                  campaign.urls.filter(source=source, decision="approved", manual_review_required=False)
+                  .select_related("source")
+                  if candidate.url not in checked and in_scope(source, candidate.url) and
+                  (candidate.kind != "sitemap" or campaign.use_sitemaps)]
+    if not candidates:
+        return 0
+    queue_state = _queue_state(run)
+    before = queue_state["count"]
+    reviewed_source_ids = reviewed_sources({source.pk})
+    origin_yields = lookup_origin_yields({origin(source.url)})
+    for candidate in order_discovery_batch(candidates, url=lambda item: item.url,
+                                           source_id=lambda item: item.source_id,
+                                           priority=lambda item: item.score):
+        if queue_state["count"] >= campaign.max_pages:
+            break
+        queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
+                        capacity=queue_state, origin_yields=origin_yields)
+    return queue_state["count"] - before
+
+
+@transaction.atomic
 def start(campaign):
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     if not campaign.sources.filter(approved=True).exists() and not campaign.search_enabled:
