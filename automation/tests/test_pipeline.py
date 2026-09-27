@@ -278,6 +278,37 @@ class AutomationTests(AutomationCase):
         self.assertEqual(candidate.decision, "pending")
         self.assertFalse(SiteAutomationJob.objects.filter(source__url="https://excluded-later.example.org/").exists())
 
+    def test_recon_falls_back_to_about_then_contact_pages_after_team_pages(self):
+        source = Source.objects.create(name="Fallback", url="https://fallback.example.org/", approved=True,
+                                       allowed_paths="/", allow_homepage=True)
+        campaign = Campaign.objects.create(name="Fallback campaign", min_score=0)
+        response = Response(source.url, 200, {"content-type": "text/html"}, b'''
+            <a href="/contact-us/">Contact us</a>
+            <a href="/about-us/">About us</a>
+            <a href="/our-team/">Our team</a>
+            <a href="/blog/about-our-history/">Blog: about our history</a>
+            <a href="/products/about/">About our products</a>
+            <a href="/pricing/">Pricing</a>
+        ''')
+        _, links = recon_page(response, source, campaign)
+        self.assertEqual(links, ["https://fallback.example.org/our-team/",
+                                 "https://fallback.example.org/about-us/",
+                                 "https://fallback.example.org/contact-us/"])
+
+    def test_bare_homepage_reaches_people_listed_on_its_about_page(self):
+        self.policy.require_page_intent = False
+        self.policy.save(update_fields=["require_page_intent"])
+        self.responses["/"] = '<nav><a href="/about-us/">About us</a><a href="/blog/">Blog</a></nav><h1>Welcome</h1>'
+        self.responses["/about-us/"] = HTML
+        candidate = register(self.run, "https://vendor.example.org/", label="")
+        self.assertEqual(candidate.decision, "approved")
+        job = SiteAutomationJob.objects.get(source__url="https://vendor.example.org/")
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        self.assertIn("https://vendor.example.org/about-us/", self.calls)
+        self.assertNotIn("https://vendor.example.org/blog/", self.calls)
+        self.assertEqual(set(Lead.objects.values_list("name", flat=True)), {"Alex Example", "Casey Fixture"})
+
     def test_consider_pending_scan_also_skips_negative_scored_candidates_when_intent_is_off(self):
         from automation.policy import consider_pending
         self.policy.require_page_intent = False

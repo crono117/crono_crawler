@@ -92,6 +92,32 @@ def direct_contact_page_intent(url, label=""):
                segments[index + 1] not in generic for index, segment in enumerate(segments))
 
 
+COMPANY_PAGE_TARGETS = ("about", "about us", "who we are", "our company", "our story", "meet us")
+CONTACT_PAGE_TARGETS = ("contact", "contact us")
+
+
+def company_page_tier(url, label=""):
+    """Fallback tier for pages small businesses often use instead of a /team page.
+
+    Returns 1 for about/company pages, 2 for contact pages, None otherwise. This is only a
+    probe-ordering hint inside an already-authorized site's approved scope; it never counts as
+    direct contact-page intent and never authorizes a site or a discovery page.
+    """
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if any(host == domain or host.endswith("." + domain)
+           for domain in SOCIAL_HOSTS + DOCUMENT_HOSTS + SCHEDULING_HOSTS):
+        return None
+    text = " ".join((unquote(parsed.path), label))
+    if any(phrase_matches(text, term) for term in DIRECT_NOISE + EDITORIAL + PRODUCT):
+        return None
+    if any(phrase_matches(text, term) for term in COMPANY_PAGE_TARGETS):
+        return 1
+    if any(phrase_matches(text, term) for term in CONTACT_PAGE_TARGETS):
+        return 2
+    return None
+
+
 def canonical_exact_start(url, source_url):
     """Compare cleaned URLs and fail closed when either cannot be canonicalized."""
     try:
