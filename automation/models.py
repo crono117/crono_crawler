@@ -111,6 +111,29 @@ class AutomationEvent(models.Model):
         ordering = ["-id"]
 
 
+class SiteAssessment(models.Model):
+    """Durable record of why a probed site did or didn't yield contacts, kept for later analysis.
+
+    One row per job generation, so re-probes add history instead of overwriting it. Holds
+    aggregate counts and reason codes only: never names, emails or phone numbers.
+    """
+    job = models.ForeignKey(SiteAutomationJob, null=True, blank=True, on_delete=models.SET_NULL, related_name="assessments")
+    source = models.ForeignKey("leads.Source", null=True, blank=True, on_delete=models.SET_NULL, related_name="assessments")
+    origin = models.CharField(max_length=300)
+    generation = models.PositiveIntegerField(default=1)
+    outcome = models.CharField(max_length=40)
+    reasons = models.JSONField(default=list)
+    future_options = models.JSONField(default=list)
+    facts = models.JSONField(default=dict)
+    summary = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["job", "generation"], name="one_assessment_per_job_generation")]
+
+
 class CoordinatorClient(models.Model):
     name = models.CharField(max_length=120)
     campaign = models.ForeignKey("discovery.Campaign", on_delete=models.CASCADE)

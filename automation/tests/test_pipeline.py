@@ -309,6 +309,96 @@ class AutomationTests(AutomationCase):
         self.assertNotIn("https://vendor.example.org/blog/", self.calls)
         self.assertEqual(set(Lead.objects.values_list("name", flat=True)), {"Alex Example", "Casey Fixture"})
 
+    def test_people_without_personal_contacts_are_assessed_without_storing_personal_data(self):
+        from automation.models import SiteAssessment
+        self.responses["/team/"] = (
+            '<header><a href="mailto:info@vendor.example.org">Email us</a><a href="tel:202-555-0100">Call us</a></header><main>'
+            + "".join(f'<article class="team-card"><h3>{name}</h3><p class="team-role">{role}</p></article>'
+                      for name, role in (("Jordan Chiefly", "Chief Executive Officer"), ("Riley Bossman", "President"),
+                                         ("Sam Deputyson", "Vice President")))
+            + "</main>")
+        job = self.candidate().source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, "paused", job.message)
+        assessment = SiteAssessment.objects.get(job=job, generation=job.generation)
+        self.assertEqual(assessment.outcome, "people_without_personal_contacts")
+        self.assertIn("non_sales_titles_only", assessment.reasons)
+        self.assertIn("only_shared_company_contact", assessment.reasons)
+        self.assertIn("shared_contact_leads", assessment.future_options)
+        self.assertEqual(assessment.facts["totals"]["people_named"], 3)
+        self.assertEqual(assessment.facts["totals"]["people_titled"], 3)
+        self.assertEqual(assessment.facts["totals"]["sales_titled"], 0)
+        stored = json.dumps([assessment.facts, assessment.summary, assessment.reasons])
+        for private in ("Jordan", "Riley", "Chiefly", "info@", "555"):
+            self.assertNotIn(private, stored)
+        self.assertFalse(Lead.objects.exists())
+
+    def test_operator_note_is_appended_without_overwriting_the_observed_outcome(self):
+        from automation.models import SiteAssessment
+        self.responses["/team/"] = "<h1>About our company</h1><p>We process payments.</p>"
+        job = self.candidate().source.automation_job
+        self.run_until(job)
+        self.assertEqual(SiteAssessment.objects.get(job=job).outcome, "no_people_listed")
+        services.pause_job(job, "Confirmed dead end: operator reviewed.", rollback=False, failed=True)
+        assessment = SiteAssessment.objects.get(job=job)
+        self.assertEqual(assessment.outcome, "no_people_listed")
+        self.assertIn("Note: Confirmed dead end", assessment.summary)
+
+    def test_successful_setup_is_assessed_as_contacts_found(self):
+        from automation.models import SiteAssessment
+        job = self.candidate().source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, "active", job.message)
+        assessment = SiteAssessment.objects.get(job=job)
+        self.assertEqual(assessment.outcome, "contacts_found")
+        self.assertEqual(assessment.facts["totals"]["contacts_accepted"], 2)
+
+    def test_blocked_site_is_assessed_as_blocked(self):
+        from automation.models import SiteAssessment
+        self.responses["/team/"] = FetchError("HTTP 403; source needs review.", status=403)
+        job = self.candidate().source.automation_job
+        self.run_until(job)
+        assessment = SiteAssessment.objects.get(job=job)
+        self.assertEqual(assessment.outcome, "blocked")
+
+    def test_our_own_policy_or_operator_changes_are_not_recorded_as_site_assessments(self):
+        from automation.models import SiteAssessment
+        job = self.candidate().source.automation_job
+        services.pause_job(job, "Source scope, campaign policy or authorization changed. Review setup before resuming.")
+        services.pause_job(job, "Paused by operator.", rollback=False)
+        self.assertFalse(SiteAssessment.objects.exists())
+
+    def test_structured_people_without_employer_are_a_distinct_reason_and_richest_prefers_specific_rows(self):
+        from automation.assessments import build, richest
+        generic = {"row": "article:has(h3)", "matched_cards": 6, "accepted_records": 0,
+                   "signals": {"name": 6, "titled": 6, "role": 0, "contact": 0}}
+        specific = {"row": ".team-card", "matched_cards": 3, "accepted_records": 0,
+                    "signals": {"name": 3, "titled": 3, "role": 2, "contact": 0}}
+        url = "https://fictional.example.test/team"
+        self.assertEqual(richest([{url: generic}, {url: specific}])[url]["row"], ".team-card")
+        structured = {"row": "structured-v1", "matched_cards": 2, "accepted_records": 0,
+                      "primary_rejections": {"missing_employer": 2},
+                      "signals": {"name": 2, "titled": 2, "role": 1, "contact": 2}}
+        source = self.candidate().source
+        outcome, reasons, options, _, _ = build(source, {url: structured}, {})
+        self.assertEqual(outcome, "contacts_rejected")
+        self.assertIn("structured_people_without_employer", reasons)
+        self.assertIn("operator_confirmed_employer", options)
+
+    def test_backfill_recovers_an_assessment_from_stored_stats_after_html_expires(self):
+        from automation.models import SiteAssessment
+        from django.core.management import call_command
+        from io import StringIO
+        job = self.candidate().source.automation_job
+        self.run_until(job)
+        SiteAssessment.objects.all().delete()
+        ProbePage.objects.update(expires_at=timezone.now() - timedelta(hours=1))
+        out = StringIO()
+        call_command("site_assessments", "--backfill", stdout=out)
+        self.assertIn("Backfilled 1 assessment(s).", out.getvalue())
+        self.assertEqual(SiteAssessment.objects.get(job=job).outcome, "contacts_found")
+        self.assertIn("contacts_found", out.getvalue())
+
     def test_consider_pending_scan_also_skips_negative_scored_candidates_when_intent_is_off(self):
         from automation.policy import consider_pending
         self.policy.require_page_intent = False

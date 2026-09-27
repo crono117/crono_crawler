@@ -16,8 +16,8 @@ PROBE_VERSION = "1.0"
 PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d ().-]{6,}\d)(?!\w)")
 FIELD_OPTIONS = [
     {"name": DEFAULT_SELECTORS["name"], "title": DEFAULT_SELECTORS["title"]},
-    {"name": "h3", "title": "h4, .position, .designation, .job, .job-title, .role, .title"},
-    {"name": "h2", "title": "h3, h4, .position, .designation, .role, .title"},
+    {"name": "h3", "title": "h4, .position, .designation, .job, .job-title, .role, .title, .team-role, .member-role, .staff-role"},
+    {"name": "h2", "title": "h3, h4, .position, .designation, .role, .title, .team-role, .member-role, .staff-role"},
     {"name": "h3, h2", "title": "p"},
 ]
 ROW_CLASSES = re.compile(r"^(?:team|staff|person|agent|employee|member|profile|bio|sales)[-_](?:member|card|item|tile|entry|profile|bio|person|rep)(?:s)?$", re.I)
@@ -60,8 +60,10 @@ def evaluate(html, source, recipe):
         else:
             # Shared, generic and page-chrome contacts are removed after validation below.
             fields, _ = card_record(row, selectors, evidence_node(row, selectors["evidence"]))
-        signals["name"] += int(len(fields["name"].split()) >= 2)
+        plausible_name = len(fields["name"].split()) >= 2
+        signals["name"] += int(plausible_name)
         signals["role"] += int(bool(fields["title"] and SALES_ROLE.search(fields["title"])))
+        signals["titled"] += int(bool(fields["title"]) and plausible_name)
         signals["contact"] += int(bool(fields["email"] or fields["phone"]))
         if structured:
             shape.append([row["syntax"], *sorted(key for key, value in fields.items() if value)])

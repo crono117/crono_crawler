@@ -89,6 +89,14 @@ Readiness awards 20 for repeated cards (15 for a single card), 20 for at least 8
 
 Diagnostics distinguish no matching cards, cards without usable contacts, invalid contacts/evidence, accepted contacts, and unavailable/blocked pages. Zero contacts pauses for recipe review; it is not represented as a successful release. A page can be highly relevant yet publish no suitable individual contact details. That remains a likely outcome for executive pages.
 
+### Site assessments
+
+Every site that reaches recipe validation, and every site that pauses for a reason about the site itself (access challenge, robots, collection restriction, out-of-scope redirect, unavailable pages), gets one `SiteAssessment` per job generation: an outcome (`contacts_found`, `people_without_personal_contacts`, `contacts_rejected`, `cards_without_people`, `no_people_listed`, or a failure code), reason codes, "future options" naming the capability that could unlock the site later (for example `shared_contact_leads`, `non_sales_people_listed`, `browser_collector`, `platform_recipe_pack`, `operator_confirmed_employer`), aggregate facts per page, and a one-line summary. Because an assessment describes what the site publishes, each page uses the richest observation across all tried recipe variants (preferring specific card classes and structured data over generic catch-alls), not only the winning recipe.
+
+Assessments hold counts, page kinds, selector names, framework hints and reason codes only — never names, emails or phone numbers. Pauses caused by our own policy/scope edits or operator actions are not recorded as site findings; an operator's closing note on an assessed site is appended as a note and does not overwrite the observed outcome. Assessments are advisory: they never authorize a source, release a recipe or create a contact.
+
+`manage.py site_assessments` prints outcome/reason/future-option counts and recent summaries. `--backfill` creates assessments for existing jobs without network requests, re-evaluating stored probe HTML while it is still retained and otherwise using saved validation stats; `--refresh` recomputes current-generation assessments. The Automation home page shows the same breakdown.
+
 An operator can pause a job and submit a candidate recipe on its detail page. It still goes through local validation and the same release threshold. If snapshots have expired, run a fresh probe first. A human correction does not write asserted contacts or bypass the canary.
 
 ## Release, health and rollback

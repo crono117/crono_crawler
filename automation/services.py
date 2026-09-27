@@ -67,6 +67,8 @@ def pause_job(job, message, *, rollback=True, failed=False):
         job.save(update_fields=["current_recipe", "last_good_recipe"])
     Source.objects.filter(pk=job.source_id).update(active=False, last_error=message[:1000])
     transition(job, "failed" if failed else "paused", message)
+    from .assessments import record_failure
+    record_failure(job, message)
 
 
 def refresh_authorization(job):
@@ -217,6 +219,10 @@ def validate_candidates(job):
                     "rejected_records": sum(s["rejected_records"] for s in stats.values()),
                     "content_hashes": {p.metadata["url"]: p.metadata["content_hash"] for p, _ in samples}})
             best = best or version
+        from .assessments import record as record_assessment
+        record_assessment(job, [{url: {**stats, "row": result[3].get("row", result[3].get("engine", ""))}
+                                 for url, stats in result[4].items()} for result in results],
+                          {page.metadata["url"]: page.metadata for page, _ in samples})
         if best and best.score >= job.policy_snapshot["min_recipe_score"] and best.validation["accepted_records"]:
             job.current_recipe = best
             job.save(update_fields=["current_recipe"])

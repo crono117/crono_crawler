@@ -26,9 +26,19 @@ BRIDGE_STATE_LABELS = {
 
 @staff_required
 def home(request):
+    from collections import Counter
+    from .models import SiteAssessment
     jobs = SiteAutomationJob.objects.select_related("source", "campaign", "current_recipe")
+    assessments = list(SiteAssessment.objects.all()[:500])
+    reasons, options = Counter(), Counter()
+    for item in assessments:
+        reasons.update(item.reasons)
+        options.update(item.future_options)
     return render(request, "automation/home.html", {"jobs": jobs[:100], "campaigns": Campaign.objects.all(),
-        "active_count": jobs.filter(state="active").count(), "review_count": jobs.filter(state__in=("paused", "failed")).count()})
+        "active_count": jobs.filter(state="active").count(), "review_count": jobs.filter(state__in=("paused", "failed")).count(),
+        "assessment_outcomes": Counter(item.outcome for item in assessments).most_common(),
+        "assessment_reasons": reasons.most_common(10), "assessment_options": options.most_common(),
+        "recent_assessments": assessments[:25]})
 
 
 @staff_required
