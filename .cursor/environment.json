@@ -1,5 +1,5 @@
 {
-  "name": "ClearPay Lead Engine",
+  "name": "Lead Console",
   "install": "python3 setup.py --no-user",
   "start": ".venv/bin/python manage.py migrate --noinput",
   "terminals": [

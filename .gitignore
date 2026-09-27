@@ -9,3 +9,7 @@ __pycache__/
 .DS_Store
 test-results/
 .repair-checkpoints/
+# discovery_yield/discovery_eval exports are real-site working output, not fixtures.
+# Never commit these; the only tracked file under docs/eval/ is the synthetic example.
+docs/eval/*
+!docs/eval/discovery_labels.example.json

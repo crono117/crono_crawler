@@ -71,8 +71,13 @@ def consider(candidate):
     if not policy or not campaign.active or denied(policy, candidate.url) or urlsplit(candidate.url).query:
         return None
     score, _ = rank(campaign, candidate.url, candidate.label, candidate.context)
-    if (score < policy.min_url_score or not direct_contact_page_intent(candidate.url, candidate.label) or
-            not in_scope(policy_scope(policy, candidate.url), candidate.url)):
+    if policy.require_page_intent:
+        if (score < policy.min_url_score or not direct_contact_page_intent(candidate.url, candidate.label) or
+                not in_scope(policy_scope(policy, candidate.url), candidate.url)):
+            return None
+    elif score < 0 or not in_scope(policy_scope(policy, candidate.url), candidate.url):
+        # Intent wording is advisory in this mode, but an explicit exclusion/negative score
+        # is never optional, and scope/robots enforcement is never optional either.
         return None
     # Preserve unreviewed/operator-created sources and previous explicit dismissals.
     if Source.objects.filter(url__startswith=candidate.origin + "/").exists() or campaign.urls.filter(origin=candidate.origin, dismissal_scope="origin").exists():
@@ -101,8 +106,11 @@ def consider_pending():
     # Runs without a live discovery run too, so deferred site budgets recover next day.
     from discovery.models import DiscoveredURL
     for policy in SitePolicy.objects.filter(enabled=True, campaign__active=True):
+        # Must mirror consider()'s own gate: min_url_score only applies when page intent is
+        # required, otherwise only an explicit exclusion/negative score is disqualifying.
+        floor = policy.min_url_score if policy.require_page_intent else 0
         pending = DiscoveredURL.objects.filter(campaign_id=policy.campaign_id, decision="pending",
-            kind="page", manual_review_required=False, score__gte=policy.min_url_score).select_related("campaign").order_by("id")
+            kind="page", manual_review_required=False, score__gte=floor).select_related("campaign").order_by("id")
         candidates = list(pending.filter(id__gt=policy.pending_scan_cursor)[:100])
         if not candidates and policy.pending_scan_cursor:
             candidates = list(pending[:100])

@@ -225,6 +225,72 @@ class AutomationTests(AutomationCase):
         self.assertFalse(in_scope(candidate.source, "https://home.example.org/?account=123"))
         self.assertFalse(in_scope(candidate.source, "https://www.home.example.org/team/"))
 
+    def test_require_page_intent_default_blocks_bare_homepage(self):
+        candidate = register(self.run, "https://homepage.example.org/", label="")
+        self.assertEqual(candidate.decision, "pending")
+        self.assertFalse(SiteAutomationJob.objects.exists())
+
+    def test_require_page_intent_false_authorizes_bare_homepage_within_scope(self):
+        self.policy.require_page_intent = False
+        self.policy.save(update_fields=["require_page_intent"])
+        candidate = register(self.run, "https://homepage.example.org/", label="")
+        self.assertEqual(candidate.decision, "approved")
+        job = SiteAutomationJob.objects.get()
+        self.assertEqual(job.source.url, "https://homepage.example.org/")
+        self.assertTrue(job.source.approved)
+        self.assertEqual(job.source.approval_kind, "policy")
+
+    def test_require_page_intent_false_still_respects_denied_domains_and_scope(self):
+        self.policy.require_page_intent = False
+        self.policy.save(update_fields=["require_page_intent"])
+        denied_candidate = register(self.run, "https://linkedin.com/", label="")
+        self.assertEqual(denied_candidate.decision, "pending")
+        self.policy.allow_homepage = False
+        self.policy.save(update_fields=["allow_homepage"])
+        out_of_scope_candidate = register(self.run, "https://other.example.org/", label="")
+        self.assertEqual(out_of_scope_candidate.decision, "pending")
+        self.assertFalse(SiteAutomationJob.objects.filter(source__url__in=[
+            "https://linkedin.com/", "https://other.example.org/"]).exists())
+
+    def test_batch_registration_authorizes_higher_scored_candidate_over_arrival_order(self):
+        self.policy.require_page_intent = False
+        self.policy.max_sites_per_day = 1
+        self.policy.save(update_fields=["require_page_intent", "max_sites_per_day"])
+        from discovery.services import register_batch
+        register_batch(self.run, [
+            {"url": "https://weak.example.org/", "label": ""},
+            {"url": "https://strong.example.org/team/", "label": "Merchant services sales team"},
+        ], campaign=self.campaign)
+        self.assertTrue(SiteAutomationJob.objects.filter(source__url="https://strong.example.org/team/").exists())
+        self.assertFalse(SiteAutomationJob.objects.filter(source__url="https://weak.example.org/").exists())
+
+    def test_require_page_intent_false_still_rejects_a_newly_excluded_pending_candidate(self):
+        self.policy.require_page_intent = False
+        self.policy.save(update_fields=["require_page_intent"])
+        # Simulates a candidate that was already pending before the operator added an
+        # exclusion matching it; consider() re-scores live and must still honor it.
+        candidate = DiscoveredURL.objects.create(campaign=self.campaign, url="https://excluded-later.example.org/",
+            origin="https://excluded-later.example.org", decision="pending", kind="page", score=0)
+        self.campaign.exclusions = "domain:excluded-later.example.org"
+        self.campaign.save(update_fields=["exclusions"])
+        self.assertIsNone(consider(candidate))
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.decision, "pending")
+        self.assertFalse(SiteAutomationJob.objects.filter(source__url="https://excluded-later.example.org/").exists())
+
+    def test_consider_pending_scan_also_skips_negative_scored_candidates_when_intent_is_off(self):
+        from automation.policy import consider_pending
+        self.policy.require_page_intent = False
+        self.policy.save(update_fields=["require_page_intent"])
+        DiscoveredURL.objects.create(campaign=self.campaign, url="https://excluded-scan.example.org/",
+            origin="https://excluded-scan.example.org", decision="pending", kind="page", score=-100)
+        weak = DiscoveredURL.objects.create(campaign=self.campaign, url="https://zero-score-scan.example.org/",
+            origin="https://zero-score-scan.example.org", decision="pending", kind="page", score=0)
+        consider_pending()
+        self.assertFalse(SiteAutomationJob.objects.filter(source__url="https://excluded-scan.example.org/").exists())
+        # A merely-unscored (not excluded) homepage must still be reachable by the periodic scan.
+        self.assertTrue(SiteAutomationJob.objects.filter(source__url=weak.url).exists())
+
     def test_probe_does_not_follow_external_or_excluded_links(self):
         self.responses["/team/"] += '<a href="/contact/">Contact</a><a href="/products/">Merchant services sales team</a><a href="https://elsewhere.example.org/team/">Sales team</a>'
         job = self.candidate().source.automation_job

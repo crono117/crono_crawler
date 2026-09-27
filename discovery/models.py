@@ -30,6 +30,11 @@ class Campaign(models.Model):
     daily_search_limit = bounded(5, 1, 100)
     active = models.BooleanField(default=False)
     next_due_at = models.DateTimeField(default=timezone.now)
+    next_intake_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="Next lightweight pull of fresh collector-discovered links into the active queue, "
+                  "independent of the full reseed/sitemap cycle on next_due_at.",
+    )
     last_error = models.CharField(max_length=1000, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

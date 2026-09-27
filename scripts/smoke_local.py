@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
-    with tempfile.TemporaryDirectory(prefix="clearpay-smoke-") as directory:
+    with tempfile.TemporaryDirectory(prefix="lead-console-smoke-") as directory:
         env = dict(os.environ, DATA_DIR=directory, DATABASE_URL="", DJANGO_DEBUG="1",
                    DJANGO_SECRET_KEY=secrets.token_urlsafe(48), DJANGO_ALLOWED_HOSTS="127.0.0.1,localhost",
                    DJANGO_SECURE_COOKIES="0", DJANGO_SETTINGS_MODULE="config.settings",

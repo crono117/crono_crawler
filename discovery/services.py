@@ -269,7 +269,9 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
     if pending:
         from automation.policy import consider
-        for candidate in pending:
+        # Best-scored candidates claim the daily automation budget first; weak ones only
+        # fill leftover capacity, regardless of the order they happened to arrive in.
+        for candidate in sorted(pending, key=lambda item: (-item.score, item.pk)):
             consider(candidate)
             candidate.refresh_from_db()
     return results
@@ -389,14 +391,34 @@ COLLECTOR_IMPORT_LIMIT = 200
 
 
 def collector_link_specs(sources, since=None):
-    """Recent unreviewed external links the regular collector found on these approved sources."""
+    """Recent unreviewed external links the regular collector found on these approved sources.
+
+    Each spec carries its source SourceCandidate pk (``_candidate_id``) so the caller can mark
+    it "added" once register_batch's outcome for that URL is actually known — see
+    mark_collector_candidates_handled(). Do not mark rows here: register_batch can legitimately
+    skip a URL (campaign at capacity, new-domain cap, dismissed origin), and a row marked "added"
+    before that outcome is known is never re-served, silently losing the candidate forever.
+    """
     from leads.models import SourceCandidate
     from .yields import window_days
     since = since or timezone.now() - timedelta(days=window_days())
-    rows = (SourceCandidate.objects.filter(status="new", discovered_from__in=sources, created_at__gte=since)
-            .order_by("-created_at")[:COLLECTOR_IMPORT_LIMIT])
+    rows = list(SourceCandidate.objects.filter(status="new", discovered_from__in=sources, created_at__gte=since)
+                .order_by("-created_at")[:COLLECTOR_IMPORT_LIMIT])
     return [{"url": row.url, "label": row.label, "context": "", "found_on": row.evidence_url,
-             "method": "collector", "depth": 1, "kind": "page"} for row in rows]
+             "method": "collector", "depth": 1, "kind": "page", "_candidate_id": row.pk} for row in rows]
+
+
+def mark_collector_candidates_handled(specs, results):
+    """Mark each collector-sourced spec "added" only if register_batch actually processed it.
+
+    A None result means register_batch skipped it (unparsable URL, campaign/domain cap) — leave
+    it "new" so it's re-offered on the next call instead of being silently lost.
+    """
+    from leads.models import SourceCandidate
+    handled_ids = [spec["_candidate_id"] for spec, result in zip(specs, results)
+                   if spec.get("method") == "collector" and "_candidate_id" in spec and result is not None]
+    if handled_ids:
+        SourceCandidate.objects.filter(pk__in=handled_ids).update(status="added")
 
 
 def bridge_collector_links(source, links, found_on):
@@ -500,8 +522,9 @@ def start(campaign):
     # External links the regular collector found on these sources since they were last reviewed.
     collector_specs = collector_link_specs(sources)
     if collector_specs:
-        register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
-                       reviewed_source_ids=reviewed_source_ids)
+        collector_results = register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
+                                           reviewed_source_ids=reviewed_source_ids)
+        mark_collector_candidates_handled(collector_specs, collector_results)
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
     origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
@@ -580,6 +603,46 @@ def schedule_due():
                 start(campaign)
             except ValueError as exc:
                 pause(campaign, str(exc))
+    intake_due()
+
+
+INTAKE_INTERVAL_MINUTES = 5
+
+
+def import_collector_backlog(campaign):
+    """Pull fresh collector-discovered links into the active queue without a full reseed.
+
+    Runs far more often than the campaign's own next_due_at cycle, so incoming candidates
+    from discover_external sources never sit unqueued between full campaign restarts.
+    Returns the number of campaign.urls rows added.
+    """
+    sources = list(campaign.sources.filter(approved=True).order_by("id"))
+    if not sources:
+        return 0
+    specs = collector_link_specs(sources)
+    if not specs:
+        return 0
+    run = campaign.runs.filter(status__in=OPEN).first()
+    opened_run = run is None
+    if opened_run:
+        run = DiscoveryRun.objects.create(campaign=campaign)
+    reviewed_source_ids = reviewed_sources(source.pk for source in sources)
+    before = campaign.urls.count()
+    results = register_batch(run, specs, campaign=campaign, approved_sources=sources, reviewed_source_ids=reviewed_source_ids)
+    mark_collector_candidates_handled(specs, results)
+    if opened_run:
+        finish(run)
+    return campaign.urls.count() - before
+
+
+def intake_due():
+    for campaign in Campaign.objects.filter(active=True, next_intake_at__lte=timezone.now()):
+        Campaign.objects.filter(pk=campaign.pk).update(
+            next_intake_at=timezone.now() + timedelta(minutes=INTAKE_INTERVAL_MINUTES))
+        try:
+            import_collector_backlog(campaign)
+        except Exception:
+            logger.exception("Collector backlog intake failed for campaign %s", campaign.pk)
 
 
 def defer(job, until, message):

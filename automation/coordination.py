@@ -11,7 +11,7 @@ from .models import RecipeVersion, SiteAutomationJob
 from .policy import authorized
 from .services import transition
 
-BUNDLE_SALT = "clearpay.recipe-bundle.v1"
+BUNDLE_SALT = "lead-console.recipe-bundle.v1"
 
 
 def token_hash(token):

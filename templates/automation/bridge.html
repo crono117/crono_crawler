@@ -1,0 +1,188 @@
+{% extends 'base.html' %}{% load static %}{% block title %}Crawler bridge{% endblock %}{% block location %}Crawler bridge{% endblock %}{% block content %}
+<header class="page-heading"><div><div class="eyebrow">LIVE · AUTO-REFRESHING</div><h1>Crawler bridge</h1><p>An actual isometric scene — engine: <a href="https://phaser.io" target="_blank" rel="noopener">Phaser 3</a> (MIT, vendored locally). Floor tile &amp; sprite art: Kenney CC0 packs, recolored per state. Crew walk between real desks only when the underlying job's actual state changes between polls. Click a station to open it.</p></div></header>
+
+<section class="bridge-deck">
+  <div class="bridge-hull-bar">
+    <span class="hull-title">S.S. LEAD CONSOLE — BRIDGE DECK</span>
+    <span class="hull-status"><i class="hull-dot {% if worker_online %}online{% endif %}" id="bridge-life-support"></i><span id="bridge-life-support-label">{% if worker_online %}Life support online{% else %}Life support offline{% endif %}</span></span>
+  </div>
+
+  <div id="bridge-phaser" data-status-url="{% url 'automation:bridge_status' %}"
+       data-floor="{% static 'sprites/iso_floor.png' %}" data-crew="{% static 'sprites/crew.png' %}"></div>
+
+  <a class="cargo-strip" id="bridge-cargo" href="#">
+    <span class="prop-icon icon-terminal"></span>
+    <span>Discovery cargo hold — pending URLs, metadata only, never fetched</span>
+    <strong id="bridge-cargo-count">–</strong>
+  </a>
+</section>
+
+<style>
+.bridge-deck{background-color:#060b16;border-radius:12px;padding:26px;position:relative}
+.bridge-hull-bar{display:flex;justify-content:space-between;align-items:center;color:#cfe3f2;font:12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:1.5px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid #1d2b3d}
+.hull-status{display:flex;align-items:center;gap:8px;letter-spacing:.5px}
+.hull-dot{width:8px;height:8px;border-radius:50%;background:#a85a3a;display:inline-block;box-shadow:0 0 6px #a85a3a}
+.hull-dot.online{background:#5fe0a0;box-shadow:0 0 8px #5fe0a0}
+#bridge-phaser{width:100%;overflow:hidden;border-radius:8px}
+#bridge-phaser canvas{display:block;margin:0 auto;max-width:100%;height:auto}
+.cargo-strip{margin-top:16px;display:flex;align-items:center;gap:10px;text-decoration:none;color:#cfe3f2;font:11px ui-monospace,monospace;padding:10px 14px;border:1px solid #1d2b3d;border-radius:8px;background:#0b1729}
+.cargo-strip strong{margin-left:auto;font-size:18px;color:#f5d9a9}
+.prop-icon{width:18px;height:18px;flex:none;-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center}
+.icon-terminal{-webkit-mask-image:url("{% static 'sprites/terminal.png' %}");mask-image:url("{% static 'sprites/terminal.png' %}");background-color:#5fb8e0}
+</style>
+
+<script src="{% static 'vendor/phaser.min.js' %}"></script>
+<script>
+(function(){
+  var mount = document.getElementById("bridge-phaser");
+  var lifeDot = document.getElementById("bridge-life-support");
+  var lifeLabel = document.getElementById("bridge-life-support-label");
+  var cargoCount = document.getElementById("bridge-cargo-count");
+  var cargoLink = document.getElementById("bridge-cargo");
+  var statusUrl = mount.getAttribute("data-status-url");
+
+  var W = 960, H = 480;
+  var ORIGIN_X = 440, ORIGIN_Y = 130, HALF_W = 110, HALF_H = 55;
+
+  function isoPoint(gx, gy){
+    return {x: ORIGIN_X + (gx - gy) * HALF_W, y: ORIGIN_Y + (gx + gy) * HALF_H};
+  }
+
+  var ZONES = {
+    "airlock":            {g: [0, 0],  label: "Airlock",  tint: 0x42607a},
+    "automation-probe":   {g: [1, -1], label: "Probe",    tint: 0x4a5a6a},
+    "automation-recipe":  {g: [2, -1], label: "Recipe",   tint: 0x2f6f8f},
+    "automation-canary":  {g: [3, -1], label: "Canary",   tint: 0x2f6f8f},
+    "collection":         {g: [3, 1],  label: "Crawling", tint: 0x2f8f63},
+    "review-paused":      {g: [1, 1],  label: "Paused",   tint: 0x8f6a2f},
+    "review-failed":      {g: [2, 2],  label: "Failed",   tint: 0x8f2f2f}
+  };
+
+  var STATE_TINT = {
+    probing: 0x2f8f63, collecting: 0x2f8f63,
+    canary: 0x2f6f8f, recipe_ready: 0x2f6f8f, recipe_released: 0x2f6f8f,
+    probe_queued: 0x4a5a6a, recipe_queued: 0x4a5a6a, recipe_testing: 0x4a5a6a, probe_complete: 0x4a5a6a,
+    paused: 0x8f6a2f, failed: 0x8f2f2f
+  };
+
+  function deskFor(s){
+    if (s.room === "collection") return "collection";
+    if (s.room === "review") return s.state === "failed" ? "review-failed" : "review-paused";
+    if (s.state === "recipe_queued" || s.state === "recipe_testing" || s.state === "recipe_ready" || s.state === "recipe_released") return "automation-recipe";
+    if (s.state === "canary") return "automation-canary";
+    return "automation-probe";
+  }
+
+  function preload(){
+    this.load.image("floor", mount.getAttribute("data-floor"));
+    this.load.image("crew", mount.getAttribute("data-crew"));
+  }
+
+  var scene;               // active Phaser.Scene
+  var occupants = {};       // station key -> {sprite, label, msg}
+  var zonePos = {};         // zone key -> {x, y}
+  var zoneLabels = {};      // zone key -> Phaser.Text (name + live count)
+
+  function create(){
+    scene = this;
+    Object.keys(ZONES).forEach(function(key){
+      var z = ZONES[key];
+      var p = isoPoint(z.g[0], z.g[1]);
+      zonePos[key] = p;
+      scene.add.image(p.x, p.y, "floor").setDisplaySize(176, 90).setTint(z.tint).setAlpha(0.55);
+      zoneLabels[key] = scene.add.text(p.x, p.y - 44, z.label.toUpperCase(), {
+        fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: "11px", color: "#8fa6b8"
+      }).setOrigin(0.5);
+    });
+    poll();
+    setInterval(poll, 3000);
+  }
+
+  function slotOffset(index, total){
+    var spread = 26;
+    return (index - (total - 1) / 2) * spread;
+  }
+
+  function ensureSprite(key){
+    if (occupants[key]) return occupants[key];
+    var airlock = zonePos["airlock"];
+    var sprite = scene.add.image(airlock.x, airlock.y - 20, "crew").setDisplaySize(40, 40);
+    sprite.setInteractive({useHandCursor: true});
+    sprite.on("pointerdown", function(){ window.location.href = occupants[key].href; });
+    var label = scene.add.text(airlock.x, airlock.y - 46, "", {
+      fontFamily: "ui-monospace, Menlo, Consolas, monospace", fontSize: "9px", color: "#cfe3f2", align: "center",
+      backgroundColor: "#0d2233cc", padding: {x: 4, y: 2}
+    }).setOrigin(0.5).setDepth(10).setVisible(false);
+    sprite.on("pointerover", function(){ label.setVisible(true); });
+    sprite.on("pointerout", function(){ label.setVisible(false); });
+    occupants[key] = {sprite: sprite, label: label, desk: null, href: "#", tx: airlock.x, ty: airlock.y - 20};
+    return occupants[key];
+  }
+
+  function updateLabel(occ, s){
+    var site = s.site.length > 18 ? s.site.slice(0, 17) + "…" : s.site;
+    var live = s.state === "probing" || s.state === "collecting";
+    occ.label.setText((live ? "“" + site + "”" : site) + "\n" + s.label);
+  }
+
+  function walkTween(target, toX, toY){
+    scene.tweens.add({targets: target, angle: {from: -8, to: 8}, yoyo: true, repeat: 4, duration: 110,
+      onComplete: function(){ target.angle = 0; }});
+    scene.tweens.add({targets: target, x: toX, y: toY, duration: 850, ease: "Sine.easeInOut"});
+  }
+
+  function despawn(key){
+    var occ = occupants[key];
+    if (!occ) return;
+    var airlock = zonePos["airlock"];
+    scene.tweens.add({targets: [occ.sprite, occ.label], x: airlock.x, y: "-=20", alpha: 0, duration: 700, ease: "Sine.easeIn",
+      onComplete: function(){ occ.sprite.destroy(); occ.label.destroy(); }});
+    delete occupants[key];
+  }
+
+  function poll(){
+    fetch(statusUrl, {headers: {"Accept": "application/json"}}).then(function(r){ return r.json(); }).then(function(data){
+      lifeDot.classList.toggle("online", data.worker_online);
+      lifeLabel.textContent = data.worker_online ? "Life support online" : "Life support offline";
+      cargoCount.textContent = data.cargo_count;
+      if (data.cargo_href) cargoLink.href = data.cargo_href;
+
+      var seen = {};
+      var byDesk = {};
+      data.stations.forEach(function(s){
+        seen[s.key] = true;
+        var occ = ensureSprite(s.key);
+        occ.href = s.href;
+        occ.desk = deskFor(s);
+        occ.sprite.setTint(STATE_TINT[s.state] || 0xffffff);
+        updateLabel(occ, s);
+        (byDesk[occ.desk] = byDesk[occ.desk] || []).push(s.key);
+      });
+
+      Object.keys(ZONES).forEach(function(desk){
+        var keys = byDesk[desk] || [];
+        var z = ZONES[desk];
+        zoneLabels[desk].setText(z.label.toUpperCase() + (keys.length > 1 ? " (" + keys.length + ")" : ""));
+        var base = zonePos[desk];
+        keys.forEach(function(key, idx){
+          var occ = occupants[key];
+          var tx = base.x + slotOffset(idx, keys.length), ty = base.y - 20;
+          if (occ.tx !== tx || occ.ty !== ty){
+            occ.tx = tx; occ.ty = ty;
+            walkTween(occ.sprite, tx, ty);
+            walkTween(occ.label, tx, ty - 26);
+          }
+        });
+      });
+
+      Object.keys(occupants).forEach(function(key){ if (!seen[key]) despawn(key); });
+    }).catch(function(){ /* keep last known scene on a missed poll */ });
+  }
+
+  new Phaser.Game({
+    type: Phaser.AUTO, width: W, height: H, parent: "bridge-phaser", transparent: true,
+    scene: {preload: preload, create: create}
+  });
+})();
+</script>
+{% endblock %}

@@ -216,6 +216,86 @@ class CollectorBridgeTests(TestCase):
         self.assertFalse(candidate.jobs.exists())
 
 
+class ContinuousIntakeTests(TestCase):
+    def setUp(self):
+        self.source = Source.objects.create(name="Directory", url="https://dir2.example/", approved=True)
+        self.campaign = Campaign.objects.create(name="Intake", keywords="", sales_terms="", active=True)
+        self.campaign.sources.add(self.source)
+
+    def link(self, url):
+        from leads.models import SourceCandidate
+        return SourceCandidate.objects.create(url=url, label="Team", discovered_from=self.source,
+                                              evidence_url="https://dir2.example/", status="new")
+
+    def test_import_collector_backlog_pulls_links_without_a_full_reseed(self):
+        from discovery.services import import_collector_backlog
+        self.link("https://fresh.example/our-team/")
+        added = import_collector_backlog(self.campaign)
+        self.assertEqual(added, 1)
+        self.assertTrue(self.campaign.urls.filter(url="https://fresh.example/our-team/", method="collector").exists())
+        self.assertTrue(DiscoveryRun.objects.filter(campaign=self.campaign).exists())
+
+    def test_collector_link_specs_alone_does_not_consume_rows(self):
+        # Marking happens only once the caller knows register_batch's real outcome.
+        from discovery.services import collector_link_specs
+        first = self.link("https://first.example/our-team/")
+        specs = collector_link_specs([self.source])
+        self.assertEqual({s["url"] for s in specs}, {first.url})
+        first.refresh_from_db()
+        self.assertEqual(first.status, "new")
+
+    def test_import_collector_backlog_advances_the_window_instead_of_repeating(self):
+        from discovery.services import import_collector_backlog
+        first = self.link("https://first.example/our-team/")
+        second = self.link("https://second.example/our-team/")
+        import_collector_backlog(self.campaign)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, "added")
+        self.assertEqual(second.status, "added")
+        # A second call must not re-serve the same rows now that they're consumed.
+        self.assertEqual(import_collector_backlog(self.campaign), 0)
+
+    def test_skipped_candidate_is_not_lost_when_campaign_is_at_capacity(self):
+        # The actual bug: a row register_batch skips (here: campaign.max_candidates already
+        # reached) must stay "new" so it's retried later, not silently marked consumed.
+        from discovery.services import import_collector_backlog
+        self.campaign.max_candidates = 0
+        self.campaign.save(update_fields=["max_candidates"])
+        skipped = self.link("https://skipped.example/our-team/")
+        added = import_collector_backlog(self.campaign)
+        self.assertEqual(added, 0)
+        skipped.refresh_from_db()
+        self.assertEqual(skipped.status, "new")
+        self.assertFalse(self.campaign.urls.filter(url=skipped.url).exists())
+
+    def test_import_collector_backlog_is_a_noop_with_nothing_new(self):
+        from discovery.services import import_collector_backlog
+        self.assertEqual(import_collector_backlog(self.campaign), 0)
+        self.assertFalse(DiscoveryRun.objects.filter(campaign=self.campaign).exists())
+
+    def test_intake_due_respects_schedule_and_reschedules(self):
+        from discovery.services import intake_due
+        self.link("https://fresh2.example/our-team/")
+        future = timezone.now() + timedelta(minutes=30)
+        Campaign.objects.filter(pk=self.campaign.pk).update(next_intake_at=future)
+        intake_due()
+        self.assertFalse(self.campaign.urls.filter(url="https://fresh2.example/our-team/").exists())  # not due yet
+
+        Campaign.objects.filter(pk=self.campaign.pk).update(next_intake_at=timezone.now())
+        intake_due()
+        self.assertTrue(self.campaign.urls.filter(url="https://fresh2.example/our-team/").exists())
+        self.campaign.refresh_from_db()
+        self.assertGreater(self.campaign.next_intake_at, timezone.now())
+
+    def test_schedule_due_also_runs_intake(self):
+        from discovery.services import schedule_due
+        self.link("https://fresh3.example/our-team/")
+        Campaign.objects.filter(pk=self.campaign.pk).update(next_intake_at=timezone.now(), next_due_at=timezone.now() + timedelta(days=1))
+        schedule_due()
+        self.assertTrue(self.campaign.urls.filter(url="https://fresh3.example/our-team/").exists())
+
+
 class SearchQueryAllocationTests(TestCase):
     Q_GOOD, Q_BAD, Q_NEW = '"our team" merchant services', "payments blog", '"meet the team" ISO'
 

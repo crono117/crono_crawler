@@ -1,4 +1,4 @@
-# ClearPay Lead Engine
+# Lead Console
 
 This is a local-first Python/Django application that builds and refreshes a database of publicly listed business sales representatives. Read README.md and docs/ARCHITECTURE.md before substantial changes.
 

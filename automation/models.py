@@ -18,6 +18,12 @@ class SitePolicy(models.Model):
     min_recipe_score = bounded(85, 85, 90)
     allowed_paths = models.TextField(default=DEFAULT_PATHS, max_length=3000)
     allow_homepage = models.BooleanField(default=True)
+    require_page_intent = models.BooleanField(
+        default=True,
+        help_text="Require the candidate URL/label to already look like a team, staff or sales-role page "
+                  "before automatic setup. Turning this off lets bare company homepages qualify too, relying "
+                  "on the unchanged probe/recipe/canary gates as the safety check instead.",
+    )
     denied_domains = models.TextField(default=DEFAULT_DENY, max_length=3000)
     max_sites_per_day = bounded(3, 1, 25)
     probe_pages = bounded(3, 1, 5)

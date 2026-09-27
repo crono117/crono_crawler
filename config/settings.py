@@ -75,7 +75,7 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 DATA_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024
 BOT_CONTACT = os.environ.get("BOT_CONTACT", "")
-BOT_USER_AGENT = "ClearPayLeadBot/0.1" + (f" (+{BOT_CONTACT})" if BOT_CONTACT else "")
+BOT_USER_AGENT = "LeadConsoleBot/0.1" + (f" (+{BOT_CONTACT})" if BOT_CONTACT else "")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
 BRAVE_SEARCH_ENABLED = os.environ.get("BRAVE_SEARCH_ENABLED", "0") == "1"

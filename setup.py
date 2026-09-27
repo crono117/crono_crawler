@@ -9,7 +9,7 @@ import sys
 import venv
 
 def main():
-    parser = argparse.ArgumentParser(description="Set up the local ClearPay Lead Console.")
+    parser = argparse.ArgumentParser(description="Set up the local Lead Console.")
     parser.add_argument("--browser", action="store_true", help="Install optional Playwright and Chromium.")
     parser.add_argument("--demo", action="store_true", help="Queue the fictional offline demo.")
     parser.add_argument("--no-user", action="store_true", help="Skip interactive administrator creation.")

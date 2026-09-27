@@ -1,13 +1,27 @@
 import json
 from django.contrib import messages
 from django.db import transaction
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from discovery.models import Campaign
 from leads.views import staff_required
 from .forms import CandidateForm, PolicyForm
 from .models import SiteAutomationJob, SitePolicy
 from .services import pause_job, start_setup
+
+BRIDGE_STATE_LABELS = {
+    "probe_queued": "Awaiting launch",
+    "probing": "Crawling",
+    "probe_complete": "Probe complete",
+    "recipe_queued": "Building recipe",
+    "recipe_testing": "Testing recipe",
+    "recipe_ready": "Recipe ready",
+    "recipe_released": "Recipe released",
+    "canary": "Canary run",
+    "paused": "Needs review",
+    "failed": "Failed",
+}
 
 
 @staff_required
@@ -62,6 +76,46 @@ def job_action(request, pk):
     except (ValueError, SitePolicy.DoesNotExist) as exc:
         messages.error(request, str(exc) or "Configure an enabled automation policy first.")
     return redirect("automation:job", pk=pk)
+
+
+@staff_required
+def bridge(request):
+    return render(request, "automation/bridge.html", {})
+
+
+@require_GET
+@staff_required
+def bridge_status(request):
+    from datetime import timedelta
+    from django.urls import reverse
+    from django.utils import timezone
+    from leads.models import Run, WorkerLease
+
+    lease = WorkerLease.objects.filter(key="collector").first()
+    worker_online = bool(lease and lease.token and lease.heartbeat_at > timezone.now() - timedelta(minutes=10))
+
+    stations = []
+    setups = (SiteAutomationJob.objects.exclude(state="active")
+              .select_related("source").order_by("-id")[:10])
+    for job in setups:
+        room = "review" if job.state in ("paused", "failed") else "automation"
+        stations.append({"key": f"job-{job.pk}", "site": job.source.name or job.source.url, "room": room,
+            "state": job.state, "label": BRIDGE_STATE_LABELS.get(job.state, job.get_state_display()),
+            "message": job.message[:140], "href": reverse("automation:job", args=[job.pk])})
+
+    for run in Run.objects.filter(status="running").select_related("source").order_by("-id")[:10]:
+        stations.append({"key": f"run-{run.pk}", "site": run.source.name or run.source.url, "room": "collection",
+            "state": "collecting", "label": "Crawling",
+            "message": f"{run.pages_done} page(s), {run.contacts_seen} contact(s) so far",
+            "href": reverse("run_detail", args=[run.pk])})
+
+    from discovery.models import DiscoveredURL
+    from leads.models import SourceCandidate
+    cargo_count = (SourceCandidate.objects.filter(status="new").count()
+                   + DiscoveredURL.objects.filter(decision="pending").count())
+
+    return JsonResponse({"worker_online": worker_online, "stations": stations,
+        "cargo_count": cargo_count, "cargo_href": reverse("discovery:candidates")})
 
 
 @require_POST

@@ -57,7 +57,7 @@ For SQLite, use Python's SQLite backup API instead of copying only the main file
 For PostgreSQL, make a backup to your server's private backup directory:
 
 ```bash
-docker compose exec -T db pg_dump -U clearpay -d clearpay -Fc > clearpay-backup.dump
+docker compose exec -T db pg_dump -U leadconsole -d leadconsole -Fc > leadconsole-backup.dump
 ```
 
 Backups contain contact data. Store them outside the repository with restricted access and test restores. The application does not yet schedule off-host backups for you.
