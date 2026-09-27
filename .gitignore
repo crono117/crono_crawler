@@ -13,3 +13,5 @@ test-results/
 # Never commit these; the only tracked file under docs/eval/ is the synthetic example.
 docs/eval/*
 !docs/eval/discovery_labels.example.json
+# Third-party art whose license forbids redistribution (e.g. the Neo Zero tileset). Local only.
+static/local_assets/

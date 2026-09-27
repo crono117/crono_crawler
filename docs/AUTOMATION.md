@@ -157,3 +157,9 @@ For an optional fictional walkthrough after upgrading, run `manage.py init_autom
 **Code rollback:** older releases do not understand automatic setup gates. Before returning to older code, stop collection, pause affected campaigns and revoke approval on automatically managed sources using the current release. Leave those sources disabled after rollback. Do not merely check out older code with their approved campaign memberships still active. Alternatively, restore the pre-upgrade backup deliberately, accounting for any data collected since that backup. No destructive reverse migration is needed for the normal upgrade.
 
 See [validation results](VALIDATION.md) for tested behavior and remaining deployment/real-source gaps.
+
+## Crawler lab (activity feed)
+
+The worker appends one JSON line per step to `DATA_DIR/activity.jsonl` (override with `ACTIVITY_LOG`, `off` disables it; always off under `manage.py test`): lane picks, every HTTP request with status/bytes/timing or error, robots checks, throttle waits, results with contact counts, automation state changes, Jev evaluation outcomes, and a once-a-minute idle note saying when queued work is next due. Lines hold URLs, statuses and job messages only, never page content, names, emails or phones. The file is capped at about 1 MB and writing is best-effort, so it can never fail worker work. The web process only reads it.
+
+**Crawler lab** (`/automation/lab/`, staff only) acts the feed out in a top-down room with one crew member per lane (collector, discovery, site setup, Jev) and shows a console per lane plus the raw feed. There is still exactly one worker process; the lab shows which lane it is currently serving. The optional Neo Zero tileset (itch.io, free version non-commercial with credit, no redistribution) is never committed: unzip your own download into the git-ignored `static/local_assets/neo-zero/` and map frames in `static/lab/lab-frames.js`; without it the lab uses drawn shapes.

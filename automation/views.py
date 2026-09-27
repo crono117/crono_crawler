@@ -128,6 +128,58 @@ def bridge_status(request):
         "cargo_count": cargo_count, "cargo_href": reverse("discovery:candidates")})
 
 
+LAB_TILESET_DIR = "local_assets/neo-zero"
+
+
+@require_GET
+@staff_required
+def lab(request):
+    from pathlib import Path
+    from django.conf import settings
+    from django.templatetags.static import static
+    # The Neo Zero tileset can't be redistributed, so it is never committed: an operator drops
+    # their own download into static/local_assets/neo-zero/ and the Lab uses it when present.
+    folder = Path(settings.BASE_DIR) / "static" / LAB_TILESET_DIR
+    sheets = {path.stem: static(f"{LAB_TILESET_DIR}/{path.relative_to(folder).as_posix()}")
+              for path in sorted(folder.rglob("*.png"))} if folder.is_dir() else {}
+    return render(request, "automation/lab.html", {"tileset_sheets": sheets,
+                                                   "activity_enabled": bool(settings.ACTIVITY_LOG)})
+
+
+@require_GET
+@staff_required
+def lab_feed(request):
+    from datetime import timedelta
+    from django.utils import timezone
+    from classification.models import Evaluation
+    from discovery.models import DiscoveredURL, DiscoveryJob
+    from leads.models import PageJob, SourceCandidate, WorkerLease
+    from leads.services import activity
+    from .services import RUNNABLE
+
+    try:
+        after = float(request.GET.get("after", 0))
+    except ValueError:
+        after = 0.0
+    entries = activity.read(after=after, limit=300 if after else 120)
+    lease = WorkerLease.objects.filter(key="collector").first()
+    now = timezone.now()
+    queues = {
+        "collector": PageJob.objects.filter(status="queued", run__status__in=("queued", "running")).count(),
+        "discovery": DiscoveryJob.objects.filter(status="queued", run__status__in=("queued", "running")).count(),
+        "automation": SiteAutomationJob.objects.filter(state__in=RUNNABLE, campaign__active=True).count(),
+        "jev": Evaluation.objects.filter(state__in=("queued", "retry_wait", "waiting")).count(),
+    }
+    return JsonResponse({
+        "entries": entries,
+        "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),
+        "queues": queues,
+        "approvals": (SourceCandidate.objects.filter(status="new").count()
+                      + DiscoveredURL.objects.filter(decision="pending").count()),
+        "server_time": now.timestamp(),
+    })
+
+
 @require_POST
 @staff_required
 def source_setup(request, campaign_id, source_id):

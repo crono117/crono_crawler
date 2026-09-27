@@ -1,4 +1,5 @@
 import os
+import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -38,6 +39,10 @@ TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIR
               ]}}]
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Local worker activity feed for the Lab view. Off under `manage.py test` so fictional test traffic
+# never lands in a real DATA_DIR; set ACTIVITY_LOG=off to disable it elsewhere.
+_activity = os.environ.get("ACTIVITY_LOG", str(DATA_DIR / "activity.jsonl"))
+ACTIVITY_LOG = "" if _activity.lower() in ("", "0", "off") or sys.argv[1:2] == ["test"] else _activity
 database_url = os.environ.get("DATABASE_URL", "")
 if database_url:
     parsed = urlparse(database_url)

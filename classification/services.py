@@ -219,7 +219,18 @@ def tick(token, *, mock_only=False):
     evaluation = Evaluation.objects.filter(provider=provider_name, state__in=('queued', 'retry_wait', 'waiting'),
         available_at__lte=timezone.now()).select_related('document__source').order_by('available_at', 'created_at').first()
     if evaluation:
-        return process(evaluation, token, mock_only=mock_only)
+        from leads.services.activity import emit
+        source = evaluation.document.source
+        emit("pick", f"Judge page from {source.name if source else 'company follow-up'} with {evaluation.model} "
+             f"[{evaluation.state}]", provider=evaluation.provider)
+        try:
+            return process(evaluation, token, mock_only=mock_only)
+        finally:
+            try:
+                evaluation.refresh_from_db(fields=['state', 'reason'])
+                emit("result", f"Evaluation -> {evaluation.state}" + (f": {evaluation.reason[:160]}" if evaluation.reason else ""))
+            except Exception:  # the activity feed must never mask the evaluation's own outcome
+                pass
     if settings.JEV_ROUTING_ENABLED and not mock_only:
         from .routing import tick as route_tick
         return route_tick(token)

@@ -10,6 +10,8 @@ urlpatterns = [
     path("setup/<int:campaign_id>/<int:source_id>/", views.source_setup, name="setup"),
     path("bridge/", views.bridge, name="bridge"),
     path("bridge/status/", views.bridge_status, name="bridge_status"),
+    path("lab/", views.lab, name="lab"),
+    path("lab/feed/", views.lab_feed, name="lab_feed"),
     path("api/jobs/", api.jobs),
     path("api/jobs/<int:pk>/recon/", api.recon),
     path("api/jobs/<int:pk>/bundle/", api.bundle),

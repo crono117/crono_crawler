@@ -2,7 +2,8 @@ import logging
 import signal
 import threading
 from django.core.management.base import BaseCommand
-from leads.services.worker import acquire_lease, release_lease, tick
+import time
+from leads.services.worker import acquire_lease, idle_note, release_lease, tick
 
 class Command(BaseCommand):
     help = "Run the single persistent scheduler/collector. Restarts resume unfinished pages."
@@ -27,6 +28,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("Collector running. Ctrl+C stops it safely."))
             prefer_discovery = False
             iteration = 0
+            last_idle_note = 0.0
             while not stop.is_set():
                 worked = tick(token, prefer_discovery=prefer_discovery, prefer_classification=iteration % 4 == 3)
                 iteration += 1
@@ -34,7 +36,12 @@ class Command(BaseCommand):
                 if options["once"]:
                     break
                 if not worked:
+                    if time.monotonic() - last_idle_note > 60:
+                        idle_note()
+                        last_idle_note = time.monotonic()
                     stop.wait(2)
+                else:
+                    last_idle_note = 0.0
         finally:
             if token:
                 release_lease(token)

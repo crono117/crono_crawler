@@ -23,6 +23,8 @@ def transition(job, state, message):
     job.attempts = 0
     job.save(update_fields=["state", "message", "attempts", "updated_at"])
     AutomationEvent.objects.create(job=job, state=state, message=job.message)
+    from leads.services.activity import emit
+    emit("state", f"{job.source.name or job.source.url} -> {state}: {job.message}", lane="automation")
 
 
 @transaction.atomic
@@ -350,6 +352,8 @@ def tick(token):
     try:
         job._worker_token = token
         job._worker_generation = job.generation
+        from leads.services.activity import emit
+        emit("pick", f"Setup {job.source.name or job.source.url} [{job.state}]", url=job.source.url)
         advance(job)
     except Exception as exc:
         if refresh_authorization(job):

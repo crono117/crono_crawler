@@ -1,5 +1,6 @@
 """Public HTTP fetches with DNS pinning, bounded bodies, and checked redirects."""
 import http.client
+import time
 import ipaddress
 import socket
 import ssl
@@ -89,6 +90,20 @@ class Response:
 
 def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True, before_attempt=None):
     """Resolve once per hop; connect to that exact public IP with hostname TLS."""
+    from .activity import emit
+    started = time.monotonic()
+    try:
+        response = _fetch(url, user_agent, guard, max_bytes, timeout, request_headers=request_headers,
+                          allow_redirects=allow_redirects, before_attempt=before_attempt)
+    except FetchError as exc:
+        emit("error", f"GET {url} -> {exc}", url=url, ms=round((time.monotonic() - started) * 1000))
+        raise
+    emit("fetch", f"GET {response.url} -> {response.status} ({len(response.body):,} bytes)", url=response.url,
+         status=response.status, bytes=len(response.body), ms=round((time.monotonic() - started) * 1000),
+         redirects=len(response.redirect_chain) or None)
+    return response
+
+def _fetch(url, user_agent, guard, max_bytes, timeout, *, request_headers, allow_redirects, before_attempt):
     redirects = []
     for _ in range(6):
         try:

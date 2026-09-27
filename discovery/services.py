@@ -763,6 +763,8 @@ def save_page(job, response):
 def done(job, message, status="done"):
     job.status, job.message = status, message[:1000]
     job.save()
+    from leads.services.activity import emit
+    emit("result" if status == "done" else status, f"{job.url}: {job.message}", url=job.url)
     if job.candidate_id:
         DiscoveredURL.objects.filter(pk=job.candidate_id).update(last_result=job.message)
 
@@ -939,5 +941,7 @@ def tick():
         job.save(update_fields=["status"])
         DiscoveryRun.objects.filter(pk=job.run_id).update(status="running", last_tick_at=timezone.now())
         DiscoveryRun.objects.filter(pk=job.run_id, started_at__isnull=True).update(started_at=timezone.now())
+    from leads.services.activity import emit
+    emit("pick", f"{job.get_kind_display()} job {job.url} (campaign: {job.run.campaign.name})", url=job.url)
     process(job)
     return True

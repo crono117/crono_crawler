@@ -12,6 +12,7 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 from leads.models import DomainState, PageJob, PageSnapshot, Run, Source, SourceCandidate, WorkerLease
+from . import activity
 from .extraction import diagnostic_message, extract, signature, soup_for
 from .network import FetchError, Response, canonical_url, fetch, fetch_browser, in_scope, origin, require_success
 from .storage import save_records, touch_unchanged
@@ -106,6 +107,7 @@ def prepare_domain(source, job):
     now = timezone.now()
     state, _ = DomainState.objects.get_or_create(origin=origin(source.url), defaults={"next_allowed_at": now})
     if state.next_allowed_at > now:
+        activity.emit("wait", f"Throttle: {state.origin} next allowed in {(state.next_allowed_at - now).seconds}s")
         job.available_at = state.next_allowed_at
         job.status = "queued"
         job.save()
@@ -113,6 +115,7 @@ def prepare_domain(source, job):
     if not state.robots_checked_at or state.robots_checked_at < now - timedelta(hours=24):
         state.next_allowed_at = now + timedelta(seconds=source.delay_seconds)
         state.save()
+        activity.emit("robots", f"Checking robots.txt for {state.origin}")
         from classification.routing import before_fetch
         res = fetch(state.origin + "/robots.txt", settings.BOT_USER_AGENT,
                     guard=lambda url: origin(url) == state.origin, max_bytes=512 * 1024, before_attempt=before_fetch(job))
@@ -137,6 +140,7 @@ def prepare_domain(source, job):
     state.next_allowed_at = now + timedelta(seconds=delay)
     state.save()
     if not rules.can_fetch(settings.BOT_USER_AGENT, job.url):
+        activity.emit("robots", f"robots.txt disallows {job.url}; skipping", url=job.url)
         raise FetchError("robots.txt does not allow this page.", status=403)
     return guard_with_robots(source, rules)
 
@@ -277,6 +281,7 @@ def process(job):
             if diagnostics:
                 job.message += " " + diagnostic_message(diagnostics)
             job.save()
+            activity.emit("result", f"{job.url}: {job.message}", url=job.url, contacts=count)
             Run.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count)
         finish_run(job.run)
         if external:
@@ -300,13 +305,13 @@ def tick(token, prefer_discovery=False, prefer_classification=False):
     if prefer_classification:
         from classification.evidence import purge_expired
         purge_expired()
-        if classification.tick(token):
+        if _jev_tick(classification, token):
             heartbeat(token)
             return True
-    if prefer_discovery and automation.tick(token):
+    if prefer_discovery and _automation_tick(automation, token):
         heartbeat(token)
         return True
-    if prefer_discovery and discovery.tick():
+    if prefer_discovery and _discovery_tick(discovery):
         heartbeat(token)
         return True
     with transaction.atomic():
@@ -317,10 +322,46 @@ def tick(token, prefer_discovery=False, prefer_classification=False):
             job.save()
             Run.objects.filter(pk=job.run_id, status="queued").update(status="running", started_at=timezone.now())
     if job:
-        process(job)
+        with activity.lane("collector"):
+            activity.emit("pick", f"Page {job.url} for {job.run.source.name or job.run.source.url}", url=job.url)
+            process(job)
     else:
-        worked = discovery.tick() or automation.tick(token) or classification.tick(token)
+        worked = _discovery_tick(discovery) or _automation_tick(automation, token) or _jev_tick(classification, token)
         heartbeat(token)
         return worked
     heartbeat(token)
     return True
+
+
+def _discovery_tick(discovery):
+    with activity.lane("discovery"):
+        return discovery.tick()
+
+def _automation_tick(automation, token):
+    with activity.lane("automation"):
+        return automation.tick(token)
+
+def _jev_tick(classification, token):
+    with activity.lane("jev"):
+        return classification.tick(token)
+
+
+def idle_note():
+    """Explain an idle worker in the activity feed: when the next queued item becomes available."""
+    from automation.models import SiteAutomationJob
+    from automation.services import RUNNABLE
+    from discovery.models import DiscoveryJob
+    upcoming = [value for value in (
+        PageJob.objects.filter(status="queued", run__status__in=("queued", "running"), run__source__active=True,
+                               run__source__approved=True).order_by("available_at").values_list("available_at", flat=True).first(),
+        DiscoveryJob.objects.filter(status="queued", run__status__in=("queued", "running"), run__campaign__active=True)
+            .order_by("available_at").values_list("available_at", flat=True).first(),
+        SiteAutomationJob.objects.filter(state__in=RUNNABLE, processing=False, campaign__active=True)
+            .order_by("available_at").values_list("available_at", flat=True).first(),
+    ) if value]
+    if upcoming:
+        wait = min(upcoming) - timezone.now()
+        text = f"Idle: next queued work is deferred {int(wait.total_seconds() // 60)} min (throttle or daily budget)."
+    else:
+        text = "Idle: all queues are empty; waiting for scheduled discovery or intake."
+    activity.emit("idle", text, lane="worker")
