@@ -9,6 +9,7 @@
   {% if not activity_enabled %}<div class="notice">The activity feed is off (ACTIVITY_LOG). The room and consoles stay empty until it is enabled and the worker restarts.</div>{% endif %}
   <div id="lab-phaser" data-feed-url="{% url 'automation:lab_feed' %}" data-crew="{% static 'sprites/crew.png' %}"></div>
   {{ tileset_sheets|json_script:"lab-sheets" }}
+  {{ robot_sheets|json_script:"lab-robots" }}
 
   <div class="lab-consoles">
     <div class="lab-console" data-console="collector" style="--lane:#39ff9f"><header><i class="lab-dot"></i>COLLECTOR <span data-queue>–</span></header><pre></pre></div>
@@ -18,7 +19,7 @@
   </div>
   <details class="lab-console lab-all" data-console="worker" style="--lane:#8c9ac2"><summary>ALL LANES — raw worker feed</summary><pre></pre></details>
 
-  <p class="lab-credit">{% if tileset_sheets %}Tiles: “Neo Zero – Cyberpunk City Tileset” by Yanin Yunus (itch.io), installed locally, not redistributed.{% else %}Drawn fallback art. To use the Neo Zero tileset, download it from itch.io and unzip it into <code>static/local_assets/neo-zero/</code> (git-ignored; its license forbids redistribution).{% endif %} Crew sprite: Kenney 1-bit pack (CC0). Engine: Phaser 3 (MIT).</p>
+  <p class="lab-credit">{% if tileset_sheets %}Tiles: “Neo Zero – Cyberpunk City Tileset” by Yanin Yunus (itch.io), installed locally, not redistributed.{% else %}Drawn fallback art. To use the Neo Zero tileset, download it from itch.io and unzip it into <code>static/local_assets/neo-zero/</code> (git-ignored; its license forbids redistribution).{% endif %} {% if robot_sheets %}Robots: sci-fi robots 16×16 top-down pack (GameDev Market), installed locally, not redistributed.{% else %}Crew sprite: Kenney 1-bit pack (CC0); put the GameDev Market sci-fi robot sheets in <code>static/local_assets/robots/</code> to use them.{% endif %} Engine: Phaser 3 (MIT).</p>
 </section>
 
 <style>

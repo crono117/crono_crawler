@@ -129,20 +129,26 @@ def bridge_status(request):
 
 
 LAB_TILESET_DIR = "local_assets/neo-zero"
+LAB_ROBOTS_DIR = "local_assets/robots"
+
+
+def _local_sheets(relative):
+    from pathlib import Path
+    from django.conf import settings
+    from django.templatetags.static import static
+    folder = Path(settings.BASE_DIR) / "static" / relative
+    return {path.stem: static(f"{relative}/{path.relative_to(folder).as_posix()}")
+            for path in sorted(folder.rglob("*.png"))} if folder.is_dir() else {}
 
 
 @require_GET
 @staff_required
 def lab(request):
-    from pathlib import Path
     from django.conf import settings
-    from django.templatetags.static import static
-    # The Neo Zero tileset can't be redistributed, so it is never committed: an operator drops
-    # their own download into static/local_assets/neo-zero/ and the Lab uses it when present.
-    folder = Path(settings.BASE_DIR) / "static" / LAB_TILESET_DIR
-    sheets = {path.stem: static(f"{LAB_TILESET_DIR}/{path.relative_to(folder).as_posix()}")
-              for path in sorted(folder.rglob("*.png"))} if folder.is_dir() else {}
-    return render(request, "automation/lab.html", {"tileset_sheets": sheets,
+    # Licensed art (Neo Zero tiles, sci-fi robot sprites) can't be redistributed, so it is never
+    # committed: an operator drops their own download under static/local_assets/ and the Lab uses it.
+    return render(request, "automation/lab.html", {"tileset_sheets": _local_sheets(LAB_TILESET_DIR),
+                                                   "robot_sheets": _local_sheets(LAB_ROBOTS_DIR),
                                                    "activity_enabled": bool(settings.ACTIVITY_LOG)})
 
 

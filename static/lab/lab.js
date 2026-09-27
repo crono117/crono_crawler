@@ -8,6 +8,9 @@
   if (!mount) return;
   var feedUrl = mount.getAttribute("data-feed-url");
   var sheets = JSON.parse(document.getElementById("lab-sheets").textContent || "{}");
+  var robotSheets = JSON.parse(document.getElementById("lab-robots").textContent || "{}");
+  var ROBOT = Object.assign({frameWidth: 16, frameHeight: 16, columns: 6, rows: {down: 0, left: 1, right: 2, up: 3},
+                             idle: [0, 1], walk: [2, 3, 4, 5], lanes: {}}, window.LAB_ROBOTS || {});
 
   var LANES = [
     {key: "collector",  label: "COLLECTOR",  color: 0x39ff9f, css: "#39ff9f", x: 200},
@@ -61,6 +64,29 @@
   function preload(){
     this.load.image("crew", mount.getAttribute("data-crew"));
     Object.keys(sheets).forEach(function(name){ scene_load_sheet(this, name); }, this);
+    Object.keys(robotSheets).forEach(function(name){
+      this.load.spritesheet("bot:" + name, robotSheets[name], {frameWidth: ROBOT.frameWidth, frameHeight: ROBOT.frameHeight});
+    }, this);
+  }
+
+  // Lane -> robot sheet: explicit picks from lab-frames.js, otherwise the sheets in name order.
+  function robotFor(laneKey, index){
+    var names = Object.keys(robotSheets).sort();
+    var name = ROBOT.lanes[laneKey] || names[index % Math.max(names.length, 1)];
+    return name && scene.textures.exists("bot:" + name) ? "bot:" + name : null;
+  }
+  function robotAnims(texture){
+    ["down", "left", "right", "up"].forEach(function(dir){
+      [["idle", ROBOT.idle, 4], ["walk", ROBOT.walk, 8]].forEach(function(spec){
+        var key = texture + ":" + spec[0] + ":" + dir;
+        if (scene.anims.exists(key)) return;
+        scene.anims.create({key: key, frameRate: spec[2], repeat: -1, frames: scene.anims.generateFrameNumbers(texture,
+          {frames: spec[1].map(function(col){ return ROBOT.rows[dir] * ROBOT.columns + col; })})});
+      });
+    });
+  }
+  function face(w, mode, dir){
+    if (w.robot) w.sprite.play(w.robot + ":" + mode + ":" + dir, true);
   }
   function scene_load_sheet(s, name){
     s.load.spritesheet("neo:" + name, sheets[name], {frameWidth: 16, frameHeight: 16});
@@ -137,7 +163,7 @@
     return scene.add.text(x, y, text, mono(10, color)).setOrigin(0.5).setAlpha(0.9);
   }
 
-  function drawStation(l){
+  function drawStation(l, index){
     var g = scene.add.graphics();
     if (!tile("desk", l.x, DESK_Y)){
       g.fillStyle(0x1b2140, 1).fillRect(l.x - 56, DESK_Y - 18, 112, 36);
@@ -146,12 +172,18 @@
     var screen = scene.add.rectangle(l.x, DESK_Y - 30, 58, 34, 0x050810).setStrokeStyle(2, l.color, 0.5);
     var glow = scene.add.rectangle(l.x, DESK_Y - 30, 50, 26, l.color, 0.08);
     label(l.x, DESK_Y + 30, l.label, l.css);
-    var sprite = scene.add.image(l.x, SEAT_Y, "crew").setDisplaySize(40, 40).setTint(l.color);
+    var robot = robotFor(l.key, index), sprite;
+    if (robot){
+      robotAnims(robot);
+      sprite = scene.add.sprite(l.x, SEAT_Y, robot).setScale(3).play(robot + ":idle:up");
+    } else {
+      sprite = scene.add.image(l.x, SEAT_Y, "crew").setDisplaySize(40, 40).setTint(l.color);
+    }
     var bubble = scene.add.text(l.x, SEAT_Y - 44, "", mono(10, "#e8ecff"))
       .setOrigin(0.5).setBackgroundColor("#0b1020").setPadding(4, 2, 4, 2).setDepth(20).setVisible(false);
     var zz = scene.add.text(l.x + 18, SEAT_Y - 30, "z", mono(12, "#5b6690")).setDepth(19);
     scene.tweens.add({targets: zz, y: "-=12", alpha: {from: 1, to: 0}, duration: 1600, repeat: -1});
-    workers[l.key] = {lane: l, sprite: sprite, bubble: bubble, zz: zz, screen: screen, glow: glow,
+    workers[l.key] = {lane: l, sprite: sprite, robot: robot, bubble: bubble, zz: zz, screen: screen, glow: glow,
                       queue: [], busy: false, lastActive: 0, home: {x: l.x, y: SEAT_Y}};
   }
 
@@ -173,10 +205,18 @@
     var chain = points.map(function(p){
       return {targets: [w.sprite], x: p.x, y: p.y, duration: p.d || 380, ease: "Linear"};
     });
-    var bob = scene.tweens.add({targets: w.sprite, angle: {from: -7, to: 7}, yoyo: true, repeat: -1, duration: 110});
+    // Animated robots walk with their own frames; the static fallback sprite wobbles instead.
+    var bob = w.robot ? null : scene.tweens.add({targets: w.sprite, angle: {from: -7, to: 7}, yoyo: true, repeat: -1, duration: 110});
     var step = function(i){
-      if (i >= chain.length){ bob.stop(); w.sprite.angle = 0; done && done(); return; }
+      if (i >= chain.length){
+        if (bob){ bob.stop(); w.sprite.angle = 0; }
+        var atDesk = w.sprite.x === w.home.x && w.sprite.y === w.home.y;
+        face(w, "idle", atDesk ? "up" : "right");
+        done && done(); return;
+      }
       var c = chain[i];
+      var dx = c.x - w.sprite.x, dy = c.y - w.sprite.y;
+      face(w, "walk", Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
       c.onComplete = function(){ step(i + 1); };
       scene.tweens.add(c);
     };
