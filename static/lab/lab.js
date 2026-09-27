@@ -9,19 +9,75 @@
   var feedUrl = mount.getAttribute("data-feed-url");
   var sheets = JSON.parse(document.getElementById("lab-sheets").textContent || "{}");
   var robotSheets = JSON.parse(document.getElementById("lab-robots").textContent || "{}");
-  var ROBOT = Object.assign({frameWidth: 16, frameHeight: 16, columns: 6, rows: {down: 0, left: 1, right: 2, up: 3},
-                             idle: [0, 1], walk: [2, 3, 4, 5], lanes: {}}, window.LAB_ROBOTS || {});
+  var ROBOTS = window.LAB_ROBOTS || {defaults: {}, sheets: {}, lanes: {}};
+  var SHOW_FOOTPRINTS = /[?&]footprints=1/.test(window.location.search);
 
+  // The room is a grid of 48px tiles. Rows 0-1 are wall; bots walk on rows 2-7.
+  var T = 48, COLS = 20, ROWS = 8, W = COLS * T, H = ROWS * T, STEP_MS = 170;
   var LANES = [
-    {key: "collector",  label: "COLLECTOR",  color: 0x39ff9f, css: "#39ff9f", x: 200},
-    {key: "discovery",  label: "DISCOVERY",  color: 0x3fd4ff, css: "#3fd4ff", x: 380},
-    {key: "automation", label: "SITE SETUP", color: 0xff4fd8, css: "#ff4fd8", x: 560},
-    {key: "jev",        label: "JEV JUDGE",  color: 0xffc94f, css: "#ffc94f", x: 740}
+    {key: "collector",  label: "COLLECTOR",  color: 0x39ff9f, css: "#39ff9f", col: 3},
+    {key: "discovery",  label: "DISCOVERY",  color: 0x3fd4ff, css: "#3fd4ff", col: 7},
+    {key: "automation", label: "SITE SETUP", color: 0xff4fd8, css: "#ff4fd8", col: 11},
+    {key: "jev",        label: "JEV JUDGE",  color: 0xffc94f, css: "#ffc94f", col: 15}
   ];
   var LANE = {};
-  LANES.forEach(function(l){ LANE[l.key] = l; });
-  var W = 960, H = 384, DESK_Y = 176, SEAT_Y = 232, AISLE_Y = 112;
-  var DOOR = {x: 892, y: 70}, RACK = {x: 900, y: 300}, BOARD = {x: 72, y: 64};
+  LANES.forEach(function(l){ l.x = l.col * T + T / 2; LANE[l.key] = l; });
+  var DESK_ROW = 3, SEAT_ROW = 4, DOOR_TILE = {col: 18, row: 2};
+  var DESK_Y = DESK_ROW * T + 20;
+  var DOOR = {x: DOOR_TILE.col * T + T / 2, y: 58}, RACK = {x: 18 * T + T / 2, y: 6 * T}, BOARD = {x: 72, y: 50};
+  var PROPS = [[0, 6, "plant"], [2, 7, "crate"], [9, 7, "crate"], [13, 7, "bin"]];
+
+  // Blocked tiles: walls, each desk (three tiles wide), the rack and the props.
+  var blocked = {};
+  function block(col, row){ blocked[col + "," + row] = true; }
+  for (var c0 = 0; c0 < COLS; c0++){ block(c0, 0); block(c0, 1); }
+  LANES.forEach(function(l){ block(l.col - 1, DESK_ROW); block(l.col, DESK_ROW); block(l.col + 1, DESK_ROW); });
+  block(18, 5); block(18, 6);
+  PROPS.forEach(function(p){ block(p[0], p[1]); });
+  function isBlocked(col, row){ return col < 0 || row < 0 || col >= COLS || row >= ROWS || blocked[col + "," + row]; }
+  function tileFeet(col, row){ return {x: col * T + T / 2, y: row * T + T - 4}; }
+  function tileOf(x, feetY){ return {col: Math.floor(x / T), row: Math.floor((feetY - 1) / T)}; }
+
+  // Breadth-first path over open tiles, 4-directional, avoiding tiles in ``occupied`` (other bots).
+  // Returns the tiles to step through (start excluded); falls back to ignoring bots if boxed in.
+  function findPath(from, to, occupied){
+    occupied = occupied || {};
+    var key = function(t){ return t.col + "," + t.row; };
+    var queue = [from], came = {};
+    came[key(from)] = null;
+    while (queue.length){
+      var cur = queue.shift();
+      if (cur.col === to.col && cur.row === to.row){
+        var path = [];
+        for (var t = cur; key(t) !== key(from); t = came[key(t)]) path.unshift(t);
+        return path;
+      }
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function(d){
+        var next = {col: cur.col + d[0], row: cur.row + d[1]};
+        if (!isBlocked(next.col, next.row) && !occupied[key(next)] && !(key(next) in came)){
+          came[key(next)] = cur;
+          queue.push(next);
+        }
+      });
+    }
+    return Object.keys(occupied).length ? findPath(from, to) : [];
+  }
+
+  // Robot sheet config: per-sheet overrides on top of the defaults (see lab-frames.js).
+  function robotConfig(name){
+    var base = ROBOTS.defaults || {}, own = (ROBOTS.sheets || {})[name] || {};
+    return Object.assign({frameWidth: 48, frameHeight: 48, columns: 5, scale: 1, footprint: {width: 0.6, height: 0.5}},
+                         base, own, {animations: Object.assign({}, base.animations, own.animations)});
+  }
+  // Animation name -> frame indices in the sheet (row-major), e.g. {idle: [0..4], walk_down: [5..9], ...}.
+  function animationFrames(config){
+    var out = {};
+    Object.keys(config.animations).forEach(function(name){
+      var anim = config.animations[name];
+      out[name] = anim.frames.map(function(col){ return anim.row * config.columns + col; });
+    });
+    return out;
+  }
 
   // ---------- consoles ----------
   var consoles = {};
@@ -65,28 +121,59 @@
     this.load.image("crew", mount.getAttribute("data-crew"));
     Object.keys(sheets).forEach(function(name){ scene_load_sheet(this, name); }, this);
     Object.keys(robotSheets).forEach(function(name){
-      this.load.spritesheet("bot:" + name, robotSheets[name], {frameWidth: ROBOT.frameWidth, frameHeight: ROBOT.frameHeight});
+      var config = robotConfig(name);
+      this.load.spritesheet("bot:" + name, robotSheets[name], {frameWidth: config.frameWidth, frameHeight: config.frameHeight});
     }, this);
   }
 
   // Lane -> robot sheet: explicit picks from lab-frames.js, otherwise the sheets in name order.
   function robotFor(laneKey, index){
     var names = Object.keys(robotSheets).sort();
-    var name = ROBOT.lanes[laneKey] || names[index % Math.max(names.length, 1)];
-    return name && scene.textures.exists("bot:" + name) ? "bot:" + name : null;
+    var name = (ROBOTS.lanes || {})[laneKey] || names[index % Math.max(names.length, 1)];
+    return name && scene.textures.exists("bot:" + name) ? name : null;
   }
-  function robotAnims(texture){
-    ["down", "left", "right", "up"].forEach(function(dir){
-      [["idle", ROBOT.idle, 4], ["walk", ROBOT.walk, 8]].forEach(function(spec){
-        var key = texture + ":" + spec[0] + ":" + dir;
-        if (scene.anims.exists(key)) return;
-        scene.anims.create({key: key, frameRate: spec[2], repeat: -1, frames: scene.anims.generateFrameNumbers(texture,
-          {frames: spec[1].map(function(col){ return ROBOT.rows[dir] * ROBOT.columns + col; })})});
-      });
+  function registerAnimations(name){
+    var config = robotConfig(name), frames = animationFrames(config), texture = "bot:" + name;
+    Object.keys(frames).forEach(function(anim){
+      var key = texture + ":" + anim;
+      if (!scene.anims.exists(key)){
+        scene.anims.create({key: key, frames: scene.anims.generateFrameNumbers(texture, {frames: frames[anim]}),
+                            frameRate: config.animations[anim].fps || (anim === "idle" ? 4 : 8), repeat: -1});
+      }
+    });
+    return config;
+  }
+  function play(w, anim){
+    if (w.robot && scene.anims.exists("bot:" + w.robot + ":" + anim)) w.sprite.play("bot:" + w.robot + ":" + anim, true);
+  }
+
+  // Collision box: the bottom half of the sprite, anchored at its feet. It decides who is in front
+  // (depth = feet line) and which tiles a bot can occupy, giving the top-down perspective.
+  function footprint(w, x, feetY){
+    var width = w.sprite.displayWidth * w.foot.width, height = w.sprite.displayHeight * w.foot.height;
+    x = x == null ? w.sprite.x : x;
+    feetY = feetY == null ? w.sprite.y : feetY;
+    return new Phaser.Geom.Rectangle(x - width / 2, feetY - height, width, height);
+  }
+  function footprintBlocked(w, x, feetY){
+    var box = footprint(w, x, feetY);
+    var corners = [[box.left, box.top], [box.right - 1, box.top], [box.left, box.bottom - 1], [box.right - 1, box.bottom - 1]];
+    return corners.some(function(p){ return isBlocked(Math.floor(p[0] / T), Math.floor(p[1] / T)); });
+  }
+  function bumpsAnotherBot(w, x, feetY){
+    var box = footprint(w, x, feetY);
+    return Object.keys(workers).some(function(k){
+      var other = workers[k];
+      return other !== w && Phaser.Geom.Intersects.RectangleToRectangle(box, footprint(other));
     });
   }
-  function face(w, mode, dir){
-    if (w.robot) w.sprite.play(w.robot + ":" + mode + ":" + dir, true);
+  function syncDepth(w){
+    w.sprite.setDepth(w.sprite.y);
+    w.ring.setPosition(w.sprite.x, w.sprite.y - 3).setDepth(w.sprite.y - 1);
+    if (w.debug){
+      var box = footprint(w);
+      w.debug.setPosition(box.x, box.y).setSize(box.width, box.height);
+    }
   }
   function scene_load_sheet(s, name){
     s.load.spritesheet("neo:" + name, sheets[name], {frameWidth: 16, frameHeight: 16});
@@ -125,18 +212,18 @@
 
     // Uplink door (to the public web)
     if (!tile("door", DOOR.x, DOOR.y)){
-      g.fillStyle(0x050810, 1).fillRect(DOOR.x - 30, DOOR.y - 44, 60, 70);
-      g.lineStyle(3, 0x3fd4ff, 1).strokeRect(DOOR.x - 30, DOOR.y - 44, 60, 70);
+      g.fillStyle(0x050810, 1).fillRect(DOOR.x - 30, DOOR.y - 36, 60, 64);
+      g.lineStyle(3, 0x3fd4ff, 1).strokeRect(DOOR.x - 30, DOOR.y - 36, 60, 64);
     }
-    label(DOOR.x, DOOR.y - 58, "UPLINK · PUBLIC WEB", "#3fd4ff");
+    label(DOOR.x - 60, DOOR.y - 44, "UPLINK · PUBLIC WEB", "#3fd4ff");
 
     // Approvals board
     if (!tile("board", BOARD.x, BOARD.y)){
-      g.fillStyle(0x10203a, 1).fillRect(BOARD.x - 48, BOARD.y - 40, 96, 64);
-      g.lineStyle(2, 0xffc94f, 1).strokeRect(BOARD.x - 48, BOARD.y - 40, 96, 64);
+      g.fillStyle(0x10203a, 1).fillRect(BOARD.x - 48, BOARD.y - 28, 96, 56);
+      g.lineStyle(2, 0xffc94f, 1).strokeRect(BOARD.x - 48, BOARD.y - 28, 96, 56);
     }
-    label(BOARD.x, BOARD.y - 52, "APPROVAL QUEUE", "#ffc94f");
-    boardText = scene.add.text(BOARD.x, BOARD.y - 8, "–", mono(22, "#ffe7a8")).setOrigin(0.5);
+    label(BOARD.x, BOARD.y - 38, "APPROVAL QUEUE", "#ffc94f");
+    boardText = scene.add.text(BOARD.x, BOARD.y, "–", mono(22, "#ffe7a8")).setOrigin(0.5);
 
     // Server rack (the database) where accepted contacts land
     if (!tile("rack", RACK.x, RACK.y)){
@@ -144,16 +231,17 @@
       g.lineStyle(2, 0x39ff9f, 0.9).strokeRect(RACK.x - 26, RACK.y - 60, 52, 100);
       for (var i = 0; i < 6; i++) g.fillStyle(i % 2 ? 0x39ff9f : 0x1d6e4a, 1).fillRect(RACK.x - 18, RACK.y - 50 + i * 15, 8, 4);
     }
-    label(RACK.x, RACK.y - 74, "LEAD DB", "#39ff9f");
-    rackText = scene.add.text(RACK.x, RACK.y + 50, "", mono(11, "#9dffcf")).setOrigin(0.5);
+    label(RACK.x, RACK.y - 70, "LEAD DB", "#39ff9f");
+    rackText = scene.add.text(RACK.x - 40, RACK.y + 56, "", mono(11, "#9dffcf")).setOrigin(0.5);
 
     // Props for texture
-    [[40, 330, "plant"], [120, 340, "crate"], [470, 350, "crate"], [650, 350, "bin"]].forEach(function(p){
-      if (!tile(p[2], p[0], p[1])){
-        g.fillStyle(p[2] === "plant" ? 0x1d6e4a : 0x2a2f4f, 1).fillRect(p[0] - 14, p[1] - 14, 28, 28);
+    PROPS.forEach(function(p){
+      var x = p[0] * T + T / 2, y = p[1] * T + T / 2;
+      if (!tile(p[2], x, y)){
+        g.fillStyle(p[2] === "plant" ? 0x1d6e4a : 0x2a2f4f, 1).fillRect(x - 14, y - 14, 28, 28);
       }
     });
-    statusText = scene.add.text(12, H - 20, "", mono(11, "#8c9ac2"));
+    statusText = scene.add.text(12, H - 20, "", mono(11, "#8c9ac2")).setDepth(3000);
   }
 
   function mono(size, color){
@@ -164,32 +252,39 @@
   }
 
   function drawStation(l, index){
-    var g = scene.add.graphics();
+    var g = scene.add.graphics().setDepth((DESK_ROW + 1) * T - 6);
     if (!tile("desk", l.x, DESK_Y)){
-      g.fillStyle(0x1b2140, 1).fillRect(l.x - 56, DESK_Y - 18, 112, 36);
-      g.fillStyle(0x2a3160, 1).fillRect(l.x - 56, DESK_Y - 18, 112, 6);
+      g.fillStyle(0x1b2140, 1).fillRect(l.x - 64, DESK_Y - 14, 128, 34);
+      g.fillStyle(0x2a3160, 1).fillRect(l.x - 64, DESK_Y - 14, 128, 6);
     }
-    var screen = scene.add.rectangle(l.x, DESK_Y - 30, 58, 34, 0x050810).setStrokeStyle(2, l.color, 0.5);
-    var glow = scene.add.rectangle(l.x, DESK_Y - 30, 50, 26, l.color, 0.08);
-    label(l.x, DESK_Y + 30, l.label, l.css);
-    var robot = robotFor(l.key, index), sprite;
-    if (robot){
-      robotAnims(robot);
-      sprite = scene.add.sprite(l.x, SEAT_Y, robot).setScale(3).play(robot + ":idle:up");
+    var screen = scene.add.rectangle(l.x, DESK_Y - 22, 58, 30, 0x050810).setStrokeStyle(2, l.color, 0.5).setDepth(g.depth + 1);
+    var glow = scene.add.rectangle(l.x, DESK_Y - 22, 50, 22, l.color, 0.08).setDepth(g.depth + 2);
+    label(l.x, (SEAT_ROW + 1) * T + 8, l.label, l.css).setDepth(1000);
+    var name = robotFor(l.key, index), config = name ? registerAnimations(name) : null, sprite;
+    var home = tileFeet(l.col, SEAT_ROW);
+    if (name){
+      sprite = scene.add.sprite(home.x, home.y, "bot:" + name).setOrigin(0.5, 1).setScale(config.scale);
     } else {
-      sprite = scene.add.image(l.x, SEAT_Y, "crew").setDisplaySize(40, 40).setTint(l.color);
+      sprite = scene.add.image(home.x, home.y, "crew").setOrigin(0.5, 1).setDisplaySize(40, 40).setTint(l.color);
     }
-    var bubble = scene.add.text(l.x, SEAT_Y - 44, "", mono(10, "#e8ecff"))
-      .setOrigin(0.5).setBackgroundColor("#0b1020").setPadding(4, 2, 4, 2).setDepth(20).setVisible(false);
-    var zz = scene.add.text(l.x + 18, SEAT_Y - 30, "z", mono(12, "#5b6690")).setDepth(19);
+    // A lane-coloured floor ring tells identical bots apart without tinting their art.
+    var ring = scene.add.ellipse(home.x, home.y - 3, 34, 10).setStrokeStyle(2, l.color, 0.8);
+    var bubble = scene.add.text(home.x, home.y, "", mono(10, "#e8ecff"))
+      .setOrigin(0.5, 1).setBackgroundColor("#0b1020").setPadding(4, 2, 4, 2).setDepth(2000).setVisible(false);
+    var zz = scene.add.text(home.x + 16, home.y - 52, "z", mono(12, "#5b6690")).setDepth(1999);
     scene.tweens.add({targets: zz, y: "-=12", alpha: {from: 1, to: 0}, duration: 1600, repeat: -1});
-    workers[l.key] = {lane: l, sprite: sprite, robot: robot, bubble: bubble, zz: zz, screen: screen, glow: glow,
-                      queue: [], busy: false, lastActive: 0, home: {x: l.x, y: SEAT_Y}};
+    var w = {lane: l, sprite: sprite, robot: name, ring: ring, bubble: bubble, zz: zz, screen: screen, glow: glow,
+             foot: config ? config.footprint : {width: 0.6, height: 0.5}, queue: [], busy: false, lastActive: 0,
+             home: {col: l.col, row: SEAT_ROW}};
+    if (SHOW_FOOTPRINTS) w.debug = scene.add.rectangle(0, 0, 1, 1).setOrigin(0).setStrokeStyle(1, 0xff0000).setDepth(3000);
+    workers[l.key] = w;
+    play(w, "idle");
+    syncDepth(w);
   }
 
   function say(w, text, color, ms){
     w.bubble.setText(text.length > 34 ? text.slice(0, 33) + "…" : text).setColor(color || "#e8ecff")
-      .setPosition(w.sprite.x, w.sprite.y - 44).setVisible(true);
+      .setPosition(w.sprite.x, w.sprite.y - w.sprite.displayHeight - 4).setVisible(true);
     clearTimeout(w.bubbleTimer);
     w.bubbleTimer = setTimeout(function(){ w.bubble.setVisible(false); }, ms || 2200);
   }
@@ -201,30 +296,42 @@
     w.screen.setStrokeStyle(2, w.lane.color, 1);
   }
 
-  function walk(w, points, done){
-    var chain = points.map(function(p){
-      return {targets: [w.sprite], x: p.x, y: p.y, duration: p.d || 380, ease: "Linear"};
+  // Grid movement: one tile per step along a BFS path, facing and animating in the step's direction.
+  // A step whose footprint would overlap another bot waits briefly; after a few tries it proceeds.
+  function walkTo(w, target, done){
+    var occupied = {};
+    Object.keys(workers).forEach(function(k){
+      var other = workers[k];
+      if (other === w) return;
+      var at = tileOf(other.sprite.x, other.sprite.y);
+      occupied[at.col + "," + at.row] = true;
     });
-    // Animated robots walk with their own frames; the static fallback sprite wobbles instead.
+    var path = findPath(tileOf(w.sprite.x, w.sprite.y), target, occupied);
     var bob = w.robot ? null : scene.tweens.add({targets: w.sprite, angle: {from: -7, to: 7}, yoyo: true, repeat: -1, duration: 110});
-    var step = function(i){
-      if (i >= chain.length){
+    var step = function(i, waited){
+      if (i >= path.length){
         if (bob){ bob.stop(); w.sprite.angle = 0; }
-        var atDesk = w.sprite.x === w.home.x && w.sprite.y === w.home.y;
-        face(w, "idle", atDesk ? "up" : "right");
-        done && done(); return;
+        play(w, "idle");
+        done && done();
+        return;
       }
-      var c = chain[i];
-      var dx = c.x - w.sprite.x, dy = c.y - w.sprite.y;
-      face(w, "walk", Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
-      c.onComplete = function(){ step(i + 1); };
-      scene.tweens.add(c);
+      var to = tileFeet(path[i].col, path[i].row), dx = to.x - w.sprite.x, dy = to.y - w.sprite.y;
+      if (footprintBlocked(w, to.x, to.y)){ step(path.length); return; }  // map changed under us; stop here
+      if (waited < 6 && bumpsAnotherBot(w, to.x, to.y)){
+        play(w, "idle");
+        scene.time.delayedCall(150, function(){ step(i, waited + 1); });
+        return;
+      }
+      play(w, Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "walk_right" : "walk_left") : (dy > 0 ? "walk_down" : "walk_up"));
+      scene.tweens.add({targets: w.sprite, x: to.x, y: to.y, duration: STEP_MS, ease: "Linear",
+        onUpdate: function(){ syncDepth(w); },
+        onComplete: function(){ syncDepth(w); step(i + 1, 0); }});
     };
-    step(0);
+    step(0, 0);
   }
 
   function packet(color, ok, done){
-    var p = scene.add.rectangle(DOOR.x, DOOR.y, 8, 8, color).setDepth(15);
+    var p = scene.add.rectangle(DOOR.x, DOOR.y, 8, 8, color).setDepth(2500);
     scene.tweens.add({targets: p, x: W + 10, duration: 260, ease: "Quad.easeIn", onComplete: function(){
       p.setFillStyle(ok ? 0x39ff9f : 0xff5a5a);
       scene.tweens.add({targets: p, x: DOOR.x, duration: 260, ease: "Quad.easeOut", onComplete: function(){ p.destroy(); done && done(); }});
@@ -234,7 +341,7 @@
   function toRack(from, count){
     for (var i = 0; i < Math.min(count, 8); i++){
       (function(delay){
-        var c = scene.add.star(from.x, from.y - 20, 5, 3, 7, 0x39ff9f).setDepth(16);
+        var c = scene.add.star(from.x, from.y - 30, 5, 3, 7, 0x39ff9f).setDepth(2500);
         scene.tweens.add({targets: c, x: RACK.x, y: RACK.y - 20, delay: delay, duration: 700, ease: "Sine.easeInOut",
           onComplete: function(){ c.destroy(); }});
       })(i * 90);
@@ -253,18 +360,18 @@
           say(w, e.kind === "error" ? "error" : String(e.status), e.kind === "error" ? "#ff8a8a" : "#9dffcf", 900);
           return;
         }
-        var home = w.home, side = home.x + 70;
-        walk(w, [{x: side, y: home.y, d: 200}, {x: side, y: AISLE_Y, d: 300}, {x: DOOR.x - 40, y: AISLE_Y, d: 420}], function(){
+        walkTo(w, DOOR_TILE, function(){
+          play(w, "walk_up");
           packet(w.lane.color, e.kind === "fetch" && ok, function(){
             say(w, e.kind === "error" ? "✗ " + e.text.replace(/^GET \S+ -> /, "") : "✓ " + e.status + " " + Math.round((e.bytes || 0) / 1024) + "KB",
                 e.kind === "error" ? "#ff8a8a" : "#9dffcf");
-            walk(w, [{x: side, y: AISLE_Y, d: 420}, {x: side, y: home.y, d: 300}, {x: home.x, y: home.y, d: 200}], done);
+            walkTo(w, w.home, done);
           });
         });
         return;
       case "pick":
         say(w, "▶ " + e.text, w.lane.css);
-        scene.tweens.add({targets: w.sprite, y: w.home.y - 6, yoyo: true, duration: 140, onComplete: done});
+        scene.tweens.add({targets: w.sprite, y: "-=6", yoyo: true, duration: 140, onComplete: done});
         return;
       case "result":
         say(w, e.contacts ? "★ " + e.contacts + " contact(s)" : "done", e.contacts ? "#9dffcf" : "#c8cfe8");
@@ -304,8 +411,9 @@
   function create(){
     scene = this;
     drawRoom();
-    focusBeam = scene.add.rectangle(LANES[0].x, 240, 150, 288, 0xffffff, 0).setDepth(-1);
+    focusBeam = scene.add.rectangle(LANES[0].x, 2 * T + 3 * T, 4 * T - 12, 6 * T, 0xffffff, 0).setDepth(1);
     LANES.forEach(drawStation);
+    if (SHOW_FOOTPRINTS) mount.labDebug = {workers: workers, findPath: findPath};  // ?footprints=1 inspection aid
     scene.time.addEvent({delay: 1000, loop: true, callback: function(){
       var now = Date.now();
       Object.keys(workers).forEach(function(k){

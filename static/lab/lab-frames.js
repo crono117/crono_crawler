@@ -5,12 +5,27 @@
  * Parts: floor, wall, door, desk, board, rack, plant, crate, bin. Unset parts use drawn shapes. */
 window.LAB_NEO_FRAMES = {};
 
-/* Sci-fi robot sheets in static/local_assets/robots/. Defaults assume one row per direction and
- * idle frames followed by walk frames; adjust after inspecting the pack. lanes maps a lane
- * (collector, discovery, automation, jev) to a sheet file stem; unset lanes take sheets in name order. */
+/* Robot sheets in static/local_assets/robots/*.png. `defaults` applies to every sheet; `sheets`
+ * overrides per file stem; `lanes` picks a sheet per lane (collector, discovery, automation, jev),
+ * otherwise sheets are assigned in name order. Each animation is a sheet row plus column indices;
+ * fps is the playback speed. `footprint` is the collision box as a fraction of the frame, anchored
+ * at the sprite's feet (bottom half by default) for top-down depth sorting.
+ *
+ * probe_asset_1.png is produced from the operator's probe_asset_1.jpeg by
+ * scripts/prepare_lab_sprite.py: 5 rows x 5 columns of 48px, transparent, feet-aligned. The source
+ * labels rows 2 and 3 as west/east, but the drawings face the other way, so they are swapped here. */
 window.LAB_ROBOTS = {
-  frameWidth: 16, frameHeight: 16, columns: 6,
-  rows: {down: 0, left: 1, right: 2, up: 3},
-  idle: [0, 1], walk: [2, 3, 4, 5],
+  defaults: {
+    frameWidth: 48, frameHeight: 48, columns: 5, scale: 1,
+    footprint: {width: 0.6, height: 0.5},
+    animations: {
+      idle:       {row: 0, frames: [0, 1, 2, 3, 4], fps: 4},
+      walk_down:  {row: 1, frames: [0, 1, 2, 3, 4], fps: 8},
+      walk_right: {row: 2, frames: [0, 1, 2, 3, 4], fps: 8},
+      walk_left:  {row: 3, frames: [0, 1, 2, 3, 4], fps: 8},
+      walk_up:    {row: 4, frames: [0, 1, 2, 3, 4], fps: 8}
+    }
+  },
+  sheets: {},
   lanes: {}
 };
