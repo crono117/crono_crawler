@@ -126,7 +126,7 @@ def bridge_status(request):
     from discovery.models import DiscoveredURL
     from leads.models import SourceCandidate
     cargo_count = (SourceCandidate.objects.filter(status="new").count()
-                   + DiscoveredURL.objects.filter(decision="pending").count())
+                   + DiscoveredURL.objects.filter(decision="pending", archived_at__isnull=True).count())
 
     return JsonResponse({"worker_online": worker_online, "stations": stations,
         "cargo_count": cargo_count, "cargo_href": reverse("discovery:candidates")})
@@ -201,7 +201,7 @@ def review_breakdown():
     def promising(url, label, score=0):
         return score > 0 or direct_contact_page_intent(url, label) or company_page_tier(url, label) is not None
 
-    waiting = ([promising(d.url, d.label, d.score) for d in DiscoveredURL.objects.filter(decision="pending")]
+    waiting = ([promising(d.url, d.label, d.score) for d in DiscoveredURL.objects.filter(decision="pending", archived_at__isnull=True)]
                + [promising(c.url, c.label) for c in SourceCandidate.objects.filter(status="new")])
     worth = sum(waiting)
     filtered = (DiscoveredURL.objects.filter(decision="dismissed", dismissal_scope="").count()
@@ -216,7 +216,7 @@ def lab_feed(request):
     from django.urls import reverse
     from django.utils import timezone
     from classification.models import Evaluation
-    from discovery.models import DiscoveredURL, DiscoveryJob
+    from discovery.models import DiscoveredURL, DiscoveryJob, SourceSearch
     from leads.models import Lead, PageJob, SourceCandidate, WorkerLease
     from leads.services import activity
     from .services import RUNNABLE
@@ -244,6 +244,12 @@ def lab_feed(request):
         next_at = items.filter(available_at__gt=now).order_by("available_at").values_list("available_at", flat=True).first()
         queues[lane] = {"queued": items.count(), "ready": items.filter(available_at__lte=now).count(),
                         "next_at": next_at.timestamp() if next_at else None}
+    searches = SourceSearch.objects.filter(status="queued", campaign__active=True, campaign__search_enabled=True)
+    queues["discovery"]["queued"] += searches.count()
+    queues["discovery"]["ready"] += searches.filter(available_at__lte=now).count()
+    search_next = searches.filter(available_at__gt=now).order_by("available_at").values_list("available_at", flat=True).first()
+    if search_next:
+        queues["discovery"]["next_at"] = min(queues["discovery"]["next_at"] or search_next.timestamp(), search_next.timestamp())
     review = review_breakdown()
     queues["approval"] = {"queued": review["worth_a_look"] + review["low_signal"], "ready": review["worth_a_look"],
                           "next_at": None,
@@ -253,10 +259,14 @@ def lab_feed(request):
                                  f"Filtered out automatically so far: {review['auto_filtered']}."}
     if settings.JEV_MODE == "off":
         queues["jev"]["note"] = "Jev is off (JEV_MODE=off)."
+    from discovery.acquisition import search_status
+    source_searches = [{**search_status(campaign), "href": reverse("discovery:campaign", args=[campaign.pk])}
+                       for campaign in Campaign.objects.order_by("-active", "name")[:20]]
     return JsonResponse({
         "entries": entries,
         "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),
         "queues": queues,
+        "source_searches": source_searches,
         "review": review,
         "leads": lead_totals(Lead, now - timedelta(hours=24)),
         "recent_leads": recent_leads(Lead),

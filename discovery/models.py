@@ -20,14 +20,19 @@ class Campaign(models.Model):
     use_sitemaps = models.BooleanField(default=True)
     max_pages = bounded(50, 1, 500, help_text="Maximum page and sitemap jobs in each run.")
     max_depth = bounded(3, 0, 5)
-    max_candidates = bounded(1000, 10, 10000, help_text="Maximum saved URLs in this campaign, including reviewed URLs. Links dismissed automatically by filters don't count.")
-    max_new_domains = bounded(25, 1, 200, help_text="Maximum previously unseen origins discovered in each run.")
+    max_candidates = bounded(1000, 10, 10000, help_text="Maximum active saved URLs, including reviewed URLs. Archived and automatically filtered URLs don't count.")
+    max_new_domains = bounded(25, 1, 200, help_text="Maximum previously unseen origins per crawl run or independent source search.")
     daily_requests = bounded(200, 1, 5000, help_text="Fetch attempts per UTC day, including robots checks and retries. Redirect hops are separately bounded.")
     min_score = bounded(10, 0, 100)
     interval_hours = bounded(24, 1, 8760)
     search_enabled = models.BooleanField(default=False)
     search_queries = models.TextField(blank=True, max_length=6000, help_text="One exact search query per line, up to 10. Include a location here to target it in search.")
     daily_search_limit = bounded(5, 1, 100)
+    auto_search_queries = models.BooleanField(default=False, help_text="Rotate team/contact searches built from campaign industry phrases, sales roles and region, alongside your exact queries.")
+    search_interval_minutes = bounded(60, 15, 1440)
+    next_search_at = models.DateTimeField(default=timezone.now)
+    search_query_cursor = models.PositiveIntegerField(default=0)
+    auto_archive_candidates = models.BooleanField(default=False, help_text="When search needs space, archive eligible dismissed, stale or repeatedly unproductive URLs. Keeps their history and review decisions.")
     active = models.BooleanField(default=False)
     next_due_at = models.DateTimeField(default=timezone.now)
     next_intake_at = models.DateTimeField(
@@ -44,7 +49,7 @@ class Campaign(models.Model):
     def saved_url_count(self):
         """URLs that count toward max_candidates. Automatically filtered links (dismissed with no
         operator scope) stay on record for analysis but don't use up the campaign's capacity."""
-        return self.urls.exclude(decision="dismissed", dismissal_scope="").count()
+        return self.urls.filter(archived_at__isnull=True).exclude(decision="dismissed", dismissal_scope="").count()
 
     def __str__(self):
         return self.name
@@ -94,6 +99,8 @@ class DiscoveredURL(models.Model):
     last_result = models.CharField(max_length=1000, blank=True)
     first_seen = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(default=timezone.now)
+    archived_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    archive_reason = models.CharField(max_length=300, blank=True)
 
     class Meta:
         ordering = ["-score", "-last_seen"]
@@ -129,3 +136,23 @@ class DailyUsage(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["campaign", "day"], name="one_discovery_daily_usage")]
+
+
+class SourceSearch(models.Model):
+    """A source acquisition attempt, independent of crawl run capacity and completion."""
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="source_searches")
+    run = models.ForeignKey(DiscoveryRun, null=True, blank=True, on_delete=models.SET_NULL)
+    query = models.CharField(max_length=600)
+    status = models.CharField(max_length=16, default="queued")
+    available_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveIntegerField(default=0)
+    message = models.CharField(max_length=1000, blank=True)
+    summary = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["campaign"],
+            condition=Q(status__in=["queued", "processing"]), name="one_pending_source_search")]

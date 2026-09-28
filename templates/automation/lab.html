@@ -19,6 +19,7 @@
     <div class="lab-console" data-console="jev" style="--lane:#ffc94f"><header><i class="lab-dot"></i>JEV JUDGE <span data-queue>–</span></header><pre></pre></div>
   </div>
   <section class="lab-console lab-leads" style="--lane:#39ff9f"><header><i class="lab-dot online"></i>LATEST LEADS <span id="lab-leads-count">–</span> <a href="{% url 'leads' %}">open lead database →</a></header><ol id="lab-leads"><li class="lab-placeholder">No leads yet.</li></ol></section>
+  <section class="lab-console lab-leads" style="--lane:#3fd4ff"><header>FINDING NEW SOURCES</header><ol id="lab-source-searches"><li class="lab-placeholder">Loading source search status…</li></ol></section>
   <details class="lab-console lab-all" data-console="worker" style="--lane:#8c9ac2"><summary>ALL LANES — raw worker feed</summary><pre></pre></details>
 
   <p class="lab-credit">{% if tileset_sheets %}Tiles: “Neo Zero – Cyberpunk City Tileset” by Yanin Yunus (itch.io), installed locally, not redistributed.{% else %}Drawn fallback art. To use the Neo Zero tileset, download it from itch.io and unzip it into <code>static/local_assets/neo-zero/</code> (git-ignored; its license forbids redistribution).{% endif %} {% if robot_sheets %}Robots: sci-fi robots 16×16 top-down pack (GameDev Market), installed locally, not redistributed.{% else %}Crew sprite: Kenney 1-bit pack (CC0); put the GameDev Market sci-fi robot sheets in <code>static/local_assets/robots/</code> to use them.{% endif %} Engine: Phaser 3 (MIT).</p>

@@ -59,6 +59,9 @@ def source_form(request, pk=None):
     candidate = SourceCandidate.objects.filter(pk=request.GET.get("candidate")).first() if request.GET.get("candidate", "").isdigit() else None
     initial = {"url": candidate.url, "name": candidate.label or candidate.url} if candidate else {}
     discovered = get_object_or_404(DiscoveredURL, pk=request.GET["discovery_url"]) if request.GET.get("discovery_url", "").isdigit() else None
+    if discovered and discovered.archived_at:
+        messages.error(request, "Restore this archived URL before configuring its source.")
+        return redirect("discovery:candidate", pk=discovered.pk)
     if discovered and not source:
         initial = {"url": discovered.url, "name": (discovered.label or discovered.origin)[:160],
                    "category": discovered.campaign.category, "allowed_paths": "/"}

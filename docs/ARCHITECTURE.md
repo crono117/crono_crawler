@@ -53,3 +53,9 @@ The discovery app extends this pipeline with `Campaign`, `DiscoveryRun`, `Discov
 3. Extend the zero-contact health warnings with freshness filters once a real refresh cadence is established.
 4. Add explicit user roles, suppression matching across identity changes, retention/deletion controls, and an operator audit trail before wider team use.
 5. Add a distributed queue only when measured throughput justifies multiple workers.
+
+## Independent source acquisition
+
+`discovery.acquisition` schedules persistent `SourceSearch` attempts separately from `DiscoveryRun` page queues. The existing worker lease executes both. Search attempts share `DailyUsage.searches` and Brave origin backoff with legacy search jobs; recovery keeps reservations and retry timestamps. Search metadata passes through `register_batch` and the existing automation policy. It cannot create lead evidence or bypass probe, recipe or canary gates.
+
+`discovery.turnover` can archive eligible URLs under the campaign capacity lock when opt-in search needs space. Archive state is separate from approval/dismissal state; active queueing and policy scans exclude archives. Restoration checks capacity and preserves the original decision. See [rollout details](AUTONOMOUS_DISCOVERY.md).

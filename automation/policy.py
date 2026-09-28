@@ -65,7 +65,7 @@ def consider(candidate):
     campaign = Campaign.objects.select_for_update().get(pk=candidate.campaign_id)
     candidate = DiscoveredURL.objects.get(pk=candidate.pk)
     candidate.campaign = campaign
-    if candidate.manual_review_required or candidate.decision != "pending" or candidate.kind != "page":
+    if candidate.archived_at or candidate.manual_review_required or candidate.decision != "pending" or candidate.kind != "page":
         return None
     policy = SitePolicy.objects.filter(campaign=campaign, enabled=True).first()
     if not policy or not campaign.active or denied(policy, candidate.url) or urlsplit(candidate.url).query:
@@ -97,7 +97,8 @@ def consider(candidate):
     from leads.services.activity import emit
     emit("approved", f"Policy approved {candidate.url} (score {score}) -> site setup #{job.pk}", lane="approval",
          url=candidate.url, by="policy")
-    for sibling in campaign.urls.filter(origin=origin(source.url), decision="pending", manual_review_required=False):
+    for sibling in campaign.urls.filter(origin=origin(source.url), decision="pending", manual_review_required=False,
+                                       archived_at__isnull=True):
         if in_scope(source, sibling.url):
             sibling.source, sibling.decision = source, "approved"
             sibling.last_result = f"Policy authorized setup job #{job.pk}; collection waits for a validated recipe and canary."
@@ -113,7 +114,7 @@ def consider_pending():
         # required, otherwise only an explicit exclusion/negative score is disqualifying.
         floor = policy.min_url_score if policy.require_page_intent else 0
         pending = DiscoveredURL.objects.filter(campaign_id=policy.campaign_id, decision="pending",
-            kind="page", manual_review_required=False, score__gte=floor).select_related("campaign").order_by("id")
+            kind="page", manual_review_required=False, archived_at__isnull=True, score__gte=floor).select_related("campaign").order_by("id")
         candidates = list(pending.filter(id__gt=policy.pending_scan_cursor)[:100])
         if not candidates and policy.pending_scan_cursor:
             candidates = list(pending[:100])
