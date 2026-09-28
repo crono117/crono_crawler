@@ -35,10 +35,24 @@ def origin(url):
     p = urlsplit(canonical_url(url))
     return f"{p.scheme}://{p.netloc}"
 
+def same_site(approved_origin, target_origin):
+    """Whether ``target_origin`` is the approved website itself: identical, an http->https upgrade,
+    and/or the same host with or without one leading "www.". Sites routinely redirect between these
+    canonical forms. A downgrade to http, any other subdomain, or another port is not the same site."""
+    a, b = urlsplit(approved_origin), urlsplit(target_origin)
+    if a.scheme != b.scheme and not (a.scheme == "http" and b.scheme == "https"):
+        return False
+    bare = lambda host: (host or "")[4:] if (host or "").startswith("www.") else (host or "")
+    return a.port == b.port and bare(a.hostname) == bare(b.hostname) and "." in bare(a.hostname)
+
 def in_scope(source, url):
     try:
         target = canonical_url(url)
-        if origin(target) != origin(source.url):
+        # An operator approved the website, so its canonical www/https redirect stays in scope.
+        # Policy-created sources keep their exact origin.
+        exact = origin(target) == origin(source.url)
+        if not exact and not (getattr(source, "approval_kind", "operator") == "operator"
+                              and same_site(origin(source.url), origin(target))):
             return False
         path = unquote(urlsplit(target).path)
         # Reject traversal segments so a prefix cannot hide a different destination.
@@ -111,7 +125,7 @@ def _fetch(url, user_agent, guard, max_bytes, timeout, *, request_headers, allow
         except (ValueError, UnicodeError) as exc:
             raise FetchError(str(exc)) from exc
         if guard and not guard(url):
-            raise FetchError("URL or redirect falls outside the approved scope.")
+            raise FetchError(f"URL or redirect falls outside the approved scope: {url[:200]}")
         if before_attempt:
             before_attempt(url)
         p = urlsplit(url)

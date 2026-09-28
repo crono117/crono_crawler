@@ -14,7 +14,8 @@ from django.utils import timezone
 from leads.models import DomainState, PageJob, PageSnapshot, Run, Source, SourceCandidate, WorkerLease
 from . import activity
 from .extraction import diagnostic_message, extract, signature, soup_for
-from .network import FetchError, Response, canonical_url, fetch, fetch_browser, in_scope, origin, require_success
+from .network import (FetchError, Response, canonical_url, fetch, fetch_browser, in_scope, origin, require_success,
+                      same_site)
 from .storage import save_records, touch_unchanged
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def prepare_domain(source, job):
         activity.emit("robots", f"Checking robots.txt for {state.origin}")
         from classification.routing import before_fetch
         res = fetch(state.origin + "/robots.txt", settings.BOT_USER_AGENT,
-                    guard=lambda url: origin(url) == state.origin, max_bytes=512 * 1024, before_attempt=before_fetch(job))
+                    guard=lambda url: same_site(state.origin, origin(url)), max_bytes=512 * 1024, before_attempt=before_fetch(job))
         if res.status in (404, 410):
             state.robots_text = "User-agent: *\nAllow: /"
         else:
@@ -166,7 +167,7 @@ def collect_links(source, job, html, base_url):
         if in_scope(source, url):
             if source.follow_links and remaining and job.depth < source.max_depth:
                 follow.append((-link_priority(url, link.get_text(" ", strip=True)[:200]), len(follow), url))
-        elif source.discover_external and origin(url) != origin(source.url) and len(seen) <= 300:
+        elif source.discover_external and not same_site(origin(source.url), origin(url)) and len(seen) <= 300:
             # Preserve the actual useful path without fetching or approving it.
             candidate = url
             if not Source.objects.filter(url=candidate).exists():

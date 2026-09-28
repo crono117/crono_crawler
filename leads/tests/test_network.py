@@ -2,7 +2,7 @@ import socket
 from unittest.mock import patch
 from django.test import SimpleTestCase
 from leads.models import Source
-from leads.services.network import FetchError, canonical_url, fetch, in_scope, public_addresses
+from leads.services.network import FetchError, canonical_url, fetch, in_scope, public_addresses, same_site
 
 class NetworkTests(SimpleTestCase):
     def test_url_rejects_credentials_protocols_and_nonstandard_ports(self):
@@ -16,6 +16,29 @@ class NetworkTests(SimpleTestCase):
         self.assertFalse(in_scope(source, "https://example.com/teams"))
         self.assertFalse(in_scope(source, "https://other.example.com/team/"))
         self.assertFalse(in_scope(source, "https://example.com/team/%2e%2e/private"))
+
+    def test_same_site_allows_only_www_and_https_canonical_forms(self):
+        for approved, target in (("https://www.example.com", "https://example.com"),
+                                 ("https://example.com", "https://www.example.com"),
+                                 ("http://example.com", "https://www.example.com")):
+            with self.subTest(target=target):
+                self.assertTrue(same_site(approved, target))
+        for approved, target in (("https://example.com", "http://example.com"),       # downgrade
+                                 ("https://www.example.com", "https://shop.example.com"),
+                                 ("https://www.example.com", "https://www.example.com.evil.test"),
+                                 ("https://www.example.com", "https://wwwexample.com"),
+                                 ("https://www.example.com", "https://www.www.example.com"),
+                                 ("https://www.com", "https://com")):
+            with self.subTest(target=target):
+                self.assertFalse(same_site(approved, target))
+
+    def test_operator_sources_keep_their_canonical_redirect_but_policy_sources_stay_exact(self):
+        operator = Source(url="https://www.example.com/", allowed_paths="/team", approval_kind="operator")
+        self.assertTrue(in_scope(operator, "https://example.com/team/alex"))
+        self.assertFalse(in_scope(operator, "https://example.com/private"))  # path rules still apply
+        self.assertFalse(in_scope(operator, "https://shop.example.com/team/"))
+        policy = Source(url="https://www.example.com/", allowed_paths="/team", approval_kind="policy")
+        self.assertFalse(in_scope(policy, "https://example.com/team/alex"))
 
     @patch("leads.services.network.socket.getaddrinfo")
     def test_private_and_mixed_dns_answers_are_rejected(self, dns):

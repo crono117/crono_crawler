@@ -275,3 +275,25 @@ class HttpPipelineTests(TestCase):
     def test_retry_after_invalid_header_is_bounded(self):
         self.assertEqual(retry_delay(1, "nonsense"), 30)
         self.assertEqual(retry_delay(1, "999999999"), 86400)
+
+
+class RobotsRedirectTests(TestCase):
+    def test_robots_check_follows_the_sites_canonical_www_redirect_only(self):
+        from leads.services.worker import prepare_domain
+        source = Source.objects.create(name="Fictional", url="https://www.fictional.example.org/", approved=True,
+                                       allowed_paths="/", allow_homepage=True)
+        run = Run.objects.create(source=source)
+        job = PageJob.objects.create(run=run, url=source.url)
+        seen = {}
+
+        def fake_fetch(url, agent, guard=None, **kwargs):
+            seen["guard"] = guard
+            return Response(url, 404, {"content-type": "text/plain"}, b"")
+
+        with patch("leads.services.worker.fetch", side_effect=fake_fetch):
+            prepare_domain(source, job)
+        guard = seen["guard"]
+        self.assertTrue(guard("https://fictional.example.org/robots.txt"))
+        self.assertTrue(guard("https://www.fictional.example.org/robots.txt"))
+        self.assertFalse(guard("https://cdn.fictional.example.org/robots.txt"))
+        self.assertFalse(guard("https://other.example.org/robots.txt"))
