@@ -33,7 +33,7 @@ This document distinguishes **existing code**, **proposed additions**, and **unv
 | Difference from remote baseline | Exactly one commit ahead; only `run-local.py` changed. GitHub comparison confirms all other tracked files are identical. |
 | Isolated audit source | Cloned the available local checkout without changing it, reproduced the verified launcher change, and checked the complete Git tree. |
 | Verified tree | `fc27b7950ae213c1015505f92a258fb343f51643`, matching the remote baseline tree. The audit clone's HEAD remains the parent; its staged tree matches the baseline. |
-| Launcher discrepancy | Baseline launcher uses `CLEARPAY_BIND_ADDRESS`, default `127.0.0.1`, and port **8017**. README and discovery setup examples still show 8000. Compose independently uses 8000. |
+| Launcher discrepancy | Baseline launcher uses a bind-address variable (now `CRONO_BIND_ADDRESS`), default `127.0.0.1`, and port **8017**. README and discovery setup examples still show 8000. Compose independently uses 8000. |
 | Branch instructions | `AGENTS.md` and README say to base new development on `main`; GitHub `main` currently points to `cc6b3697479cb224c5553a0d6dc31e8c53c66bf9`, not the audited feature SHA. Planning did not switch/reset the user's checkout. |
 | Desktop deployment | Not inspected. Its actual processes, environment, database backend, credentials, saved profiles and uncommitted changes remain unknown. |
 

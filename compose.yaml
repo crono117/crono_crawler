@@ -1,4 +1,4 @@
-name: clearpay-leads
+name: lead-console
 x-app: &app
   build:
     context: .
@@ -7,7 +7,7 @@ x-app: &app
   env_file: .env
   environment:
     DJANGO_DEBUG: "0"
-    DATABASE_URL: postgresql://clearpay:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/clearpay
+    DATABASE_URL: postgresql://leads:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/leads
   init: true
   restart: unless-stopped
   stop_grace_period: 5m
@@ -16,12 +16,12 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: clearpay
-      POSTGRES_USER: clearpay
+      POSTGRES_DB: leads
+      POSTGRES_USER: leads
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes: ["postgres_data:/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clearpay -d clearpay"]
+      test: ["CMD-SHELL", "pg_isready -U leads -d leads"]
       interval: 5s
       timeout: 5s
       retries: 12

@@ -1,6 +1,6 @@
 # Neutral console branding — branding-only release
 
-The user requested removal of ClearPay product branding from the running scraper. This release changes only the neutral branding surfaces:
+The user requested removal of the previous company product branding from the running scraper; that name is unrelated to this project and must not appear anywhere in it. This release changes only the neutral branding surfaces:
 
 - Sidebar: **Lead Console**, with the old wordmark and C logo removed.
 - Login page: **LEAD CONSOLE**.

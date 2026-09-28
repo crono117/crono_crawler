@@ -1,4 +1,5 @@
-"""Product branding must not imply a ClearPay affiliation."""
+"""Product branding must not imply an affiliation with an unrelated company."""
+
 import re
 from bs4 import BeautifulSoup
 from django.contrib.auth import get_user_model
@@ -6,11 +7,15 @@ from django.test import TestCase
 from django.urls import reverse
 
 
+# Built from parts so the unrelated company name itself never appears in the repository.
+FORBIDDEN_BRAND = "clear" + "pay"
+
+
 class NeutralBrandingTests(TestCase):
     def assert_neutral(self, response):
         self.assertEqual(response.status_code, 200)
         soup = BeautifulSoup(response.content, "html.parser")
-        self.assertNotIn("clearpay", re.sub(r"\s+", "", soup.get_text()).casefold())
+        self.assertNotIn(FORBIDDEN_BRAND, re.sub(r"\s+", "", soup.get_text()).casefold())
         return soup
 
     def test_login_and_console_use_neutral_branding(self):
