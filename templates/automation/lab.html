@@ -1,5 +1,5 @@
 {% extends 'base.html' %}{% load static %}{% block title %}Crawler lab{% endblock %}{% block location %}Crawler lab{% endblock %}{% block content %}
-<header class="page-heading"><div><div class="eyebrow">LIVE · ACTIVITY FEED</div><h1>Crawler lab</h1><p>Each lane's worker acts out the real steps the collector process records: picking work, requests through the uplink, robots checks, throttling and results. There is one worker process; it time-slices between these lanes, so only the focused lane moves at a time. Consoles show the exact feed.</p></div></header>
+<header class="page-heading"><div><div class="eyebrow">LIVE · ACTIVITY FEED</div><h1>Crawler lab</h1><p>Each station acts out the real steps the worker records, in pipeline order: discovery finds links, approval lets them in (by campaign policy or by you) or filters them out, site setup teaches the collector to read a new site, the collector gathers leads, and Jev optionally judges pages. There is one worker process; it time-slices between these lanes, so only the focused lane moves at a time. Consoles show the exact feed.</p></div></header>
 
 <section class="lab">
   <div class="lab-bar">
@@ -12,9 +12,10 @@
   {{ robot_sheets|json_script:"lab-robots" }}
 
   <div class="lab-consoles">
-    <div class="lab-console" data-console="collector" style="--lane:#39ff9f"><header><i class="lab-dot"></i>COLLECTOR <span data-queue>–</span></header><pre></pre></div>
     <div class="lab-console" data-console="discovery" style="--lane:#3fd4ff"><header><i class="lab-dot"></i>DISCOVERY <span data-queue>–</span></header><pre></pre></div>
+    <div class="lab-console" data-console="approval" style="--lane:#ff8a3d"><header><i class="lab-dot"></i>APPROVAL <span data-queue>–</span></header><pre></pre></div>
     <div class="lab-console" data-console="automation" style="--lane:#ff4fd8"><header><i class="lab-dot"></i>SITE SETUP <span data-queue>–</span></header><pre></pre></div>
+    <div class="lab-console" data-console="collector" style="--lane:#39ff9f"><header><i class="lab-dot"></i>COLLECTOR <span data-queue>–</span></header><pre></pre></div>
     <div class="lab-console" data-console="jev" style="--lane:#ffc94f"><header><i class="lab-dot"></i>JEV JUDGE <span data-queue>–</span></header><pre></pre></div>
   </div>
   <details class="lab-console lab-all" data-console="worker" style="--lane:#8c9ac2"><summary>ALL LANES — raw worker feed</summary><pre></pre></details>
@@ -43,7 +44,7 @@
 .lab-all{margin-top:12px}.lab-all summary{cursor:pointer}.lab-all pre{height:280px}
 .lab-line .lab-ts{color:#4c5680}.lab-line .lab-tag{color:#6b76a6}
 .kind-fetch .lab-tag{color:#39ff9f}.kind-error .lab-tag,.kind-failed .lab-tag{color:#ff5a5a}.kind-error{color:#ffb0b0}
-.kind-pick .lab-tag{color:#3fd4ff}.kind-result .lab-tag{color:#ffc94f}.kind-state .lab-tag{color:#ff4fd8}
+.kind-pick .lab-tag{color:#3fd4ff}.kind-approved .lab-tag{color:#ff8a3d}.kind-pending .lab-tag{color:#ffc94f}.kind-filtered,.kind-dismissed{color:#6b76a6}.kind-result .lab-tag{color:#ffc94f}.kind-state .lab-tag{color:#ff4fd8}
 .kind-wait,.kind-robots,.kind-idle{color:#6b76a6}
 .lab-placeholder{color:#4c5680;font-style:italic}
 .lab-credit{margin:12px 0 0;font:11px ui-monospace,monospace;color:#6b76a6}

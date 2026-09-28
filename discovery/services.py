@@ -226,6 +226,11 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             if new_domain and run_state.new_domains + new_domain_count >= campaign.max_new_domains:
                 results.append(None)
                 continue
+            from leads.services.activity import emit
+            if noise or score < 0:
+                emit("filtered", f"{url}: {noise or 'negative score'}", lane="approval", url=url)
+            elif not source:
+                emit("pending", f"New candidate {url} (score {score})", lane="approval", url=url)
             candidate = DiscoveredURL.objects.create(
                 campaign=campaign, first_run=run_state, url=url, origin=item_origin,
                 label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
@@ -579,6 +584,10 @@ def pause_for_source(source, message="A source used by this campaign was paused 
 def approve(candidate, source):
     if not source.approved or not in_scope(source, candidate.url):
         raise ValueError("Choose a reviewed source whose approved scope contains this exact URL.")
+    from leads.services.activity import emit
+    emit("approved", f"Operator approved {candidate.url} under source {source.name or source.url}"
+         + (" -> site setup" if source.setup_mode == "automatic" else " -> collector"), lane="approval",
+         url=candidate.url, by="operator")
     candidate.campaign.sources.add(source)
     if source.setup_mode == "automatic":
         from automation.services import start_setup

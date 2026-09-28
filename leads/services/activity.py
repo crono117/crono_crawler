@@ -1,8 +1,8 @@
 """A bounded, local activity feed of what the worker is doing, for the Lab console view.
 
 The worker appends one JSON line per step (lane switch, request, result) to a file in DATA_DIR;
-the web process only reads it. Lines carry URLs, statuses, timings and job messages (counts),
-never names, emails or phone numbers. Writing is best-effort: it can never fail worker work.
+the web process reads it and adds only operator review decisions (approve/dismiss). Lines carry
+URLs, statuses, timings and job messages (counts), never names, emails or phone numbers. Writing is best-effort: it can never fail worker work.
 """
 from contextlib import contextmanager
 import contextvars
@@ -14,7 +14,7 @@ import time
 
 from django.conf import settings
 
-LANES = ("collector", "discovery", "automation", "jev")
+LANES = ("discovery", "approval", "automation", "collector", "jev")
 MAX_BYTES = 1_000_000
 _lane = contextvars.ContextVar("activity_lane", default="worker")
 _lock = threading.Lock()

@@ -13,26 +13,30 @@
   var SHOW_FOOTPRINTS = /[?&]footprints=1/.test(window.location.search);
 
   // The room is a grid of 48px tiles. Rows 0-1 are wall; bots walk on rows 2-7.
-  var T = 48, COLS = 20, ROWS = 8, W = COLS * T, H = ROWS * T, STEP_MS = 170;
+  var T = 48, COLS = 22, ROWS = 8, W = COLS * T, H = ROWS * T, STEP_MS = 170;
+  // Stations in pipeline order: discovery finds links, approval gates them, site setup teaches the
+  // collector to read a new site, the collector gathers leads, and Jev optionally judges pages.
   var LANES = [
-    {key: "collector",  label: "COLLECTOR",  color: 0x39ff9f, css: "#39ff9f", col: 3},
-    {key: "discovery",  label: "DISCOVERY",  color: 0x3fd4ff, css: "#3fd4ff", col: 7},
-    {key: "automation", label: "SITE SETUP", color: 0xff4fd8, css: "#ff4fd8", col: 11},
-    {key: "jev",        label: "JEV JUDGE",  color: 0xffc94f, css: "#ffc94f", col: 15}
+    {key: "discovery",  label: "DISCOVERY",  color: 0x3fd4ff, css: "#3fd4ff", col: 2},
+    {key: "approval",   label: "APPROVAL",   color: 0xff8a3d, css: "#ff8a3d", col: 6},
+    {key: "automation", label: "SITE SETUP", color: 0xff4fd8, css: "#ff4fd8", col: 10},
+    {key: "collector",  label: "COLLECTOR",  color: 0x39ff9f, css: "#39ff9f", col: 14},
+    {key: "jev",        label: "JEV JUDGE",  color: 0xffc94f, css: "#ffc94f", col: 18}
   ];
   var LANE = {};
   LANES.forEach(function(l){ l.x = l.col * T + T / 2; LANE[l.key] = l; });
-  var DESK_ROW = 3, SEAT_ROW = 4, DOOR_TILE = {col: 18, row: 2};
+  var DESK_ROW = 3, SEAT_ROW = 4, DOOR_TILE = {col: 20, row: 2};
   var DESK_Y = DESK_ROW * T + 20;
-  var DOOR = {x: DOOR_TILE.col * T + T / 2, y: 58}, RACK = {x: 18 * T + T / 2, y: 6 * T}, BOARD = {x: 72, y: 50};
-  var PROPS = [[0, 6, "plant"], [2, 7, "crate"], [9, 7, "crate"], [13, 7, "bin"]];
+  var DOOR = {x: DOOR_TILE.col * T + T / 2, y: 58}, RACK = {x: W - 34, y: 6 * T}, BOARD = {x: 6 * T + T / 2, y: 50};
+  var BIN_TILE = {col: 7, row: 6};  // where filtered links are dropped, next to the approval desk
+  var PROPS = [[0, 6, "plant"], [2, 7, "crate"], [BIN_TILE.col, BIN_TILE.row, "bin"], [12, 7, "crate"], [17, 7, "crate"]];
 
   // Blocked tiles: walls, each desk (three tiles wide), the rack and the props.
   var blocked = {};
   function block(col, row){ blocked[col + "," + row] = true; }
   for (var c0 = 0; c0 < COLS; c0++){ block(c0, 0); block(c0, 1); }
   LANES.forEach(function(l){ block(l.col - 1, DESK_ROW); block(l.col, DESK_ROW); block(l.col + 1, DESK_ROW); });
-  block(18, 5); block(18, 6);
+  block(21, 5); block(21, 6);
   PROPS.forEach(function(p){ block(p[0], p[1]); });
   function isBlocked(col, row){ return col < 0 || row < 0 || col >= COLS || row >= ROWS || blocked[col + "," + row]; }
   function tileFeet(col, row){ return {x: col * T + T / 2, y: row * T + T - 4}; }
@@ -100,7 +104,10 @@
   // Header: what is waiting and when it unlocks. Body placeholder until the lane records activity.
   function describeQueue(c, q){
     var text, why;
-    if (q.note){
+    if (q.label){
+      text = q.label;
+      why = q.why || q.label;
+    } else if (q.note){
       text = why = q.note;
     } else if (!q.queued){
       text = "queue empty";
@@ -365,6 +372,16 @@
     }});
   }
 
+  function flyToken(from, to, color, then){
+    var token = scene.add.rectangle(from.x, from.y - 30, 10, 12, color).setStrokeStyle(1, 0xffffff, 0.6).setDepth(2500);
+    scene.tweens.add({targets: token, x: to.x, y: to.y, duration: 650, ease: "Sine.easeInOut",
+      onComplete: function(){ token.destroy(); then && then(); }});
+  }
+  // An approved source travels as a ticket from the approval desk to the next station.
+  function handOff(from, to, color, then){
+    flyToken(from.sprite, {x: to.sprite.x, y: to.sprite.y - 30}, color, then);
+  }
+
   function toRack(from, count){
     for (var i = 0; i < Math.min(count, 8); i++){
       (function(delay){
@@ -399,6 +416,24 @@
       case "pick":
         say(w, "▶ " + e.text, w.lane.css);
         scene.tweens.add({targets: w.sprite, y: "-=6", yoyo: true, duration: 140, onComplete: done});
+        return;
+      case "approved":
+        say(w, "✓ approved" + (e.by === "operator" ? " by you" : " by policy"), "#ffc08a");
+        var next = /collector/.test(e.text) ? workers.collector : workers.automation;
+        handOff(w, next || w, w.lane.color, function(){ if (next) wake(next); });
+        scene.time.delayedCall(hurry ? 150 : 700, done);
+        return;
+      case "filtered":
+      case "dismissed":
+        say(w, (e.kind === "dismissed" ? "✗ dismissed" : "✗ filtered: ") + (e.kind === "filtered" ? e.text.split(": ").pop() : ""), "#8c9ac2", 1600);
+        var bin = tileFeet(BIN_TILE.col, BIN_TILE.row);
+        flyToken(w.sprite, {x: bin.x, y: bin.y - 20}, 0x5b6690);
+        scene.time.delayedCall(hurry ? 80 : 450, done);
+        return;
+      case "pending":
+        say(w, "? needs your review", "#ffc94f", 1600);
+        flyToken(w.sprite, {x: BOARD.x, y: BOARD.y}, 0xffc94f);
+        scene.time.delayedCall(hurry ? 80 : 450, done);
         return;
       case "result":
         say(w, e.contacts ? "★ " + e.contacts + " contact(s)" : "done", e.contacts ? "#9dffcf" : "#c8cfe8");

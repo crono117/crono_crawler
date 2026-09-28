@@ -102,6 +102,9 @@ def candidate_detail(request, pk):
         if action in ("dismiss", "dismiss_origin"):
             targets = DiscoveredURL.objects.filter(pk=pk) if action == "dismiss" else candidate.campaign.urls.filter(origin=candidate.origin)
             targets.update(decision="dismissed", dismissal_scope="origin" if action == "dismiss_origin" else "url")
+            from leads.services.activity import emit
+            emit("dismissed", f"Operator dismissed {candidate.origin if action == 'dismiss_origin' else candidate.url}",
+                 lane="approval", url=candidate.url, by="operator")
             messages.success(request, "Dismissed. Queued requests for these URLs will be skipped.")
             return redirect("discovery:candidates")
         if action == "approve" and form.is_valid():

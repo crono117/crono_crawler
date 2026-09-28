@@ -175,10 +175,12 @@ def collect_links(source, job, html, base_url):
                 from discovery.ranking import noise_reason
                 noisy = noise_reason(candidate)
                 # Page chrome (share buttons, file shares, logins...) is kept as dismissed, not queued.
-                SourceCandidate.objects.get_or_create(url=candidate, defaults={
+                _, created = SourceCandidate.objects.get_or_create(url=candidate, defaults={
                     "label": label, "discovered_from": source, "evidence_url": base_url,
                     "status": "dismissed" if noisy else "new",
                 })
+                if created and noisy:
+                    activity.emit("filtered", f"{candidate}: {noisy}", lane="approval", url=candidate)
                 if not noisy:
                     external.append((candidate, label))
     # Team/profile/contact links claim the page allowance first; ties keep document order.

@@ -57,7 +57,38 @@ class ActivityFeedTests(TestCase):
         activity.emit("result", "https://fictional.example.test/team: 2 contact(s).", lane="collector", contacts=2)
         data = json.loads(self.client.get("/automation/lab/feed/?after=0").content)
         self.assertEqual(data["entries"][-1]["contacts"], 2)
-        self.assertEqual(set(data["queues"]), {"collector", "discovery", "automation", "jev"})
+        self.assertEqual(set(data["queues"]), {"discovery", "approval", "automation", "collector", "jev"})
         self.assertEqual(data["queues"]["collector"], {"queued": 0, "ready": 0, "next_at": None})
         self.assertEqual(data["review"], {"worth_a_look": 0, "low_signal": 0, "auto_filtered": 0})
         self.assertEqual(json.loads(self.client.get("/automation/lab/feed/?after=nonsense").content)["entries"][-1]["lane"], "collector")
+
+
+from automation.tests.test_pipeline import AutomationCase
+
+
+class ApprovalActivityTests(AutomationCase):
+    def setUp(self):
+        super().setUp()
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        overrides = override_settings(ACTIVITY_LOG=str(Path(folder.name) / "activity.jsonl"))
+        overrides.enable()
+        self.addCleanup(overrides.disable)
+
+    def test_policy_approvals_filters_and_operator_dismissals_reach_the_approval_lane(self):
+        from discovery.models import DiscoveredURL
+        from discovery.services import register
+        self.candidate()  # policy-approvable team page
+        register(self.run, "https://drive.google.com/file/d/fictional/view", label="Sales deck")
+        pending = register(self.run, "https://unscored.example.org/", label="")
+        self.client.force_login(get_user_model().objects.create_user("approval-operator", is_staff=True))
+        self.client.post(f"/discovery/candidates/{pending.pk}/", {"action": "dismiss"})
+        approval = [e for e in activity.read() if e["lane"] == "approval"]
+        kinds = [e["kind"] for e in approval]
+        self.assertIn("approved", kinds)
+        self.assertEqual(next(e for e in approval if e["kind"] == "approved")["by"], "policy")
+        self.assertIn("filtered", kinds)
+        self.assertIn("pending", kinds)
+        self.assertEqual(DiscoveredURL.objects.get(pk=pending.pk).decision, "dismissed")
+        self.assertEqual(approval[-1]["kind"], "dismissed")
+        self.assertEqual(approval[-1]["by"], "operator")

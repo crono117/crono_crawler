@@ -94,6 +94,9 @@ def consider(candidate):
     campaign.sources.add(source)
     from .services import start_setup
     job = start_setup(source, campaign)
+    from leads.services.activity import emit
+    emit("approved", f"Policy approved {candidate.url} (score {score}) -> site setup #{job.pk}", lane="approval",
+         url=candidate.url, by="policy")
     for sibling in campaign.urls.filter(origin=origin(source.url), decision="pending", manual_review_required=False):
         if in_scope(source, sibling.url):
             sibling.source, sibling.decision = source, "approved"

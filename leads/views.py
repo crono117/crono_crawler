@@ -187,4 +187,6 @@ def candidate_dismiss(request, pk):
     candidate = get_object_or_404(SourceCandidate, pk=pk)
     candidate.status = "dismissed"
     candidate.save()
+    from leads.services.activity import emit
+    emit("dismissed", f"Operator dismissed collector link {candidate.url}", lane="approval", url=candidate.url, by="operator")
     return redirect("candidates")

@@ -211,13 +211,19 @@ def lab_feed(request):
         next_at = items.filter(available_at__gt=now).order_by("available_at").values_list("available_at", flat=True).first()
         queues[lane] = {"queued": items.count(), "ready": items.filter(available_at__lte=now).count(),
                         "next_at": next_at.timestamp() if next_at else None}
+    review = review_breakdown()
+    queues["approval"] = {"queued": review["worth_a_look"] + review["low_signal"], "ready": review["worth_a_look"],
+                          "next_at": None,
+                          "label": f"{review['worth_a_look']} need your review · {review['low_signal']} low-signal",
+                          "why": f"Policy approves qualifying links automatically; {review['worth_a_look']} link(s) "
+                                 f"need your review and {review['auto_filtered']} were filtered out."}
     if settings.JEV_MODE == "off":
         queues["jev"]["note"] = "Jev is off (JEV_MODE=off)."
     return JsonResponse({
         "entries": entries,
         "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),
         "queues": queues,
-        "review": review_breakdown(),
+        "review": review,
         "review_href": reverse("discovery:candidates"),
         "server_time": now.timestamp(),
     })
