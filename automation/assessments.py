@@ -44,7 +44,7 @@ def build(source, page_stats, page_metadata):
     pages, totals = [], {"people_named": 0, "people_titled": 0, "sales_titled": 0,
                          "people_with_any_contact": 0, "contacts_accepted": 0,
                          "site_email_links": 0, "site_phone_links": 0}
-    rejections, frameworks, packs, js_heavy = {}, set(), set(), False
+    rejections, frameworks, packs, js_heavy, protected = {}, set(), set(), False, 0
     for url in dict.fromkeys(list(page_metadata) + list(page_stats)):
         stats, meta = page_stats.get(url, {}), page_metadata.get(url, {})
         signals = stats.get("signals", {})
@@ -67,6 +67,7 @@ def build(source, page_stats, page_metadata):
         frameworks.update(h for h in meta.get("framework_hints", []) if h != "unknown HTML")
         packs.update(meta.get("recipe_pack_hints", []))
         js_heavy = js_heavy or bool(meta.get("javascript_heavy_hint"))
+        protected += mechanisms.get("protected_emails", 0)
     # Titles are unknown (not zero) for stats recorded before titled was tracked.
     titles_known = all(page["titled"] is not None for page in pages if page["matched_cards"])
 
@@ -106,6 +107,11 @@ def build(source, page_stats, page_metadata):
             # letting an operator confirm the source site's own company as the employer.
             reasons.append("structured_people_without_employer")
             options.append("operator_confirmed_employer")
+        if rejections.get("placeholder_name") or rejections.get("placeholder_contact"):
+            reasons.append("placeholder_or_decoy_contacts")
+        if protected:
+            # The site hides emails from crawlers on purpose; respected, not decoded.
+            reasons.append("emails_hidden_by_protection")
         if rejections.get("ambiguous_container"):
             reasons.append("ambiguous_card_layout")
         if not named and site_contacts:
@@ -122,6 +128,7 @@ def build(source, page_stats, page_metadata):
                f"site shows {totals['site_email_links']} email and {totals['site_phone_links']} phone link(s) "
                f"across {len(pages)} page(s): {', '.join(sorted(kinds)) or 'none'}.")
     facts = {"pages": pages, "totals": totals, "titles_known": titles_known, "rejections": rejections,
+             "protected_emails": protected,
              "frameworks": sorted(frameworks), "recipe_pack_hints": sorted(packs), "javascript_heavy": js_heavy}
     return outcome, reasons, options, facts, summary[:500]
 

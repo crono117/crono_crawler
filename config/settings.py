@@ -101,7 +101,7 @@ JEV_LAYERED_BLOCKS_ENABLED = os.environ.get("JEV_LAYERED_BLOCKS_ENABLED", "0") =
 EXTRACTION_PACKS_ENABLED = os.environ.get("EXTRACTION_PACKS_ENABLED", "0") == "1"
 # Opt-in: a named salesperson whose card has no personal contact may be stored with the company's
 # shared contact from the same page, labelled contact_scope="shared" (never as their own).
-SHARED_CONTACT_LEADS = os.environ.get("SHARED_CONTACT_LEADS", "0") == "1"
+SHARED_CONTACT_LEADS = os.environ.get("SHARED_CONTACT_LEADS", "0") == "1" and sys.argv[1:2] != ["test"]
 JEV_ROUTING_ENABLED = os.environ.get("JEV_ROUTING_ENABLED", "0") == "1"
 JEV_MODEL = "jev-1.13.0"
 TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")

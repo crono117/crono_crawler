@@ -60,3 +60,18 @@ class SharedContactLeadTests(SimpleTestCase):
         records, _ = extract(page(CARDS), self.source)
         shared = [r for r in records if r["contact_scope"] == "shared"]
         self.assertEqual([(r["name"], r["email"]) for r in shared], [("Alex Fictional", "info@fictional.example.org")])
+
+
+class DecoyAssessmentTests(SimpleTestCase):
+    def test_placeholder_rejections_and_protected_emails_become_assessment_reasons(self):
+        from automation.assessments import build
+        source = Source(name="Fictional", url="https://www.fictional-payments.com/team/")
+        url = "https://www.fictional-payments.com/team/"
+        stats = {url: {"row": ".team-member", "matched_cards": 3, "accepted_records": 0,
+                       "primary_rejections": {"placeholder_contact": 2, "placeholder_name": 1},
+                       "signals": {"name": 3, "titled": 3, "role": 3, "contact": 3}}}
+        meta = {url: {"contact_mechanisms": {"mailto": 0, "tel": 0, "protected_emails": 4}}}
+        _, reasons, options, facts, _ = build(source, stats, meta)
+        self.assertIn("placeholder_or_decoy_contacts", reasons)
+        self.assertIn("emails_hidden_by_protection", reasons)
+        self.assertEqual(facts["protected_emails"], 4)

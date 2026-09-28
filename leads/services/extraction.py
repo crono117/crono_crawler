@@ -81,6 +81,76 @@ EMAIL = re.compile(r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I
 PHONE = re.compile(r'(?<!\w)(?:\+\d[\d ().-]{6,20}\d|\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4})(?!\w)')
 GENERIC = {"info", "sales", "contact", "hello", "support", "office", "admin", "team", "enquiries", "inquiries"}
 
+# Placeholder, template and decoy contacts: theme demo content ("John Doe", email@yourdomain.com,
+# 123-456-7890), framework artifacts that look like emails (logo@2x.png, Sentry/Wix addresses) and
+# reserved example values. None of these is ever a real person's contact.
+RESERVED_HOSTS = ("example.com", "example.org", "example.net")
+RESERVED_SUFFIXES = (".example", ".test", ".invalid", ".localhost", ".local")
+PLACEHOLDER_EMAIL_DOMAINS = ("domain.com", "yourdomain.com", "yoursite.com", "yourcompany.com", "yourwebsite.com",
+                             "mydomain.com", "mysite.com", "company.com", "website.com", "sample.com", "email.com",
+                             "test.com", "wixpress.com", "sentry.io", "sentry-cdn.com")
+PLACEHOLDER_EMAIL_LOCALS = {"yourname", "your.name", "your_name", "name", "email", "youremail", "your.email", "user",
+                            "username", "john.doe", "johndoe", "jane.doe", "janedoe", "firstname.lastname",
+                            "first.last", "firstlast", "someone", "example", "test", "noreply", "no-reply",
+                            "donotreply", "do-not-reply"}
+FILE_TLDS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "bmp", "ico", "tif", "tiff", "css", "js", "pdf"}
+PLACEHOLDER_NAME = re.compile(
+    r"^(?:john|jane)\s+doe$|^(?:your|full|first|last|member|staff|employee|agent|person|sample|team|contact|user|"
+    r"person's)\s+(?:name|member)$|^first\s*name\s+last\s*name$|^name\s+(?:surname|lastname|last name)$|"
+    r"^lorem\s+ipsum|^(?:test|demo)\s+(?:user|person|name)$|^first\s+last$", re.I)
+
+
+def real_site(source):
+    """A source on a real, named host. Fixture/demo sources (reserved or missing hosts) legitimately
+    use reserved example values, so those rules only apply to real sites."""
+    host = urlsplit(getattr(source, "url", "") or "").hostname if source is not None else None
+    return bool(host) and not reserved_host(host)
+
+
+def reserved_host(host):
+    host = (host or "").lower().rstrip(".")
+    return host in RESERVED_HOSTS or host.endswith(tuple("." + h for h in RESERVED_HOSTS) + RESERVED_SUFFIXES)
+
+
+def placeholder_email(email, source=None):
+    """Why an email is a template/framework/decoy value, or ""."""
+    local, _, domain = email.lower().rpartition("@")
+    if domain.rsplit(".", 1)[-1] in FILE_TLDS:
+        return "file name, not an email"
+    if any(domain == d or domain.endswith("." + d) for d in PLACEHOLDER_EMAIL_DOMAINS):
+        return "placeholder or framework domain"
+    if local in PLACEHOLDER_EMAIL_LOCALS:
+        return "placeholder mailbox name"
+    # Fixture sites legitimately use reserved example domains; on a real site they are placeholders.
+    if reserved_host(domain) and real_site(source):
+        return "reserved example domain"
+    return ""
+
+
+def placeholder_phone(phone, source=None):
+    """Why a phone number is a template value, or ""."""
+    digits = re.sub(r"\D", "", phone)
+    national = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+    if len(set(national)) <= 1:
+        return "repeated digits"
+    if national in ("1234567890", "0123456789", "9876543210", "1234567", "12345678", "123456789"):
+        return "sequential digits"
+    if len(national) == 10 and national[3:6] == "555" and (national[6:8] == "01" or national[6:] == "5555"):
+        # 555-0100..0199 and 555-5555 are reserved for fiction; fixture sites use them on purpose.
+        if real_site(source):
+            return "reserved fictional number"
+    return ""
+
+
+def hidden_node(node):
+    """Honeypot guard: elements hidden from human visitors (hidden attribute, inline display:none or
+    visibility:hidden). Contacts inside them are traps for crawlers, not published details."""
+    if node.has_attr("hidden"):
+        return True
+    style = re.sub(r"\s+", "", (node.get("style") or "").lower())
+    return "display:none" in style or "visibility:hidden" in style
+
+
 def normalize(text):
     return " ".join(str(text or "").split())
 
@@ -91,6 +161,9 @@ def soup_for(html):
     soup = BeautifulSoup(html, "html.parser")
     for node in soup(["script", "style", "noscript", "template"]):
         node.decompose()
+    for node in [node for node in soup.find_all(True) if hidden_node(node)]:
+        if not node.decomposed:
+            node.decompose()
     return soup
 
 def page_text(html):
@@ -179,16 +252,16 @@ def shared_company_contact(soup, source):
     own = lambda email: email.rsplit("@", 1)[-1].lower().rstrip(".") in (bare, "www." + bare)
     page = contact_evidence(soup)
     for email in EMAIL.findall(page):
-        if email.split("@")[0].lower() in GENERIC and own(email):
+        if email.split("@")[0].lower() in GENERIC and own(email) and not placeholder_email(email, source):
             return "email", email.lower(), "company inbox on this page"
     chrome = " ".join(contact_evidence(node) for node in soup.select(
         "header, footer, nav, [role=navigation], [role=contentinfo]"))
     for email in EMAIL.findall(chrome):
-        if own(email):
+        if own(email) and not placeholder_email(email, source):
             return "email", email.lower(), "page header/footer"
-    phones = PHONE.findall(chrome)
-    if phones:
-        return "phone", normalize(phones[0]), "page header/footer"
+    for phone in PHONE.findall(chrome):
+        if not placeholder_phone(phone, source):
+            return "phone", normalize(phone), "page header/footer"
     return None
 
 def shared_contact_lead(fields, evidence, shared, source):
@@ -271,6 +344,8 @@ def validate_record(record, evidence, source, diagnostics=None):
         return rejected(diagnostics, "invalid_name")
     if name.casefold() not in evidence.casefold() or name.casefold() in {"contact us", "sales team", "our team", "learn more"}:
         return rejected(diagnostics, "name_without_evidence")
+    if PLACEHOLDER_NAME.search(name) or "lorem ipsum" in evidence.casefold():
+        return rejected(diagnostics, "placeholder_name")
     email = normalize(record.get("email"))[:254]
     phone = normalize(record.get("phone"))[:80]
     selected_contact = bool(email or phone)
@@ -280,8 +355,14 @@ def validate_record(record, evidence, source, diagnostics=None):
     digits = re.sub(r"\D", "", phone)
     if phone and (not 7 <= len(digits) <= 15 or not re.search(r"(?<!\d)" + re.escape(phone) + r"(?!\d)", evidence, re.I)):
         phone = ""
+    placeholder = bool((email and placeholder_email(email, source)) or (phone and placeholder_phone(phone, source)))
+    if email and placeholder_email(email, source):
+        email = ""
+    if phone and placeholder_phone(phone, source):
+        phone = ""
     if not email and not phone:
-        return rejected(diagnostics, "contact_without_evidence" if selected_contact else "missing_contact")
+        return rejected(diagnostics, "placeholder_contact" if placeholder else
+                        "contact_without_evidence" if selected_contact else "missing_contact")
     title = normalize(record.get("title"))[:200]
     if title.casefold() not in evidence.casefold():
         title = ""
