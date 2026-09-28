@@ -4,7 +4,7 @@
 <section class="lab">
   <div class="lab-bar">
     <span class="lab-title">NEO LAB — CRAWLER FLOOR</span>
-    <span class="lab-status"><i class="lab-dot" id="lab-online"></i><span>Worker…</span> · approvals pending <strong id="lab-approvals">–</strong></span>
+    <span class="lab-status"><i class="lab-dot" id="lab-online"></i><span>Worker…</span> · <a id="lab-review" href="#" title="Discovered links waiting for an operator decision">needs your review <strong id="lab-approvals">–</strong></a> <span id="lab-review-rest"></span></span>
   </div>
   {% if not activity_enabled %}<div class="notice">The activity feed is off (ACTIVITY_LOG). The room and consoles stay empty until it is enabled and the worker restarts.</div>{% endif %}
   <div id="lab-phaser" data-feed-url="{% url 'automation:lab_feed' %}" data-crew="{% static 'sprites/crew.png' %}"></div>
@@ -28,6 +28,8 @@
 .lab-title{color:#ff4fd8;text-shadow:0 0 6px #ff4fd855}
 .lab-status{display:flex;align-items:center;gap:8px;letter-spacing:.4px}
 .lab-status strong{color:#ffc94f}
+.lab-status a{color:inherit;text-decoration:none;border-bottom:1px dotted #6b76a6}
+#lab-review-rest{color:#6b76a6}
 .lab-dot{width:8px;height:8px;border-radius:50%;background:#3a3f5c;display:inline-block;flex:none}
 .lab-dot.online{background:var(--lane,#39ff9f);box-shadow:0 0 8px var(--lane,#39ff9f)}
 #lab-online.online{background:#39ff9f;box-shadow:0 0 8px #39ff9f}

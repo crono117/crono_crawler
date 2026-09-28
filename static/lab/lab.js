@@ -249,7 +249,7 @@
       g.fillStyle(0x10203a, 1).fillRect(BOARD.x - 48, BOARD.y - 28, 96, 56);
       g.lineStyle(2, 0xffc94f, 1).strokeRect(BOARD.x - 48, BOARD.y - 28, 96, 56);
     }
-    label(BOARD.x, BOARD.y - 38, "APPROVAL QUEUE", "#ffc94f");
+    label(BOARD.x, BOARD.y - 38, "NEEDS REVIEW", "#ffc94f");
     boardText = scene.add.text(BOARD.x, BOARD.y, "–", mono(22, "#ffe7a8")).setOrigin(0.5);
 
     // Server rack (the database) where accepted contacts land
@@ -457,7 +457,8 @@
   }
 
   // ---------- polling ----------
-  var after = 0, first = true, idleNote = null, onlineEl = document.getElementById("lab-online"), approvalsEl = document.getElementById("lab-approvals");
+  var after = 0, first = true, idleNote = null, onlineEl = document.getElementById("lab-online"), approvalsEl = document.getElementById("lab-approvals"),
+      reviewLink = document.getElementById("lab-review"), reviewRest = document.getElementById("lab-review-rest");
 
   function poll(){
     fetch(feedUrl + "?after=" + after, {headers: {"Accept": "application/json"}, credentials: "same-origin"})
@@ -465,8 +466,11 @@
       .then(function(data){
         onlineEl.classList.toggle("online", data.worker_online);
         onlineEl.nextElementSibling.textContent = data.worker_online ? "Worker online" : "Worker offline";
-        approvalsEl.textContent = data.approvals;
-        boardText.setText(String(data.approvals));
+        var review = data.review;
+        approvalsEl.textContent = review.worth_a_look;
+        reviewLink.href = data.review_href;
+        reviewRest.textContent = "(" + review.low_signal + " low-signal · " + review.auto_filtered + " auto-filtered)";
+        boardText.setText(String(review.worth_a_look));
         LANES.forEach(function(l){ describeQueue(consoles[l.key], data.queues[l.key]); });
         var now = Date.now() / 1000;
         data.entries.forEach(function(e){

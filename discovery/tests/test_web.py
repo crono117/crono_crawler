@@ -74,7 +74,9 @@ class DiscoveryWebTests(TestCase):
         run = start(self.campaign)
         product = register(run, DEMO_ORIGIN + "/products/team/", label="Sales team")
         social = register(run, "https://x.com/example", label="Merchant services sales team")
-        self.assertEqual(social.decision, "pending")
+        # Social profiles are page chrome: kept for the record but filtered out of review automatically.
+        self.assertEqual(social.decision, "dismissed")
+        self.assertIn("Filtered automatically: social profile or share link", social.reasons)
         response = self.client.post(reverse("discovery:edit", args=[self.campaign.pk]),
             self.data(add_contact_exclusions="on", min_score=35, exclusions="path:careers"))
         self.assertEqual(response.status_code, 302)
@@ -86,7 +88,7 @@ class DiscoveryWebTests(TestCase):
         social.refresh_from_db()
         self.assertLess(product.score, 0)
         self.assertLess(social.score, 0)
-        self.assertEqual(social.decision, "pending")
+        self.assertEqual(social.decision, "dismissed")
         self.assertIsNone(social.source)
         rerun = start(self.campaign)
         self.assertFalse(rerun.jobs.filter(candidate__in=[product, social]).exists())

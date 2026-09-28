@@ -244,7 +244,7 @@ class AutomationTests(AutomationCase):
         self.policy.require_page_intent = False
         self.policy.save(update_fields=["require_page_intent"])
         denied_candidate = register(self.run, "https://linkedin.com/", label="")
-        self.assertEqual(denied_candidate.decision, "pending")
+        self.assertEqual(denied_candidate.decision, "dismissed")
         self.policy.allow_homepage = False
         self.policy.save(update_fields=["allow_homepage"])
         out_of_scope_candidate = register(self.run, "https://other.example.org/", label="")

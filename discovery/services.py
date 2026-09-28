@@ -14,8 +14,8 @@ from leads.services.network import FetchError, Response, fetch, in_scope, origin
 from leads.services.storage import save_records, touch_unchanged
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, DiscoveryRun
 from .providers import BRAVE_ORIGIN, MAX_SITEMAP_BYTES, brave_search, search_ready, sitemap_entries
-from .ranking import (canonical_exact_start, clean_url, current_candidate_score, ordinary_page_eligible,
-                      rank, reviewed_sources)
+from .ranking import (canonical_exact_start, clean_url, current_candidate_score, noise_reason,
+                      ordinary_page_eligible, rank, reviewed_sources)
 from .yields import origin_yields as lookup_origin_yields, safe_origin
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,9 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
         score, reasons = current_candidate_score(
             campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
             explicit_start=exact_seed, origin_yields=origin_yields)
+        noise = None if source else noise_reason(url)
+        if noise:
+            reasons = list(reasons) + [f"Filtered automatically: {noise}"]
         manual = bool(company_job and not in_scope(company_job.source, url))
         if manual:
             from classification.models import Lineage
@@ -202,6 +205,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             duplicate_count += 1
             candidate.last_seen = timezone.now()
             candidate.score, candidate.reasons = score, reasons
+            if noise and candidate.decision == "pending":
+                candidate.decision = "dismissed"
             if label or context:
                 candidate.label, candidate.context = str(label)[:200], str(context)[:600]
             if found_on or query:
@@ -225,7 +230,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 campaign=campaign, first_run=run_state, url=url, origin=item_origin,
                 label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
                 search_query=query[:600], score=score, reasons=reasons, kind=kind,
-                decision="dismissed" if score < 0 else ("approved" if source else "pending"), source=source)
+                decision="dismissed" if score < 0 or noise else ("approved" if source else "pending"), source=source)
             candidates[url] = candidate
             known_origins.add(item_origin)
             inventory_count += 1

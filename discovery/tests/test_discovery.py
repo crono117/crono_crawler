@@ -876,6 +876,34 @@ class RankingAndProviderTests(TestCase):
         self.assertTrue(any("Industry" in reason for reason in reasons))
         self.assertLess(excluded, 0)
 
+    def test_noise_reason_flags_page_chrome_but_not_team_or_company_pages(self):
+        from discovery.ranking import noise_reason
+        noisy = {
+            "https://www.linkedin.com/shareArticle?mini=true&url=https://fictional.example.org/": "social profile or share link",
+            "https://fictional.example.org/sharer.php?u=x": "share button",
+            "https://drive.google.com/file/d/fictional/view": "document or file share",
+            "https://drive.goohttps//drive.google.com/file/d/fictional/view": "malformed link (URL pasted into another URL)",
+            "https://goo.gl/fictional": "link shortener",
+            "https://apps.apple.com/us/app/fictional": "app store listing",
+            "https://auth.fictional-broker.example.com/signup": "login or app screen",
+            "https://docs.fictional-broker.example.com/guide": "documentation or help site",
+            "https://cdn3.fictional-cdn.example.com/file": "CDN or asset host",
+            "https://fictional.example.org/application": "signup or application form",
+            "https://meetings.hubspot.com/fictional": "scheduling page",
+            "https://fictional.example.org/privacy-policy": "legal page",
+            "https://fictional.example.org/cdn-cgi/l/email-protection": "feed, sitemap or CDN helper",
+            "https://fictional.example.org/press-releases.rss": "feed, sitemap or CDN helper",
+            "https://events.fictional.example.org/sponsor": "help or sponsorship page",
+        }
+        for url, reason in noisy.items():
+            with self.subTest(url=url):
+                self.assertEqual(noise_reason(url), reason)
+        for url in ("https://fictional.example.org/team/", "https://www.fictional.example.org/about-us",
+                    "https://staticpayments.example.org/contact", "https://apply-merchant.example.org/our-reps",
+                    "https://www.appleton-pos.example.org/staff"):
+            with self.subTest(url=url):
+                self.assertIsNone(noise_reason(url))
+
     def test_url_canonicalization_preserves_useful_path_and_drops_tracking(self):
         self.assertEqual(clean_url("https://EXAMPLE.com/team/alex?page=2&utm_source=x#bio"), "https://example.com/team/alex?page=2")
         for url in ("http://127.0.0.1/", "http://[::1]/", "http://localhost/", "http://10.1.2.3/", "https://example.com/calendar/", "https://example.com/?sort=abc", "https://example.com/team/../private", "javascript:alert(1)", "http://saas/", "https://intranet/team"):

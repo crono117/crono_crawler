@@ -27,7 +27,51 @@ SOCIAL_HOSTS = ("facebook.com", "linkedin.com", "x.com", "twitter.com", "instagr
                 "youtube.com", "reddit.com", "bsky.app")
 DOCUMENT_HOSTS = ("docs.google.com", "drive.google.com", "dropbox.com", "box.com", "docsend.com",
                   "slideshare.net", "scribd.com", "notion.site", "notion.so")
-SCHEDULING_HOSTS = ("calendly.com", "cal.com", "acuityscheduling.com", "calendar.google.com")
+SCHEDULING_HOSTS = ("calendly.com", "cal.com", "acuityscheduling.com", "calendar.google.com", "meetings.hubspot.com")
+
+# Outbound links that are page chrome, not candidate sources. They are recorded as automatically
+# dismissed with the reason (never silently dropped) and never reach the review queue.
+NOISE_HOSTS = (
+    ("social profile or share link", SOCIAL_HOSTS + ("pinterest.com", "threads.net")),
+    ("document or file share", DOCUMENT_HOSTS),
+    ("scheduling page", SCHEDULING_HOSTS),
+    ("link shortener", ("goo.gl", "bit.ly", "t.co", "tinyurl.com", "ow.ly", "buff.ly", "lnkd.in",
+                        "rebrand.ly", "cutt.ly")),
+    ("app store listing", ("apps.apple.com", "itunes.apple.com", "play.google.com", "chromewebstore.google.com")),
+    ("review or event platform", ("trustpilot.com", "g2.com", "capterra.com", "luma.com", "eventbrite.com",
+                                  "meetup.com")),
+    ("policy page", ("policies.google.com",)),
+)
+NOISE_SUBDOMAINS = (("login or app screen", ("auth", "login", "accounts", "sso", "signin", "dash", "dashboard", "app")),
+                    ("documentation or help site", ("docs", "help", "support", "developers")),
+                    ("CDN or asset host", ("cdn", "static", "assets")))
+NOISE_PATH = (
+    ("share button", re.compile(r"/(?:sharer(?:\.php)?|share|sharearticle|intent/(?:tweet|post))(?:/|$)", re.I)),
+    ("signup or application form", re.compile(r"/(?:signup|sign-up|register|registration|apply|application)(?:/|$)", re.I)),
+    ("legal page", re.compile(r"/(?:privacy(?:-policy)?|terms(?:-of-service|-of-use)?|legal|cookies?(?:-policy)?)(?:/|$)", re.I)),
+    ("feed, sitemap or CDN helper", re.compile(r"(?:\.(?:rss|atom)$|/(?:feed|rss|sitemap|cdn-cgi)(?:/|\.xml|$))", re.I)),
+    ("help or sponsorship page", re.compile(r"/(?:help|faq|sponsor|sponsors|sponsorship|pass-picker|tickets?)(?:/|$)", re.I)),
+)
+
+
+def noise_reason(url):
+    """Why an outbound link is page chrome rather than a candidate source, or None."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host.endswith(("http", "https")) or re.search(r"https?:?//", parsed.path):
+        return "malformed link (URL pasted into another URL)"
+    for reason, domains in NOISE_HOSTS:
+        if any(host == domain or host.endswith("." + domain) for domain in domains):
+            return reason
+    first = host.split(".")[0]
+    for reason, prefixes in NOISE_SUBDOMAINS:
+        if host.count(".") >= 2 and (first in prefixes or re.fullmatch(r"(?:%s)\d*|.*-cdn" % "|".join(prefixes), first)):
+            return reason
+    path = unquote(parsed.path)
+    for reason, pattern in NOISE_PATH:
+        if pattern.search(path):
+            return reason
+    return None
 
 
 def lines(text):

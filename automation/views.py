@@ -157,10 +157,30 @@ def lab(request):
                                                    "activity_enabled": bool(settings.ACTIVITY_LOG)})
 
 
+def review_breakdown():
+    """What waits for an operator: links whose page or label points at people (team, about, contact)
+    or that scored positively are worth a look; the rest are low signal. Auto-filtered page chrome
+    is kept for the record but never counted as waiting."""
+    from discovery.models import DiscoveredURL
+    from discovery.ranking import company_page_tier, direct_contact_page_intent
+    from leads.models import SourceCandidate
+
+    def promising(url, label, score=0):
+        return score > 0 or direct_contact_page_intent(url, label) or company_page_tier(url, label) is not None
+
+    waiting = ([promising(d.url, d.label, d.score) for d in DiscoveredURL.objects.filter(decision="pending")]
+               + [promising(c.url, c.label) for c in SourceCandidate.objects.filter(status="new")])
+    worth = sum(waiting)
+    filtered = (DiscoveredURL.objects.filter(decision="dismissed", dismissal_scope="").count()
+                + SourceCandidate.objects.filter(status="dismissed").count())
+    return {"worth_a_look": worth, "low_signal": len(waiting) - worth, "auto_filtered": filtered}
+
+
 @require_GET
 @staff_required
 def lab_feed(request):
     from datetime import timedelta
+    from django.urls import reverse
     from django.utils import timezone
     from classification.models import Evaluation
     from discovery.models import DiscoveredURL, DiscoveryJob
@@ -197,8 +217,8 @@ def lab_feed(request):
         "entries": entries,
         "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),
         "queues": queues,
-        "approvals": (SourceCandidate.objects.filter(status="new").count()
-                      + DiscoveredURL.objects.filter(decision="pending").count()),
+        "review": review_breakdown(),
+        "review_href": reverse("discovery:candidates"),
         "server_time": now.timestamp(),
     })
 

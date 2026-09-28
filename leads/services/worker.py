@@ -171,10 +171,15 @@ def collect_links(source, job, html, base_url):
             candidate = url
             if not Source.objects.filter(url=candidate).exists():
                 label = link.get_text(" ", strip=True)[:200]
+                from discovery.ranking import noise_reason
+                noisy = noise_reason(candidate)
+                # Page chrome (share buttons, file shares, logins...) is kept as dismissed, not queued.
                 SourceCandidate.objects.get_or_create(url=candidate, defaults={
                     "label": label, "discovered_from": source, "evidence_url": base_url,
+                    "status": "dismissed" if noisy else "new",
                 })
-                external.append((candidate, label))
+                if not noisy:
+                    external.append((candidate, label))
     # Team/profile/contact links claim the page allowance first; ties keep document order.
     for _, _, url in sorted(follow):
         if not remaining:

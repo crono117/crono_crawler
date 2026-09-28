@@ -106,3 +106,9 @@ Each run performs one result page (up to 20 results) per configured query, up to
 The adapter uses the [Brave Web Search API](https://api-dashboard.search.brave.com/api-reference/web/search/get), not its AI answer endpoint. It fixes the destination, disables redirects for API-key requests, bounds responses, and handles rate limits with persisted backoff. Keys stay in the environment and never appear in the dashboard. Both the campaign and shared daily cap must permit a request; failed attempts also count. This is a request cap, not a dollar-based billing limit.
 
 The optional search adapter has deterministic contract tests. No live paid API request or real lead-site crawl was performed in this workspace; validate a small real campaign on your desktop before relying on its yield.
+
+## Page-chrome filter
+
+Outbound links that are page chrome rather than candidate sources — social profiles and share buttons, document/file shares, scheduling pages, link shorteners, app-store listings, review/event platforms, login/app/docs/CDN subdomains, signup/application forms, legal pages, feeds/sitemaps/`cdn-cgi` helpers, help/sponsorship pages, and malformed URLs — are recorded as automatically dismissed with `Filtered automatically: <reason>` in their reasons (collector links as dismissed `SourceCandidate`s). They are kept for analysis but never enter the review queue. Single-label hostnames (e.g. a broken `href="http://saas"`) are rejected by `clean_url`. `manage.py refilter_discovery` applies the current rules to already-queued items (dry run unless `--apply`; no network requests) and withdraws a policy approval that was granted to a URL now considered invalid; operator approvals are left alone.
+
+The Crawler lab's counter splits waiting items into "needs your review" (positive score, or a team/about/contact page or label), low-signal, and auto-filtered.
