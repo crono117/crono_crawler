@@ -164,6 +164,24 @@ def lead_totals(Lead, since):
             "shared": real.filter(contact_scope="shared").count()}
 
 
+def recent_leads(Lead, limit=12):
+    """Newest real leads for the Lab's lead panel (staff-only page; read from the database, never
+    from the activity feed, which carries no names)."""
+    from urllib.parse import urlsplit
+    from django.urls import reverse
+    rows = []
+    real = (Lead.objects.exclude(observations__source__collector="demo").distinct()
+            .order_by("-first_seen", "-pk").prefetch_related("observations__source")[:limit])
+    for lead in real:
+        observation = next(iter(lead.observations.all()), None)
+        rows.append({"name": lead.name, "title": lead.title, "company": lead.company,
+                     "site": urlsplit(observation.source.url).hostname if observation else "",
+                     "scope": lead.get_contact_scope_display(), "shared": lead.contact_scope == "shared",
+                     "status": lead.get_status_display(), "found": lead.first_seen.timestamp(),
+                     "href": reverse("lead_detail", args=[lead.pk])})
+    return rows
+
+
 def review_breakdown():
     """What waits for an operator: links whose page or label points at people (team, about, contact)
     or that scored positively are worth a look; the rest are low signal. Auto-filtered page chrome
@@ -233,6 +251,7 @@ def lab_feed(request):
         "queues": queues,
         "review": review,
         "leads": lead_totals(Lead, now - timedelta(hours=24)),
+        "recent_leads": recent_leads(Lead),
         "review_href": reverse("discovery:candidates"),
         "server_time": now.timestamp(),
     })

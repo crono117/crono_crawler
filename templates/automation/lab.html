@@ -18,6 +18,7 @@
     <div class="lab-console" data-console="collector" style="--lane:#39ff9f"><header><i class="lab-dot"></i>COLLECTOR <span data-queue>–</span></header><pre></pre></div>
     <div class="lab-console" data-console="jev" style="--lane:#ffc94f"><header><i class="lab-dot"></i>JEV JUDGE <span data-queue>–</span></header><pre></pre></div>
   </div>
+  <section class="lab-console lab-leads" style="--lane:#39ff9f"><header><i class="lab-dot online"></i>LATEST LEADS <span id="lab-leads-count">–</span> <a href="{% url 'leads' %}">open lead database →</a></header><ol id="lab-leads"><li class="lab-placeholder">No leads yet.</li></ol></section>
   <details class="lab-console lab-all" data-console="worker" style="--lane:#8c9ac2"><summary>ALL LANES — raw worker feed</summary><pre></pre></details>
 
   <p class="lab-credit">{% if tileset_sheets %}Tiles: “Neo Zero – Cyberpunk City Tileset” by Yanin Yunus (itch.io), installed locally, not redistributed.{% else %}Drawn fallback art. To use the Neo Zero tileset, download it from itch.io and unzip it into <code>static/local_assets/neo-zero/</code> (git-ignored; its license forbids redistribution).{% endif %} {% if robot_sheets %}Robots: sci-fi robots 16×16 top-down pack (GameDev Market), installed locally, not redistributed.{% else %}Crew sprite: Kenney 1-bit pack (CC0); put the GameDev Market sci-fi robot sheets in <code>static/local_assets/robots/</code> to use them.{% endif %} Engine: Phaser 3 (MIT).</p>
@@ -47,6 +48,13 @@
 .kind-pick .lab-tag{color:#3fd4ff}.kind-leads{color:#9dffcf}.kind-leads .lab-tag{color:#39ff9f;font-weight:bold}.kind-approved .lab-tag{color:#ff8a3d}.kind-pending .lab-tag{color:#ffc94f}.kind-filtered,.kind-dismissed{color:#6b76a6}.kind-result .lab-tag{color:#ffc94f}.kind-state .lab-tag{color:#ff4fd8}
 .kind-wait,.kind-robots,.kind-idle{color:#6b76a6}
 .lab-placeholder{color:#4c5680;font-style:italic}
+.lab-leads{margin-top:12px}.lab-leads header a{color:#9dffcf;text-decoration:none;margin-left:12px}
+.lab-leads ol{list-style:none;margin:0;padding:6px 10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:6px;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.lab-leads li a{display:block;padding:8px 10px;border:1px solid #1f2a4d;border-radius:6px;color:#e8ecff;text-decoration:none;background:#070b18}
+.lab-leads li a:hover{border-color:#39ff9f}
+.lab-leads .who{color:#9dffcf;font-weight:bold}.lab-leads .meta{color:#8c9ac2;display:block}
+.lab-leads .scope{float:right;font-size:10px;padding:1px 6px;border-radius:8px;border:1px solid #39ff9f;color:#39ff9f}
+.lab-leads .scope.shared{border-color:#ffc94f;color:#ffc94f}
 .lab-credit{margin:12px 0 0;font:11px ui-monospace,monospace;color:#6b76a6}
 .lab-credit code{color:#cfd6f2;background:#141a33;padding:1px 4px;border-radius:3px}
 @media (max-width:640px){.lab{padding:12px}.lab-bar{flex-direction:column;align-items:flex-start;gap:8px}}

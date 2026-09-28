@@ -61,6 +61,7 @@ class ActivityFeedTests(TestCase):
         self.assertEqual(data["queues"]["collector"], {"queued": 0, "ready": 0, "next_at": None})
         self.assertEqual(data["review"], {"worth_a_look": 0, "low_signal": 0, "auto_filtered": 0})
         self.assertEqual(data["leads"], {"total": 0, "today": 0, "shared": 0})
+        self.assertEqual(data["recent_leads"], [])
         self.assertEqual(json.loads(self.client.get("/automation/lab/feed/?after=nonsense").content)["entries"][-1]["lane"], "collector")
 
 
@@ -128,3 +129,16 @@ class LeadEventTests(TestCase):
         recent = activity.recent_by_lane(per_lane=40)
         self.assertIn("setup moved", [e["text"] for e in recent])
         self.assertEqual(sum(e["lane"] == "discovery" for e in recent), 40)
+
+    def test_lead_panel_lists_real_leads_newest_first_and_skips_demo_fixtures(self):
+        from leads.models import Lead, Observation, Source
+        from automation.views import recent_leads
+        real = Source.objects.create(name="Real", url="https://vendor.example.org/team/", approved=True)
+        demo = Source.objects.create(name="Demo", url="https://demo.example.org/", approved=True, collector="demo")
+        for index, source in enumerate((real, demo)):
+            lead = Lead.objects.create(identity=f"id-{index}", name=f"Fictional Person{index}", title="Sales Representative",
+                                       email="info@vendor.example.org", contact_scope="shared")
+            Observation.objects.create(lead=lead, source=source, page_url=source.url, evidence="x")
+        rows = recent_leads(Lead)
+        self.assertEqual([r["name"] for r in rows], ["Fictional Person0"])
+        self.assertEqual((rows[0]["site"], rows[0]["shared"]), ("vendor.example.org", True))

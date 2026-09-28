@@ -131,6 +131,39 @@
     }
   }
 
+  // Latest leads panel (names come from the staff-only feed, not the activity log).
+  var leadsList = document.getElementById("lab-leads"), leadsCount = document.getElementById("lab-leads-count"), leadsKey = "";
+  function renderLeads(rows, totals){
+    leadsCount.textContent = totals.total + " total · " + totals.today + " in 24h · " + totals.shared + " shared-contact";
+    var key = rows.map(function(r){ return r.href + r.status; }).join("|");
+    if (key === leadsKey) return;
+    leadsKey = key;
+    leadsList.textContent = "";
+    if (!rows.length){
+      var empty = document.createElement("li");
+      empty.className = "lab-placeholder";
+      empty.textContent = "No leads yet.";
+      leadsList.appendChild(empty);
+      return;
+    }
+    rows.forEach(function(r){
+      var li = document.createElement("li"), a = document.createElement("a");
+      a.href = r.href;
+      var scope = document.createElement("span");
+      scope.className = "scope" + (r.shared ? " shared" : "");
+      scope.textContent = r.shared ? "shared contact" : "personal";
+      var who = document.createElement("span");
+      who.className = "who";
+      who.textContent = r.name;
+      var meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = (r.title || "Role unknown") + " · " + (r.company || r.site || "") + " · " + r.status + " · " +
+        new Date(r.found * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+      a.appendChild(scope); a.appendChild(who); a.appendChild(meta);
+      li.appendChild(a); leadsList.appendChild(li);
+    });
+  }
+
   function appendLine(pre, entry, stick){
     var line = document.createElement("div");
     line.className = "lab-line kind-" + entry.kind;
@@ -540,6 +573,7 @@
           consoles[l.key].dot.classList.toggle("online", now - consoles[l.key].last < 20);
         });
         var leads = data.leads || {total: 0, today: 0};
+        renderLeads(data.recent_leads || [], leads);
         rackText.setText(leads.total + " leads · +" + leads.today + " in 24h");
         statusText.setText(idleNote && now - idleNote.t < 180 ? idleNote.text
           : "one worker process · time-slices lanes · focus: " + (focusLane ? LANE[focusLane].label : "—"));
