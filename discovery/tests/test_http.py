@@ -107,6 +107,22 @@ class DiscoveryHTTPTests(TestCase):
         self.assertIn(("vendor.fixture.test", "/reps/alex"), self.server.requests)
         self.assertEqual(next_run.jobs.get(url="http://fixture.example.test/map-index").kind, "sitemap")
 
+    def test_sitemap_pages_below_the_campaign_minimum_are_not_saved(self):
+        self.server.pages["/nested.xml"] = (200, "application/xml",
+            b'<urlset><url><loc>http://fixture.example.test/team/hidden</loc></url>'
+            b'<url><loc>http://fixture.example.test/blog/fictional-post</loc></url>'
+            b'<url><loc>http://fixture.example.test/tag/fictional</loc></url></urlset>')
+        self.campaign.min_score = 35
+        self.campaign.save()
+        run = start(self.campaign)
+        self.finish(run)
+        saved = set(self.campaign.urls.values_list("url", flat=True))
+        self.assertIn("http://fixture.example.test/team/hidden", saved)
+        self.assertNotIn("http://fixture.example.test/blog/fictional-post", saved)
+        self.assertNotIn("http://fixture.example.test/tag/fictional", saved)
+        nested = run.jobs.get(url="http://fixture.example.test/nested.xml")
+        self.assertIn("Read 3 sitemap entries; kept 1", nested.message)
+
     def test_403_blocks_only_the_source_records_it_and_is_not_retried(self):
         self.server.pages["/"] = (403, "text/plain", b"Forbidden")
         self.campaign.use_sitemaps = False

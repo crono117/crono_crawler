@@ -127,7 +127,7 @@
         c.placeholder.className = "lab-line lab-placeholder";
         c.body.appendChild(c.placeholder);
       }
-      c.placeholder.textContent = "No activity recorded yet. " + why;
+      c.placeholder.textContent = q.why ? why : "No activity recorded yet. " + why;
     }
   }
 

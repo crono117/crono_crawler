@@ -214,9 +214,10 @@ def lab_feed(request):
     review = review_breakdown()
     queues["approval"] = {"queued": review["worth_a_look"] + review["low_signal"], "ready": review["worth_a_look"],
                           "next_at": None,
-                          "label": f"{review['worth_a_look']} need your review · {review['low_signal']} low-signal",
-                          "why": f"Policy approves qualifying links automatically; {review['worth_a_look']} link(s) "
-                                 f"need your review and {review['auto_filtered']} were filtered out."}
+                          "label": f"{review['worth_a_look']} to review · {review['low_signal']} low-signal",
+                          "why": f"No approval decisions logged since this panel was added. Waiting on you now: "
+                                 f"{review['worth_a_look']} link(s), plus {review['low_signal']} low-signal. "
+                                 f"Filtered out automatically so far: {review['auto_filtered']}."}
     if settings.JEV_MODE == "off":
         queues["jev"]["note"] = "Jev is off (JEV_MODE=off)."
     return JsonResponse({

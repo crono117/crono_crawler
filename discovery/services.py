@@ -912,12 +912,18 @@ def process(job):
                 entries.append({"kind": kind, "url": clean,
                                 "priority": 95 if kind == "sitemap" else rank(campaign, clean)[0],
                                 "source_id": source.pk if in_scope(source, clean) else None})
+            # Pages of an approved site that score below the campaign minimum can never be queued;
+            # the sitemap itself is the record, so they aren't saved (they would only fill the limit).
+            read = len(entries)
+            entries = [entry for entry in entries if entry["kind"] == "sitemap" or not entry["source_id"]
+                       or entry["priority"] >= campaign.min_score]
             for entry in entries:
                 entry.update(found_on=response.url, method="sitemap",
                              depth=job.depth + 1 if entry["kind"] == "sitemap" else 1,
                              company_job=job.company_job, source_hint=entry.pop("source_id"))
             register_batch(job.run, entries, cleaned=True, order=True)
-            done(job, f"Read {len(entries)} sitemap entries; queued matching approved paths within limits.")
+            done(job, f"Read {read} sitemap entries; kept {len(entries)} that can be crawled or reviewed, "
+                      "queued matching approved paths within limits.")
         else:
             if "html" not in response.headers.get("content-type", "").lower():
                 done(job, "Not an HTML page.", "skipped")
