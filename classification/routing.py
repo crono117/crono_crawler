@@ -136,7 +136,7 @@ def propose_domains(job, domains):
         if (campaign.urls.filter(origin=domain.origin, dismissal_scope='origin').exists() or
                 rank(campaign, domain.url, job.company.name)[0] < 0 or (policy and denied(policy, domain.url))):
             continue
-        if ((not candidate and campaign.urls.count() >= campaign.max_candidates) or
+        if ((not candidate and campaign.saved_url_count() >= campaign.max_candidates) or
                 Lineage.objects.filter(company_job__pilot=job.pilot, relation__in=('external_proposal', 'domain_proposal')).count() >= 25):
             continue
         candidate, _ = DiscoveredURL.objects.get_or_create(campaign=campaign, url=domain.url, defaults={
@@ -310,7 +310,7 @@ def advance(job_id):
         if ((not existing or existing.decision != 'approved') and
                 campaign.urls.filter(origin=origin(url), dismissal_scope='origin').exists()):
             continue
-        if not existing and campaign.urls.count() >= campaign.max_candidates:
+        if not existing and campaign.saved_url_count() >= campaign.max_candidates:
             continue
         candidate, _ = DiscoveredURL.objects.get_or_create(campaign=campaign, url=url, defaults={
             'origin': origin(url), 'source': job.source, 'decision': 'approved', 'score': score,

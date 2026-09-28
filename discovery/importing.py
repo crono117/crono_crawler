@@ -65,7 +65,7 @@ def import_metadata(campaign_id, rows, *, apply=False):
     # The lock serializes imports on PostgreSQL; SQLite uses BEGIN IMMEDIATE.
     campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
     policy = SitePolicy.objects.filter(campaign=campaign).first()
-    count = campaign.urls.count()
+    count = campaign.saved_url_count()
     seen, results = set(), []
     for row in rows:
         url = row['url']

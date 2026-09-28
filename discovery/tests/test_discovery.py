@@ -278,6 +278,22 @@ class DiscoveryTests(TestCase):
         run.campaign = self.campaign
         self.assertIsNone(register(run, DEMO_ORIGIN + "/new-team"))
 
+    def test_automatically_filtered_links_do_not_use_up_saved_url_capacity(self):
+        run = start(self.campaign)
+        filtered = register(run, "https://drive.google.com/file/d/fictional/view", label="Sales deck")
+        self.assertEqual((filtered.decision, filtered.dismissal_scope), ("dismissed", ""))
+        operator = register(run, "https://operator-dismissed.example.org/team", label="Team")
+        operator.decision, operator.dismissal_scope = "dismissed", "url"
+        operator.save(update_fields=["decision", "dismissal_scope"])
+        # The filtered row stays on record but only the operator decision (and others) count.
+        self.assertEqual(self.campaign.saved_url_count(), self.campaign.urls.count() - 1)
+        self.campaign.max_candidates = self.campaign.saved_url_count() + 1
+        self.campaign.save()
+        run.campaign = self.campaign
+        self.assertIsNotNone(register(run, DEMO_ORIGIN + "/new-team"))
+        self.assertIsNone(register(run, DEMO_ORIGIN + "/another-team"))
+        self.assertTrue(self.campaign.urls.filter(pk=filtered.pk).exists())
+
     def test_batch_registration_preserves_caps_duplicates_and_metadata(self):
         self.campaign.max_candidates, self.campaign.max_new_domains = 4, 1
         self.campaign.save()

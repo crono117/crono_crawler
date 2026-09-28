@@ -20,7 +20,7 @@ class Campaign(models.Model):
     use_sitemaps = models.BooleanField(default=True)
     max_pages = bounded(50, 1, 500, help_text="Maximum page and sitemap jobs in each run.")
     max_depth = bounded(3, 0, 5)
-    max_candidates = bounded(1000, 10, 10000, help_text="Maximum saved URLs in this campaign, including reviewed URLs.")
+    max_candidates = bounded(1000, 10, 10000, help_text="Maximum saved URLs in this campaign, including reviewed URLs. Links dismissed automatically by filters don't count.")
     max_new_domains = bounded(25, 1, 200, help_text="Maximum previously unseen origins discovered in each run.")
     daily_requests = bounded(200, 1, 5000, help_text="Fetch attempts per UTC day, including robots checks and retries. Redirect hops are separately bounded.")
     min_score = bounded(10, 0, 100)
@@ -40,6 +40,11 @@ class Campaign(models.Model):
 
     class Meta:
         ordering = ["name"]
+
+    def saved_url_count(self):
+        """URLs that count toward max_candidates. Automatically filtered links (dismissed with no
+        operator scope) stay on record for analysis but don't use up the campaign's capacity."""
+        return self.urls.exclude(decision="dismissed", dismissal_scope="").count()
 
     def __str__(self):
         return self.name

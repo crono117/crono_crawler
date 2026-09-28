@@ -45,7 +45,8 @@ class ImportTests(TestCase):
         source = Source.objects.create(name='Revoked source', url='https://revoked.example.org/', approved=False)
         for i, decision in enumerate(('pending', 'approved', 'dismissed')):
             DiscoveredURL.objects.create(campaign=self.campaign, url=f'https://existing.example.org/team/{i}',
-                origin='https://existing.example.org', decision=decision, source=source if decision=='approved' else None)
+                origin='https://existing.example.org', decision=decision, source=source if decision=='approved' else None,
+                dismissal_scope='url' if decision == 'dismissed' else '')  # operator dismissals count toward capacity
         self.campaign.max_candidates = 3; self.campaign.save()
         result = import_metadata(self.campaign.pk, rows(*[f'https://existing.example.org/team/{i}' for i in range(4)]), apply=True)
         self.assertEqual([r['outcome'] for r in result['results']], ['existing_pending', 'existing_approved', 'existing_dismissed', 'inventory_full'])

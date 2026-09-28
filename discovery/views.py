@@ -49,7 +49,8 @@ def campaign_detail(request, pk):
     campaign = get_object_or_404(Campaign.objects.prefetch_related("sources"), pk=pk)
     return render(request, "discovery/campaign.html", {"campaign": campaign, "runs": campaign.runs.all()[:20],
         "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign").filter(campaign=campaign),
-        "url_count": campaign.urls.count(), "pending_count": campaign.urls.filter(decision="pending").count(),
+        "url_count": campaign.saved_url_count(),
+        "filtered_count": campaign.urls.filter(decision="dismissed", dismissal_scope="").count(), "pending_count": campaign.urls.filter(decision="pending").count(),
         "today": campaign.usage.filter(day=timezone.now().date()).first()})
 
 

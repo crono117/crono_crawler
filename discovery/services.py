@@ -154,7 +154,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     origin_yields = lookup_origin_yields(safe_origin(url) for url in urls)
     candidates = {candidate.url: candidate for candidate in
                   campaign.urls.filter(url__in=urls).select_related("source")}
-    inventory_count = campaign.urls.count()
+    inventory_count = campaign.saved_url_count()
     origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope"))
     known_origins = {item_origin for item_origin, _ in origin_rows}
     dismissed_origins = {item_origin for item_origin, scope in origin_rows if scope == "origin"}
