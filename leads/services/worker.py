@@ -28,6 +28,9 @@ def enqueue(source):
     source = Source.objects.select_for_update().get(pk=source.pk)
     if not source.approved:
         raise ValueError("Review and approve the source before running it.")
+    if source.blocked_at:
+        # The operator chose to try again after an access block; that decision clears the record.
+        source.blocked_at, source.blocked_reason = None, ""
     if source.setup_mode == "automatic":
         raise ValueError("This source is managed by Site automation. Use its campaign and setup controls.")
     run = Run.objects.filter(source=source, status__in=OPEN_STATUSES).first()
@@ -50,6 +53,29 @@ def enqueue(source):
     return run
 
 @transaction.atomic
+def block_source(source, message):
+    """The site refused automated access. Stop this source only, record why, and never retry it
+    automatically: queued collector and discovery work for it is closed, campaigns keep running."""
+    from discovery.models import DiscoveryJob
+    reason = message[:500]
+    with transaction.atomic():
+        Source.objects.filter(pk=source.pk).update(active=False, blocked_at=timezone.now(), blocked_reason=reason,
+                                                   last_error=f"Access blocked: {reason}")
+        Run.objects.filter(source=source, status__in=("queued", "running", "paused")).update(
+            status="failed", finished_at=timezone.now(), message=f"Access blocked: {reason}")
+        PageJob.objects.filter(run__source=source, status="queued").update(
+            status="skipped", message="Source blocked automated access; no request made.")
+        DiscoveryJob.objects.filter(source=source, status="queued").update(
+            status="skipped", message="Source blocked automated access; no request made.")
+        if source.setup_mode == "automatic":
+            from automation.models import SiteAutomationJob
+            from automation.services import pause_job
+            job = SiteAutomationJob.objects.filter(source=source).first()
+            if job:
+                pause_job(job, f"Access blocked: {reason}")
+    activity.emit("blocked", f"{source.name or source.url}: {reason} Source stopped; it will not be retried "
+                  "automatically.", url=source.url)
+
 def pause_source(source, message="Paused by operator."):
     from discovery.services import pause_for_source
     Source.objects.filter(pk=source.pk).update(active=False, last_error=message)
@@ -219,9 +245,12 @@ def handle_error(job, source, exc):
     retryable = isinstance(exc, FetchError) and exc.retryable
     blocked = isinstance(exc, FetchError) and exc.status in (401, 403)
     if blocked:
-        job.status = "queued"
-        job.available_at = timezone.now() + timedelta(hours=1)
-        pause_source(source, job.message)
+        job.status = "failed"
+        job.message = f"Access blocked: {job.message}"[:1500]
+        job.save()
+        block_source(source, str(exc))
+        finish_run(job.run)
+        return
     elif retryable and job.attempts < 4:
         job.status = "queued"
         job.available_at = timezone.now() + timedelta(seconds=retry_delay(job.attempts, exc.retry_after))

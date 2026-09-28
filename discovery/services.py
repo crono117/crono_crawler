@@ -512,7 +512,8 @@ def start(campaign):
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         return run
     run = DiscoveryRun.objects.create(campaign=campaign)
-    sources = list(campaign.sources.filter(approved=True).order_by("id"))
+    # Sources that blocked automated access are not re-seeded until an operator runs them again.
+    sources = list(campaign.sources.filter(approved=True, blocked_at__isnull=True).order_by("id"))
     reviewed_source_ids = reviewed_sources(source.pk for source in sources)
     seed_specs = []
     for source in sources:
@@ -791,7 +792,7 @@ def finish(run):
 
 
 def process(job):
-    from leads.services.worker import prepare_domain, parse_robots, pause_source, retry_delay
+    from leads.services.worker import block_source, prepare_domain, parse_robots, retry_delay
     campaign = job.run.campaign
     try:
         campaign.refresh_from_db()
@@ -837,6 +838,9 @@ def process(job):
         source = Source.objects.filter(pk=job.source_id).first() if job.source_id else None
         if not source or not source.approved or not campaign.sources.filter(pk=source.pk).exists() or not in_scope(source, job.url):
             done(job, "Source approval or scope changed; no request made.", "skipped")
+            return
+        if source.blocked_at:
+            done(job, "Source blocked automated access earlier; no request made.", "skipped")
             return
         job.source = source
         from automation.policy import collection_allowed
@@ -928,9 +932,11 @@ def process(job):
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
                 pause(campaign, "Search provider denied access; review API configuration.")
+                defer(job, timezone.now() + timedelta(hours=1), message)
             else:
-                pause_source(job.source, message)
-            defer(job, timezone.now() + timedelta(hours=1), message)
+                # Only this source stops; the run carries on with the others and it is not retried.
+                done(job, "Access blocked: " + message, "failed")
+                block_source(job.source, message)
         elif isinstance(exc, FetchError) and exc.retryable and job.attempts < 4:
             until = timezone.now() + timedelta(seconds=retry_delay(job.attempts, exc.retry_after))
             defer(job, until, message)

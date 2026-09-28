@@ -107,16 +107,27 @@ class DiscoveryHTTPTests(TestCase):
         self.assertIn(("vendor.fixture.test", "/reps/alex"), self.server.requests)
         self.assertEqual(next_run.jobs.get(url="http://fixture.example.test/map-index").kind, "sitemap")
 
-    def test_403_pauses_campaign_and_source(self):
+    def test_403_blocks_only_the_source_records_it_and_is_not_retried(self):
         self.server.pages["/"] = (403, "text/plain", b"Forbidden")
         self.campaign.use_sitemaps = False
         self.campaign.save()
         run = start(self.campaign)
         self.finish(run)
         self.campaign.refresh_from_db()
-        self.assertEqual(run.status, "paused")
-        self.assertFalse(self.campaign.active)
+        self.source.refresh_from_db()
+        # The campaign keeps running for other sources; the blocked one is stopped and recorded.
+        self.assertTrue(self.campaign.active)
+        self.assertEqual(run.status, "failed")
+        self.assertFalse(self.source.active)
+        self.assertIsNotNone(self.source.blocked_at)
+        self.assertIn("403", self.source.blocked_reason)
         self.assertFalse(tick(self.token, prefer_discovery=True))
+        requests = len(self.server.requests)
+        # A later run does not seed the blocked source again.
+        rerun = start(self.campaign)
+        self.finish(rerun)
+        self.assertEqual(len(self.server.requests), requests)
+        self.assertFalse(rerun.jobs.filter(source=self.source).exclude(status="skipped").exists())
 
     def test_redirect_to_private_address_is_blocked(self):
         self.source.url = "http://fixture.example.test/redirect/"
@@ -132,5 +143,7 @@ class DiscoveryHTTPTests(TestCase):
         self.server.pages["/robots.txt"] = (200, "text/plain", b"User-agent: *\nDisallow: /\n")
         run = start(self.campaign)
         self.finish(run)
-        self.assertEqual(run.status, "paused")
+        self.source.refresh_from_db()
+        self.assertIsNotNone(self.source.blocked_at)
+        self.assertIn("robots.txt", self.source.blocked_reason)
         self.assertEqual([path for _, path in self.server.requests], ["/robots.txt"])

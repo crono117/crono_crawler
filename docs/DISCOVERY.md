@@ -112,3 +112,12 @@ The optional search adapter has deterministic contract tests. No live paid API r
 Outbound links that are page chrome rather than candidate sources — social profiles and share buttons, document/file shares, scheduling pages, link shorteners, app-store listings, review/event platforms, login/app/docs/CDN subdomains, signup/application forms, legal pages, feeds/sitemaps/`cdn-cgi` helpers, help/sponsorship pages, and malformed URLs — are recorded as automatically dismissed with `Filtered automatically: <reason>` in their reasons (collector links as dismissed `SourceCandidate`s). They are kept for analysis but never enter the review queue. Single-label hostnames (e.g. a broken `href="http://saas"`) are rejected by `clean_url`. `manage.py refilter_discovery` applies the current rules to already-queued items (dry run unless `--apply`; no network requests) and withdraws a policy approval that was granted to a URL now considered invalid; operator approvals are left alone.
 
 The Crawler lab's counter splits waiting items into "needs your review" (positive score, or a team/about/contact page or label), low-signal, and auto-filtered.
+
+## Access blocks
+
+A 401/403, a bot challenge page, or robots.txt served as HTML (or disallowing the page) stops that
+source only: `Source.blocked_at`/`blocked_reason` record when and why, its queued collector and
+discovery work is closed without requests, and later runs do not seed it again. Other sources and the
+campaign keep running, and nothing retries the blocked source automatically. An operator's "Run now"
+on the source is the explicit decision to try again and clears the record. Policy-created sources
+additionally pause their setup job, which records a `blocked` site assessment.

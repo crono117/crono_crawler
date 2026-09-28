@@ -440,6 +440,11 @@
         if (e.contacts){ toRack(w.sprite, e.contacts); contactsToday += e.contacts; }
         scene.time.delayedCall(hurry ? 150 : 600, done);
         return;
+      case "blocked":
+        say(w, "⛔ blocked — stopped, not retried", "#ff8a8a", 2600);
+        scene.tweens.add({targets: w.sprite, x: "+=4", yoyo: true, repeat: 3, duration: 60});
+        scene.time.delayedCall(hurry ? 150 : 900, done);
+        return;
       case "wait":
         say(w, "⧗ throttled", "#8c9ac2", 1400);
         scene.time.delayedCall(hurry ? 100 : 500, done);

@@ -185,7 +185,8 @@ class HttpPipelineTests(TestCase):
         self.source.refresh_from_db()
         run.refresh_from_db()
         self.assertFalse(self.source.active)
-        self.assertEqual(run.status, "paused")
+        self.assertIsNotNone(self.source.blocked_at)
+        self.assertEqual(run.status, "failed")
         self.assertEqual(mocked.call_count, 1)
 
     @patch("leads.services.worker.fetch")
@@ -208,8 +209,14 @@ class HttpPipelineTests(TestCase):
         tick(self.token)
         run.refresh_from_db()
         self.source.refresh_from_db()
-        self.assertEqual(run.status, "paused")
+        self.assertEqual(run.status, "failed")
         self.assertFalse(self.source.active)
+        self.assertIsNotNone(self.source.blocked_at)
+        # "Run now" is the operator's decision to try again, and it clears the record.
+        run = enqueue(self.source)
+        self.source.refresh_from_db()
+        self.assertIsNone(self.source.blocked_at)
+        self.assertTrue(self.source.active)
 
     @patch("leads.services.worker.fetch")
     def test_failed_extraction_does_not_erase_old_evidence(self, mocked):

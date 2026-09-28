@@ -32,6 +32,10 @@ class Source(models.Model):
     max_depth = models.PositiveIntegerField(default=2)
     next_due_at = models.DateTimeField(default=timezone.now)
     last_error = models.TextField(blank=True)
+    # Set when the site refused automated access (401/403, a bot challenge, robots.txt served as a
+    # page). The source is stopped and never retried automatically; an operator's "Run now" clears it.
+    blocked_at = models.DateTimeField(null=True, blank=True)
+    blocked_reason = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
