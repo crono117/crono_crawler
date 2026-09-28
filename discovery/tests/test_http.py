@@ -123,6 +123,23 @@ class DiscoveryHTTPTests(TestCase):
         nested = run.jobs.get(url="http://fixture.example.test/nested.xml")
         self.assertIn("Read 3 sitemap entries; kept 1", nested.message)
 
+    def test_sitemap_filter_uses_the_stored_score_including_site_yield(self):
+        # A path can pass on its raw score yet fall below the minimum once the site's zero past
+        # yield is applied; it must not be saved, because it could never be queued.
+        from discovery import services
+        real = services.current_candidate_score
+
+        def yield_penalised(campaign, url, *args, **kwargs):
+            score, reasons = real(campaign, url, *args, **kwargs)
+            return (score - 30, reasons) if url.endswith("/team/hidden") else (score, reasons)
+
+        self.campaign.min_score = 35
+        self.campaign.save()
+        with patch.object(services, "current_candidate_score", side_effect=yield_penalised):
+            run = start(self.campaign)
+            self.finish(run)
+        self.assertFalse(self.campaign.urls.filter(url="http://fixture.example.test/team/hidden").exists())
+
     def test_403_blocks_only_the_source_records_it_and_is_not_retried(self):
         self.server.pages["/"] = (403, "text/plain", b"Forbidden")
         self.campaign.use_sitemaps = False

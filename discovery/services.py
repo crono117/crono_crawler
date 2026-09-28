@@ -915,8 +915,12 @@ def process(job):
             # Pages of an approved site that score below the campaign minimum can never be queued;
             # the sitemap itself is the record, so they aren't saved (they would only fill the limit).
             read = len(entries)
+            # Judge with the same score registration stores and queueing uses (it includes the
+            # site's past yield), not the raw path score.
+            reviewed, yields = reviewed_sources({source.pk}), lookup_origin_yields({origin(source.url)})
             entries = [entry for entry in entries if entry["kind"] == "sitemap" or not entry["source_id"]
-                       or entry["priority"] >= campaign.min_score]
+                       or current_candidate_score(campaign, entry["url"], "", "", source, reviewed_source_ids=reviewed,
+                                                  origin_yields=yields)[0] >= campaign.min_score]
             for entry in entries:
                 entry.update(found_on=response.url, method="sitemap",
                              depth=job.depth + 1 if entry["kind"] == "sitemap" else 1,
