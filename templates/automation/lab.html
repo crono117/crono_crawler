@@ -50,6 +50,6 @@
 </style>
 
 <script src="{% static 'vendor/phaser.min.js' %}"></script>
-<script src="{% static 'lab/lab-frames.js' %}"></script>
-<script src="{% static 'lab/lab.js' %}"></script>
+<script src="{% static 'lab/lab-frames.js' %}?v={{ lab_version }}"></script>
+<script src="{% static 'lab/lab.js' %}?v={{ lab_version }}"></script>
 {% endblock %}

@@ -43,7 +43,10 @@ def clean_url(raw):
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        pass
+        if "." not in host:
+            # e.g. a broken href="http://saas": single-label names are not public websites and could
+            # resolve through a local DNS search domain.
+            raise ValueError("Single-label hostnames are excluded.")
     else:
         if not address.is_global:
             raise ValueError("Private addresses are excluded.")

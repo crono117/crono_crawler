@@ -147,7 +147,12 @@ def lab(request):
     from django.conf import settings
     # Licensed art (Neo Zero tiles, sci-fi robot sprites) can't be redistributed, so it is never
     # committed: an operator drops their own download under static/local_assets/ and the Lab uses it.
+    from pathlib import Path
+    # Cache-bust the lab scripts: a browser holding an older lab.js would misread a newer feed.
+    scripts = Path(settings.BASE_DIR) / "static" / "lab"
+    version = int(max(path.stat().st_mtime for path in scripts.glob("*.js")))
     return render(request, "automation/lab.html", {"tileset_sheets": _local_sheets(LAB_TILESET_DIR),
+                                                   "lab_version": version,
                                                    "robot_sheets": _local_sheets(LAB_ROBOTS_DIR),
                                                    "activity_enabled": bool(settings.ACTIVITY_LOG)})
 

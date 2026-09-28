@@ -878,7 +878,7 @@ class RankingAndProviderTests(TestCase):
 
     def test_url_canonicalization_preserves_useful_path_and_drops_tracking(self):
         self.assertEqual(clean_url("https://EXAMPLE.com/team/alex?page=2&utm_source=x#bio"), "https://example.com/team/alex?page=2")
-        for url in ("http://127.0.0.1/", "http://[::1]/", "http://localhost/", "http://10.1.2.3/", "https://example.com/calendar/", "https://example.com/?sort=abc", "https://example.com/team/../private", "javascript:alert(1)"):
+        for url in ("http://127.0.0.1/", "http://[::1]/", "http://localhost/", "http://10.1.2.3/", "https://example.com/calendar/", "https://example.com/?sort=abc", "https://example.com/team/../private", "javascript:alert(1)", "http://saas/", "https://intranet/team"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 clean_url(url)
 
