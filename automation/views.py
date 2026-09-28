@@ -170,12 +170,24 @@ def lab_feed(request):
     entries = activity.read(after=after, limit=300 if after else 120)
     lease = WorkerLease.objects.filter(key="collector").first()
     now = timezone.now()
-    queues = {
-        "collector": PageJob.objects.filter(status="queued", run__status__in=("queued", "running")).count(),
-        "discovery": DiscoveryJob.objects.filter(status="queued", run__status__in=("queued", "running")).count(),
-        "automation": SiteAutomationJob.objects.filter(state__in=RUNNABLE, campaign__active=True).count(),
-        "jev": Evaluation.objects.filter(state__in=("queued", "retry_wait", "waiting")).count(),
+    from django.conf import settings
+    # Same filters the worker's tick() uses, so "ready" means the worker could pick it up now.
+    pending = {
+        "collector": PageJob.objects.filter(status="queued", run__status__in=("queued", "running"),
+                                            run__source__active=True, run__source__approved=True),
+        "discovery": DiscoveryJob.objects.filter(status="queued", run__status__in=("queued", "running"),
+                                                 run__campaign__active=True),
+        "automation": SiteAutomationJob.objects.filter(state__in=RUNNABLE, processing=False, campaign__active=True,
+                                                       campaign__site_policy__enabled=True),
+        "jev": Evaluation.objects.filter(provider=settings.JEV_MODE, state__in=("queued", "retry_wait", "waiting")),
     }
+    queues = {}
+    for lane, items in pending.items():
+        next_at = items.filter(available_at__gt=now).order_by("available_at").values_list("available_at", flat=True).first()
+        queues[lane] = {"queued": items.count(), "ready": items.filter(available_at__lte=now).count(),
+                        "next_at": next_at.timestamp() if next_at else None}
+    if settings.JEV_MODE == "off":
+        queues["jev"]["note"] = "Jev is off (JEV_MODE=off)."
     return JsonResponse({
         "entries": entries,
         "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),

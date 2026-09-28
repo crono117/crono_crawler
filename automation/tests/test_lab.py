@@ -58,4 +58,5 @@ class ActivityFeedTests(TestCase):
         data = json.loads(self.client.get("/automation/lab/feed/?after=0").content)
         self.assertEqual(data["entries"][-1]["contacts"], 2)
         self.assertEqual(set(data["queues"]), {"collector", "discovery", "automation", "jev"})
+        self.assertEqual(data["queues"]["collector"], {"queued": 0, "ready": 0, "next_at": None})
         self.assertEqual(json.loads(self.client.get("/automation/lab/feed/?after=nonsense").content)["entries"][-1]["lane"], "collector")

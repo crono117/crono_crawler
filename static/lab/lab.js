@@ -97,6 +97,33 @@
     return [d.getHours(), d.getMinutes(), d.getSeconds()].map(function(n){ return ("0" + n).slice(-2); }).join(":");
   }
 
+  // Header: what is waiting and when it unlocks. Body placeholder until the lane records activity.
+  function describeQueue(c, q){
+    var text, why;
+    if (q.note){
+      text = why = q.note;
+    } else if (!q.queued){
+      text = "queue empty";
+      why = "Nothing queued for this lane right now.";
+    } else if (q.ready){
+      text = q.ready + " ready · " + q.queued + " queued";
+      why = q.ready + " item(s) ready; waiting for the worker to reach this lane.";
+    } else {
+      var at = q.next_at ? clock(q.next_at).slice(0, 5) : "later";
+      text = q.queued + " queued · next at " + at;
+      why = q.queued + " item(s) queued but deferred until " + at + " (per-site throttle or daily request budget).";
+    }
+    c.queue.textContent = text;
+    if (!c.last){
+      if (!c.placeholder){
+        c.placeholder = document.createElement("div");
+        c.placeholder.className = "lab-line lab-placeholder";
+        c.body.appendChild(c.placeholder);
+      }
+      c.placeholder.textContent = "No activity recorded yet. " + why;
+    }
+  }
+
   function appendLine(pre, entry, stick){
     var line = document.createElement("div");
     line.className = "lab-line kind-" + entry.kind;
@@ -440,9 +467,7 @@
         onlineEl.nextElementSibling.textContent = data.worker_online ? "Worker online" : "Worker offline";
         approvalsEl.textContent = data.approvals;
         boardText.setText(String(data.approvals));
-        LANES.forEach(function(l){
-          consoles[l.key].queue.textContent = data.queues[l.key] + " queued";
-        });
+        LANES.forEach(function(l){ describeQueue(consoles[l.key], data.queues[l.key]); });
         var now = Date.now() / 1000;
         data.entries.forEach(function(e){
           after = Math.max(after, e.t);
@@ -452,6 +477,7 @@
           idleNote = null;
           if (!lane) return;
           var c = consoles[lane];
+          if (c.placeholder){ c.placeholder.remove(); c.placeholder = null; }
           appendLine(c.body, e, c.stick);
           c.last = e.t;
           // On first load, show history in the consoles but only act out the last few seconds.
