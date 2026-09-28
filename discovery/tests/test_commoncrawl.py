@@ -77,6 +77,27 @@ class CommonCrawlDiscoveryTests(TestCase):
         self.assertEqual(counts, {"Agent site": 2})
         self.assertTrue(all(spec["method"] == "commoncrawl" for spec in specs))
 
+    def test_an_overloaded_index_skips_that_host_and_keeps_the_others(self):
+        busy = Source.objects.create(name="Busy site", url="https://busy.example/", approved=True)
+        blocked = Source.objects.create(name="Blocked site", url="https://blocked.example/", approved=True)
+        blocked.blocked_at = blocked.created_at
+        blocked.save(update_fields=["blocked_at"])
+        self.campaign.sources.add(busy, blocked)
+        asked = []
+
+        def lookup(host, collection):
+            asked.append(host)
+            if host == "busy.example":
+                raise FetchError("HTTP 504; retry scheduled.", retryable=True, status=504)
+            return self.lookup(host, collection)
+
+        specs, counts = common_crawl_specs(self.campaign, "CC-MAIN-2026-35", lookup=lookup, pause=0)
+        self.assertEqual(len(specs), 2)
+        self.assertEqual(counts["Agent site"], 2)
+        self.assertIn("Busy site (index error: HTTP 504; retry scheduled.)", counts)
+        self.assertEqual(asked.count("busy.example"), 2)  # one retry, then skipped
+        self.assertNotIn("blocked.example", asked)  # blocked sources are not looked up
+
     def test_registration_uses_ordinary_gates_and_needs_open_run(self):
         specs, _ = common_crawl_specs(self.campaign, "CC-MAIN-2026-35", lookup=self.lookup, pause=0)
         with self.assertRaises(ValueError):

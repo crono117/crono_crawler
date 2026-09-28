@@ -361,14 +361,28 @@ def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
     from .ranking import direct_contact_page_intent
     lookup = lookup or common_crawl_urls
     specs, seen, counts = [], set(), {}
-    sources = list(campaign.sources.filter(approved=True).order_by("id")[:COMMON_CRAWL_MAX_SOURCES])
+    sources = list(campaign.sources.filter(approved=True, blocked_at__isnull=True).order_by("id")[:COMMON_CRAWL_MAX_SOURCES])
     for index, source in enumerate(sources):
         if index and pause:
             time.sleep(pause)
         source_origin = origin(source.url)
         host = urlsplit(source_origin).netloc
         kept = 0
-        for raw in lookup(host, collection):
+        # The public index is often overloaded: retry a busy answer once, then skip this host and
+        # carry on rather than abandoning every other source.
+        raws = None
+        for attempt in range(2):
+            try:
+                raws = lookup(host, collection)
+                break
+            except FetchError as exc:
+                if not exc.retryable or attempt:
+                    counts[f"{source.name or host} (index error: {exc})"] = 0
+                elif pause:
+                    time.sleep(pause * 5)
+        if raws is None:
+            continue
+        for raw in raws:
             try:
                 url = clean_url(raw)
                 if url.startswith("http://") and source_origin.startswith("https://"):

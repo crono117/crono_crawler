@@ -121,3 +121,13 @@ discovery work is closed without requests, and later runs do not seed it again. 
 campaign keep running, and nothing retries the blocked source automatically. An operator's "Run now"
 on the source is the explicit decision to try again and clears the record. Policy-created sources
 additionally pause their setup job, which records a `blocked` site assessment.
+
+## Scheduled Common Crawl lookup
+
+`discovery_commoncrawl` retries a busy index answer once per host and then skips that host (reported
+as an index error) instead of abandoning the whole lookup; blocked sources are not looked up.
+`--start-if-idle` starts the active campaign's ordinary run first when none is open, so a schedule
+never misses. An example weekly systemd user timer runs
+`manage.py discovery_commoncrawl --campaign <id> --start-if-idle` with `COMMON_CRAWL_ENABLED=1` set
+only in that unit's environment. Only index.commoncrawl.org is queried; target sites are contacted
+later, if at all, through the ordinary discovery gates, robots checks and budgets.

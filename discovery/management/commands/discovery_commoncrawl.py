@@ -16,6 +16,8 @@ class Command(BaseCommand):
         parser.add_argument("--campaign", type=int, required=True)
         parser.add_argument("--collection", default="", help="Crawl ID such as CC-MAIN-2026-35 (default: newest).")
         parser.add_argument("--dry-run", action="store_true", help="List matches without registering them.")
+        parser.add_argument("--start-if-idle", action="store_true",
+                            help="If the active campaign has no open run, start its ordinary run first (for schedules).")
 
     def handle(self, *args, **options):
         if not common_crawl_ready():
@@ -36,6 +38,12 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {spec['url']}")
             self.stdout.write(f"Dry run: {len(specs)} URL(s) not registered.")
             return
+        if options["start_if_idle"] and campaign.active and not campaign.runs.filter(status__in=("queued", "running")).exists():
+            from django.db import transaction
+            from discovery.services import start
+            with transaction.atomic():
+                run = start(campaign)
+            self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
         try:
             added = register_common_crawl(campaign, specs)
         except ValueError as exc:
