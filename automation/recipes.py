@@ -67,10 +67,15 @@ def evaluate(html, source, recipe):
         signals["contact"] += int(bool(fields["email"] or fields["phone"]))
         if structured:
             shape.append([row["syntax"], *sorted(key for key, value in fields.items() if value)])
-            if not fields["company"]:
-                counts["missing_employer"] += 1
-                continue
             evidence_text = row["evidence"]
+            if not fields["company"]:
+                # No worksFor. The employer is never inferred from the page; it is used only when an
+                # operator has confirmed this site's company, and the evidence says so.
+                if not source.structured_employer:
+                    counts["missing_employer"] += 1
+                    continue
+                fields = {**fields, "company": source.structured_employer}
+                evidence_text += f" [Employer confirmed by operator for this source: {source.structured_employer}]"
         else:
             shape.append([node.name for node in row.find_all(True, limit=40)])
             names = {normalize(node.get_text(" ", strip=True)) for node in row.select(selectors["name"]) if normalize(node.get_text(" ", strip=True))}

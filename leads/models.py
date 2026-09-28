@@ -35,6 +35,10 @@ class Source(models.Model):
     # Set when the site refused automated access (401/403, a bot challenge, robots.txt served as a
     # page). The source is stopped and never retried automatically; an operator's "Run now" clears it.
     blocked_at = models.DateTimeField(null=True, blank=True)
+    # Explicit operator confirmation of who the people in this site's structured profiles work for,
+    # used only when a profile omits worksFor. Separate from `company`, which is never assumed to be
+    # the employer of structured profiles.
+    structured_employer = models.CharField(max_length=160, blank=True)
     blocked_reason = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

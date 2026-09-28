@@ -56,6 +56,20 @@ class ExtractionTests(SimpleTestCase):
             with self.subTest(node=node):
                 self.assertEqual(evaluate(html(node), self.source, RECIPE)[0], [])
 
+    def test_operator_confirmed_employer_fills_only_missing_worksfor_and_is_labelled(self):
+        # Without explicit confirmation a missing employer stays unknown, even with a source company.
+        self.assertEqual(evaluate(html(person(worksFor=None)), self.source, RECIPE)[0], [])
+        before = signature(self.source)
+        self.source.structured_employer = 'Fictional Confirmed Payments'
+        self.assertNotEqual(signature(self.source), before)
+        records = evaluate(html(person(worksFor=None)), self.source, RECIPE)[0]
+        self.assertEqual([(r['name'], r['company']) for r in records], [('Alex Example', 'Fictional Confirmed Payments')])
+        self.assertIn('[Employer confirmed by operator for this source: Fictional Confirmed Payments]', records[0]['evidence'])
+        # A stated worksFor always wins over the confirmation.
+        records = evaluate(html(person()), self.source, RECIPE)[0]
+        self.assertEqual(records[0]['company'], 'Example Payments')
+        self.assertNotIn('Employer confirmed by operator', records[0]['evidence'])
+
     def test_graph_context_is_inherited_but_custom_context_is_not_expanded(self):
         node = person(); node.pop('@context')
         self.assertEqual(len(entities(html({'@context': 'https://schema.org', '@graph': [node]}))[0]), 1)

@@ -183,6 +183,39 @@ def candidates(request):
 
 @require_POST
 @staff_required
+def source_confirm_employer(request, pk):
+    """Operator confirms which company the people listed on this site work for. Structured profiles
+    that omit worksFor then use it, labelled as operator-confirmed; nothing is inferred from the page."""
+    source = get_object_or_404(Source, pk=pk)
+    company = " ".join(request.POST.get("company", "").split())[:160]
+    if not company:
+        messages.error(request, "Enter the company name the listed people work for.")
+        return redirect("source_detail", pk=pk)
+    note = (f"Employer confirmed by {request.user.get_username()} on {timezone.now():%Y-%m-%d}: {company} "
+            "(used for structured profiles on this site that don't state an employer).")
+    source.structured_employer = company
+    source.company = source.company or company
+    source.approval_notes = f"{source.approval_notes}\n{note}".strip()
+    source.save(update_fields=["structured_employer", "company", "approval_notes", "updated_at"])
+    from leads.services.activity import emit
+    emit("approved", f"Operator confirmed employer '{company}' for {source.name or source.url}", lane="approval",
+         url=source.url, by="operator")
+    if source.setup_mode == "automatic":
+        from automation.models import SiteAutomationJob
+        from automation.services import start_setup
+        job = SiteAutomationJob.objects.filter(source=source).select_related("campaign").first()
+        if job and source.approved:
+            try:
+                start_setup(source, job.campaign)
+                messages.success(request, "Employer confirmed. Site setup was queued again to re-check this site.")
+            except ValueError as exc:
+                messages.warning(request, f"Employer confirmed, but setup could not be queued: {exc}")
+            return redirect("source_detail", pk=pk)
+    messages.success(request, "Employer confirmed. It applies from the next collection of this source.")
+    return redirect("source_detail", pk=pk)
+
+@require_POST
+@staff_required
 def candidate_dismiss(request, pk):
     candidate = get_object_or_404(SourceCandidate, pk=pk)
     candidate.status = "dismissed"

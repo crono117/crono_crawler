@@ -101,6 +101,9 @@ def signature(source):
              source.require_sales_role, settings.OLLAMA_MODEL if source.extractor == "ollama" else ""]
     if settings.EXTRACTION_PACKS_ENABLED:
         value.append("packs-v1:structured-v1")
+    if getattr(source, "structured_employer", ""):
+        # Appended only when set, so existing signatures (and page caches) are unchanged.
+        value.append("structured-employer:" + source.structured_employer)
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 def selected_text(row, selector):

@@ -2,7 +2,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
-from leads.models import Lead
+from leads.models import Lead, Source
 from leads.services.worker import acquire_lease, enqueue, release_lease, tick
 from .test_collection import demo_source
 
@@ -94,3 +94,24 @@ class WebTests(TestCase):
         self.assertFalse(form.is_valid())
         for name in ("interval_hours", "delay_seconds", "max_pages", "max_depth"):
             self.assertIn(name, form.errors)
+
+
+class ConfirmEmployerTests(TestCase):
+    def test_confirm_employer_is_staff_only_post_and_records_who_and_when(self):
+        from django.contrib.auth import get_user_model
+        from django.test import Client
+        source = Source.objects.create(name="Fictional", url="https://fictional.example.org/about", approved=True)
+        path = f"/sources/{source.pk}/confirm-employer/"
+        self.assertEqual(self.client.post(path, {"company": "Fictional Payments"}).status_code, 302)
+        source.refresh_from_db()
+        self.assertEqual(source.structured_employer, "")
+        staff = get_user_model().objects.create_user("employer-operator", is_staff=True)
+        strict = Client(enforce_csrf_checks=True)
+        strict.force_login(staff)
+        self.assertEqual(strict.post(path, {"company": "Fictional Payments"}).status_code, 403)
+        self.client.force_login(staff)
+        self.assertEqual(self.client.get(path).status_code, 405)
+        self.client.post(path, {"company": "  Fictional   Payments "})
+        source.refresh_from_db()
+        self.assertEqual(source.structured_employer, "Fictional Payments")
+        self.assertIn("Employer confirmed by employer-operator", source.approval_notes)

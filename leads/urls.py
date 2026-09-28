@@ -12,6 +12,7 @@ urlpatterns = [
     path("sources/<int:pk>/", views.source_detail, name="source_detail"),
     path("sources/<int:pk>/edit/", views.source_form, name="source_edit"),
     path("sources/<int:pk>/action/", views.source_action, name="source_action"),
+    path("sources/<int:pk>/confirm-employer/", views.source_confirm_employer, name="source_confirm_employer"),
     path("leads/", views.lead_list, name="leads"),
     path("leads/export/", views.export_leads, name="export"),
     path("leads/<int:pk>/", views.lead_detail, name="lead_detail"),
