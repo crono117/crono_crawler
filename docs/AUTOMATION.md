@@ -167,3 +167,9 @@ The worker appends one JSON line per step to `DATA_DIR/activity.jsonl` (override
 ### Operator-confirmed employer for structured profiles
 
 Structured Person data without `worksFor` is rejected (`missing_employer`); the employer is never inferred, and a source's `company` field is not treated as the employer of structured profiles. On a source's page an operator can confirm who the listed people work for ("Employer of listed people"). That sets `Source.structured_employer`, records who confirmed it and when in the review notes, and re-queues site setup for automatic sources. Profiles without `worksFor` then use it, and each contact's evidence carries `[Employer confirmed by operator for this source: …]`. A stated `worksFor` always wins. The confirmation is part of the extraction signature, so unchanged pages are re-read once.
+
+### Shared-contact leads (opt-in)
+
+With `SHARED_CONTACT_LEADS=1`, a card that names a person with an explicit sales title but shows no usable personal email or phone may be stored with the site's own shared company contact from the same page: a generic inbox (info@, sales@, …) on the site's own domain, or else an email/phone in the page header/footer/navigation. Third-party addresses are never used. The lead's `contact_scope` is `shared` ("Shared business attribution" in the console and CSV), and its evidence carries `[Shared company contact shown on this page (…), not this person's own: …]`. A personal contact on the card always wins. Structured-data profiles are not paired this way. The setting is part of the extraction signature, so unchanged pages are re-read once when it changes.
+
+Discovery also keeps the shared daily budget for sites that can still yield: a site with 10+ fetched pages and no stored contact gets 5 pages per run (seeds exempt), and each source gets at most 5 sitemap files per run. Skipped jobs make no request and say why; the next run gets a fresh allowance.

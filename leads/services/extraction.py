@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 from bs4 import BeautifulSoup, NavigableString
 import httpx
 import soupsieve
@@ -101,6 +101,8 @@ def signature(source):
              source.require_sales_role, settings.OLLAMA_MODEL if source.extractor == "ollama" else ""]
     if settings.EXTRACTION_PACKS_ENABLED:
         value.append("packs-v1:structured-v1")
+    if settings.SHARED_CONTACT_LEADS:
+        value.append("shared-contact-leads-v1")
     if getattr(source, "structured_employer", ""):
         # Appended only when set, so existing signatures (and page caches) are unchanged.
         value.append("structured-employer:" + source.structured_employer)
@@ -164,6 +166,47 @@ def page_chrome_contacts(soup):
         "header, footer, nav, [role=navigation], [role=contentinfo]"))
     return {"email": {contact_key("email", v) for v in EMAIL.findall(text)},
             "phone": {contact_key("phone", v) for v in PHONE.findall(text)}}
+
+def shared_company_contact(soup, source):
+    """The site's own company-level contact on this page, for shared-contact leads.
+
+    A generic inbox (info@, sales@...) on the site's own domain anywhere on the page, else an email
+    or phone shown in the page header/footer/navigation. Returns (kind, value, where) or None.
+    Third-party addresses (a web host's support@, a personal gmail) are never used.
+    """
+    host = (urlsplit(source.url).hostname or "").lower()
+    bare = host[4:] if host.startswith("www.") else host
+    own = lambda email: email.rsplit("@", 1)[-1].lower().rstrip(".") in (bare, "www." + bare)
+    page = contact_evidence(soup)
+    for email in EMAIL.findall(page):
+        if email.split("@")[0].lower() in GENERIC and own(email):
+            return "email", email.lower(), "company inbox on this page"
+    chrome = " ".join(contact_evidence(node) for node in soup.select(
+        "header, footer, nav, [role=navigation], [role=contentinfo]"))
+    for email in EMAIL.findall(chrome):
+        if own(email):
+            return "email", email.lower(), "page header/footer"
+    phones = PHONE.findall(chrome)
+    if phones:
+        return "phone", normalize(phones[0]), "page header/footer"
+    return None
+
+def shared_contact_lead(fields, evidence, shared, source):
+    """A named person with an explicit sales title on their own card but no personal contact,
+    paired with the company's shared contact. Stored as contact_scope="shared", never as theirs."""
+    if not settings.SHARED_CONTACT_LEADS or not shared:
+        return None
+    title = normalize(fields.get("title"))
+    if not title or not SALES_ROLE.search(title) or title.casefold() not in normalize(evidence).casefold():
+        return None
+    kind, value, where = shared
+    record = {"name": fields.get("name", ""), "title": title, "company": fields.get("company", ""),
+              "email": value if kind == "email" else "", "phone": value if kind == "phone" else ""}
+    labelled = f"{evidence} [Shared company contact shown on this page ({where}), not this person's own: {value}]"
+    accepted = validate_record(record, labelled, source)
+    if accepted:
+        accepted["contact_scope"] = "shared"
+    return accepted
 
 def card_record(row, selectors, evidence, chrome=None):
     """Selected fields plus a guarded card-local visible-contact inference.
@@ -282,8 +325,13 @@ def extract_rules(html, source, diagnostics=None):
         evidence_texts.append(contact_evidence(evidence_row))
     drop_repeated_visible(cards)
     records = []
+    shared = shared_company_contact(soup, source) if settings.SHARED_CONTACT_LEADS else None
     for (record, provenance), evidence in zip(cards, evidence_texts):
         accepted = validate_record(record, evidence, source, diagnostics)
+        if not accepted and not record.get("email") and not record.get("phone"):
+            accepted = shared_contact_lead(record, evidence, shared, source)
+            if accepted:
+                provenance = {}
         if accepted:
             accepted["contact_provenance"] = {kind: provenance[kind] for kind in CONTACT_FIELDS
                                               if accepted[kind] and kind in provenance}

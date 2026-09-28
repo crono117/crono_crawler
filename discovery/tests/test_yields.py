@@ -350,3 +350,50 @@ class SearchQueryAllocationTests(TestCase):
         jobs = list(run.jobs.filter(kind="search").order_by("-priority", "id").values_list("url", "priority", "message"))
         self.assertEqual([url for url, _, _ in jobs], [self.Q_GOOD, self.Q_NEW, self.Q_BAD])
         self.assertIn("4/4 fetched result pages", jobs[0][2])
+
+
+class RunAllowanceTests(TestCase):
+    def setUp(self):
+        from discovery.models import Campaign, DiscoveredURL, DiscoveryJob, DiscoveryRun
+        from leads.models import Source
+        self.DiscoveredURL, self.DiscoveryJob = DiscoveredURL, DiscoveryJob
+        self.source = Source.objects.create(name="Empty marketplace", url="https://market.example.org/", approved=True)
+        self.campaign = Campaign.objects.create(name="Allowance", active=True)
+        self.campaign.sources.add(self.source)
+        old = DiscoveryRun.objects.create(campaign=self.campaign, status="completed")
+        for index in range(12):  # 12 fetched pages, none productive
+            url = f"https://market.example.org/profile/{index}"
+            candidate = DiscoveredURL.objects.create(campaign=self.campaign, url=url, origin="https://market.example.org",
+                                                     decision="approved", source=self.source)
+            DiscoveryJob.objects.create(run=old, candidate=candidate, source=self.source, url=url, status="done")
+        self.run = DiscoveryRun.objects.create(campaign=self.campaign, status="running")
+
+    def job(self, url, kind="page", status="queued", method="link"):
+        candidate, _ = self.DiscoveredURL.objects.get_or_create(
+            campaign=self.campaign, url=url, defaults={"origin": "https://market.example.org", "decision": "approved",
+                                                       "source": self.source, "method": method})
+        return self.DiscoveryJob.objects.create(run=self.run, candidate=candidate, source=self.source, url=url,
+                                                kind=kind, status=status)
+
+    def test_zero_yield_site_gets_a_small_allowance_per_run_and_seeds_are_exempt(self):
+        from discovery.services import ZERO_YIELD_PAGES_PER_RUN, run_allowance_spent
+        for index in range(ZERO_YIELD_PAGES_PER_RUN):
+            self.job(f"https://market.example.org/new/{index}", status="done")
+        waiting = self.job("https://market.example.org/new/next")
+        self.assertIn("exploration allowance", run_allowance_spent(waiting, self.source))
+        seed = self.job("https://market.example.org/", method="seed")
+        self.assertEqual(run_allowance_spent(seed, self.source), "")
+
+    def test_sitemap_files_are_capped_per_source_per_run(self):
+        from discovery.services import SITEMAPS_PER_SOURCE_PER_RUN, run_allowance_spent
+        for index in range(SITEMAPS_PER_SOURCE_PER_RUN):
+            self.job(f"https://market.example.org/sitemap-{index}.xml", kind="sitemap", status="done")
+        nested = self.job("https://market.example.org/sitemap-next.xml", kind="sitemap")
+        self.assertIn("Sitemap allowance", run_allowance_spent(nested, self.source))
+
+    def test_productive_site_is_not_capped(self):
+        from discovery.services import ZERO_YIELD_PAGES_PER_RUN, run_allowance_spent
+        self.DiscoveryJob.objects.filter(url="https://market.example.org/profile/0").update(contacts_seen=1)
+        for index in range(ZERO_YIELD_PAGES_PER_RUN + 2):
+            self.job(f"https://market.example.org/new/{index}", status="done")
+        self.assertEqual(run_allowance_spent(self.job("https://market.example.org/new/next"), self.source), "")

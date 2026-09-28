@@ -805,6 +805,36 @@ def finish(run):
             status="failed" if failed else "completed", finished_at=timezone.now())
 
 
+# Per-run allowances that keep the shared daily budget for sites that can still yield.
+ZERO_YIELD_MIN_FETCHED = 10
+ZERO_YIELD_PAGES_PER_RUN = 5
+SITEMAPS_PER_SOURCE_PER_RUN = 5
+
+
+def run_allowance_spent(job, source):
+    """Why this job should be skipped without a request, or "".
+
+    A site with ZERO_YIELD_MIN_FETCHED+ fetched pages and no stored contact gets only a small
+    exploration allowance of pages per run, and every source gets a bounded number of sitemap
+    files per run (nested sitemap indexes can otherwise consume the day's budget). Seeds and
+    company follow-ups are exempt. Nothing is dismissed; the next run gets a fresh allowance.
+    """
+    if job.company_job_id or (job.candidate and job.candidate.method == "seed"):
+        return ""
+    finished = job.run.jobs.filter(source=source, status__in=("done", "failed")).exclude(pk=job.pk)
+    if job.kind == "sitemap":
+        if finished.filter(kind="sitemap").count() >= SITEMAPS_PER_SOURCE_PER_RUN:
+            return f"Sitemap allowance for this source used in this run ({SITEMAPS_PER_SOURCE_PER_RUN}); no request made."
+        return ""
+    site = origin(job.url)  # the page's own origin (a www/https canonical form may differ from the source's)
+    history = lookup_origin_yields({site}).get(site)
+    if (history and history.fetched >= ZERO_YIELD_MIN_FETCHED and not history.productive and
+            finished.filter(kind="page").count() >= ZERO_YIELD_PAGES_PER_RUN):
+        return (f"Site has yielded no contacts in {history.fetched} fetched pages; its exploration allowance "
+                f"for this run ({ZERO_YIELD_PAGES_PER_RUN} pages) is used. No request made.")
+    return ""
+
+
 def process(job):
     from leads.services.worker import block_source, prepare_domain, parse_robots, retry_delay
     campaign = job.run.campaign
@@ -878,6 +908,10 @@ def process(job):
             return
         if job.kind == "page" and not exact_start and not eligible:
             done(job, "URL no longer meets the current score and direct contact-page intent gate; no request made.", "skipped")
+            return
+        spent = run_allowance_spent(job, source)
+        if spent:
+            done(job, spent, "skipped")
             return
         if source.collector == "demo":
             from classification.fixtures import DEMO_ORIGIN as JEV_DEMO_ORIGIN, demo_response as jev_demo

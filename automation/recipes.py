@@ -5,7 +5,8 @@ import json
 import re
 from urllib.parse import urljoin, urlsplit
 from leads.services.extraction import (DEFAULT_SELECTORS, EMAIL, GENERIC, SALES_ROLE, card_record, contact_evidence,
-    evidence_node, normalize, soup_for, tags, validate_recipe, validate_record)
+    evidence_node, normalize, shared_company_contact, shared_contact_lead, soup_for, tags, validate_recipe,
+    validate_record)
 from leads.services.network import in_scope, origin
 from discovery.ranking import (clean_url, company_page_tier, current_candidate_score, direct_contact_page_intent,
                                reviewed_sources)
@@ -54,6 +55,7 @@ def evaluate(html, source, recipe):
     global_emails = {value.casefold() for value in EMAIL.findall(global_text)}
     global_phones = {re.sub(r"\D", "", value) for value in PHONE.findall(global_text)}
     signals = Counter()
+    uncontacted = []  # (fields, evidence) of named cards without a usable personal contact
     for row in rows[:500]:
         if structured:
             fields = row["fields"]
@@ -91,6 +93,8 @@ def evaluate(html, source, recipe):
         record = validate_record(fields, evidence_text, source, stats)
         if not record:
             counts.update(stats.get("rejected", {}))
+            if not structured and "missing_contact" in stats.get("rejected", {}):
+                uncontacted.append((fields, evidence_text))
         elif source.require_sales_role and not record["title"]:
             counts["missing_role"] += 1
         else:
@@ -109,12 +113,25 @@ def evaluate(html, source, recipe):
             record["phone"] = ""
         if not record["email"] and not record["phone"]:
             counts["shared_or_global_contact"] += 1
+            if not structured:
+                uncontacted.append((record, record["evidence"]))
             continue
         key = (record["name"].casefold(), record["email"], record["phone"])
         if key in accepted:
             counts["duplicate_card"] += 1
         else:
             accepted[key] = record
+    # Opt-in: named salespeople without a personal contact, with the site's shared company contact.
+    shared = shared_company_contact(soup, source) if uncontacted else None
+    personal = {name for name, _, _ in accepted}
+    shared_records = 0
+    for fields, evidence_text in uncontacted:
+        record = shared_contact_lead(fields, evidence_text, shared, source)
+        if record and record["name"].casefold() not in personal:
+            key = (record["name"].casefold(), record["email"], record["phone"])
+            if key not in accepted:
+                accepted[key] = record
+                shared_records += 1
     total = min(len(rows), 500)
     if parse_stats.get("parse_errors"):
         counts["structured_parse_error"] += parse_stats["parse_errors"]
@@ -122,6 +139,7 @@ def evaluate(html, source, recipe):
         "cards_without_contacts" if counts.get("missing_contact", 0) + counts.get("shared_or_global_contact", 0) == total else "contacts_or_evidence_invalid")
     stats = {"result": result, "matched_cards": total, "accepted_records": len(accepted),
              "rejected_records": sum(counts.values()), "primary_rejections": dict(counts), "signals": dict(signals),
+             "shared_contact_records": shared_records,
              "row_limit_reached": len(rows) > 500 or parse_stats.get("limit_reached", False),
              "structure_hash": hashlib.sha256(json.dumps(sorted({tuple(s) for s in shape})).encode()).hexdigest()}
     return list(accepted.values()), tags(normalize(soup.get_text(" ", strip=True))), stats
