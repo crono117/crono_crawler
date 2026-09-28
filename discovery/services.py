@@ -111,7 +111,7 @@ def _queue_state(run):
 
 @transaction.atomic
 def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
-                   approved_sources=None, reviewed_source_ids=None):
+                   approved_sources=None, reviewed_source_ids=None, queue_jobs=True):
     """Register an ordered batch while holding one campaign capacity lock."""
     prepared = []
     for original in specs:
@@ -155,9 +155,10 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     candidates = {candidate.url: candidate for candidate in
                   campaign.urls.filter(url__in=urls).select_related("source")}
     inventory_count = campaign.saved_url_count()
-    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope"))
-    known_origins = {item_origin for item_origin, _ in origin_rows}
-    dismissed_origins = {item_origin for item_origin, scope in origin_rows if scope == "origin"}
+    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope", "decision"))
+    known_origins = {item_origin for item_origin, scope, decision in origin_rows
+                     if not (decision == "dismissed" and not scope)}
+    dismissed_origins = {item_origin for item_origin, scope, _ in origin_rows if scope == "origin"}
     queue_state = _queue_state(run_state)
     results = []
     duplicate_count = candidate_count = new_domain_count = 0
@@ -203,6 +204,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             continue
         if candidate:
             duplicate_count += 1
+            counted_before = not (candidate.decision == "dismissed" and not candidate.dismissal_scope)
             candidate.last_seen = timezone.now()
             candidate.score, candidate.reasons = score, reasons
             if noise and candidate.decision == "pending":
@@ -217,12 +219,15 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             if kind == "sitemap":
                 candidate.kind = kind
             candidate.save()
+            counted_after = not (candidate.decision == "dismissed" and not candidate.dismissal_scope)
+            inventory_count += int(counted_after) - int(counted_before)
         else:
-            if inventory_count >= campaign.max_candidates:
+            automatically_filtered = bool(noise or score < 0)
+            if not automatically_filtered and inventory_count >= campaign.max_candidates:
                 inventory_full = True
                 results.append(None)
                 continue
-            new_domain = not source and item_origin not in known_origins
+            new_domain = not automatically_filtered and not source and item_origin not in known_origins
             if new_domain and run_state.new_domains + new_domain_count >= campaign.max_new_domains:
                 results.append(None)
                 continue
@@ -237,8 +242,9 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 search_query=query[:600], score=score, reasons=reasons, kind=kind,
                 decision="dismissed" if score < 0 or noise else ("approved" if source else "pending"), source=source)
             candidates[url] = candidate
-            known_origins.add(item_origin)
-            inventory_count += 1
+            if not automatically_filtered:
+                known_origins.add(item_origin)
+                inventory_count += 1
             candidate_count += 1
             new_domain_count += int(new_domain)
         if manual and not preserve_existing_approval:
@@ -258,10 +264,11 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             if candidate.source_id != source.pk or candidate.decision != "approved":
                 candidate.source, candidate.decision = source, "approved"
                 candidate.save(update_fields=["source", "decision"])
-            queue_candidate(
-                run_state, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job,
-                reviewed_source_ids=reviewed_source_ids, job_priority=job_priority, capacity=queue_state,
-                origin_yields=origin_yields)
+            if queue_jobs:
+                queue_candidate(
+                    run_state, candidate, depth=depth, kind=candidate.kind, seed=seed, company_job=company_job,
+                    reviewed_source_ids=reviewed_source_ids, job_priority=job_priority, capacity=queue_state,
+                    origin_yields=origin_yields)
         elif candidate.decision == "pending":
             pending.append(candidate)
         results.append(candidate)
@@ -542,13 +549,15 @@ def start(campaign):
                                    "method": "sitemap", "kind": "sitemap"})
     for spec in seed_specs:
         spec.update(seed=True, job_priority=spec["priority"], source_hint=spec.pop("source_id"))
-    register_batch(run, seed_specs, campaign=campaign, order=True, approved_sources=sources,
-                   reviewed_source_ids=reviewed_source_ids)
+    # Register permission/provenance first, then allocate page capacity across all known work.
+    # Previously every seed and sitemap could fill the run before unseen profiles were considered.
+    seed_candidates = register_batch(run, seed_specs, campaign=campaign, order=True, approved_sources=sources,
+                                     reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
     # External links the regular collector found on these sources since they were last reviewed.
     collector_specs = collector_link_specs(sources)
     if collector_specs:
         collector_results = register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
-                                           reviewed_source_ids=reviewed_source_ids)
+                                           reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
         mark_collector_candidates_handled(collector_specs, collector_results)
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
@@ -562,11 +571,39 @@ def start(campaign):
             if candidate.kind != "sitemap" or campaign.use_sitemaps:
                 remembered_in_scope.append(candidate)
     queue_state = _queue_state(run)
+    # Reserve up to half the run (rounded up) for never-fetched non-seed pages. All
+    # ordinary approval, intent, setup and scope gates still apply inside queue_candidate.
+    # Unusable candidates consume no reservation; unused slots spill back to seeds/refreshes.
+    page_candidates = [candidate for candidate in remembered_in_scope if candidate.kind == "page"]
+    fetched = set(PageSnapshot.objects.filter(
+        source_id__in=selected_ids, url__in=[candidate.url for candidate in page_candidates])
+        .values_list("source_id", "url"))
+    novel = [candidate for candidate in page_candidates
+             if (candidate.source_id, candidate.url) not in fetched]
+    reserved = (campaign.max_pages + 1) // 2
+    for candidate in order_discovery_batch(novel, url=lambda item: item.url,
+                                           source_id=lambda item: item.source_id, priority=lambda item: item.score):
+        if queue_state["count"] >= reserved:
+            break
+        queue_candidate(run, candidate, kind="page", reviewed_source_ids=reviewed_source_ids,
+                        capacity=queue_state, origin_yields=origin_yields)
+    # Keep starting-page refreshes ahead of sitemap spillover. Sitemaps do not get
+    # PageSnapshots, so treating them as perpetually novel would starve these refreshes.
+    seed_candidates = [candidate for candidate in seed_candidates if candidate is not None]
+    for candidate in sorted(seed_candidates, key=lambda item: item.kind == "sitemap"):
+        if queue_state["count"] >= campaign.max_pages:
+            break
+        if (candidate.kind, candidate.url) not in queue_state["keys"]:
+            queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
+                            job_priority=95 if candidate.kind == "sitemap" else 100,
+                            capacity=queue_state, origin_yields=origin_yields)
     for candidate in order_discovery_batch(
             remembered_in_scope, url=lambda item: item.url, source_id=lambda item: item.source_id,
             priority=lambda item: item.score):
         if queue_state["count"] >= campaign.max_pages:
             break
+        if (candidate.kind, candidate.url) in queue_state["keys"]:
+            continue
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
                         capacity=queue_state, origin_yields=origin_yields)
     if campaign.search_enabled:

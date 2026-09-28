@@ -658,3 +658,30 @@ class CanaryYieldTests(AutomationCase):
                                     url=self.V + "/team/other/", status="done", contacts_seen=0)
         stats = origin_yields({self.V})[self.V]
         self.assertEqual((stats.fetched, stats.productive), (2, 1))
+
+
+class CanaryProductionReportingTests(AutomationCase):
+    @override_settings(SHARED_CONTACT_LEADS=True)
+    def test_shared_contacts_saved_by_canary_appear_in_production_report_without_discovery_jobs(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from leads.services.reporting import production_totals
+        self.responses['/team/'] = '''<main>
+            <article class="agent-tile"><h3>Alex Example</h3><p class="role">Merchant services sales consultant</p></article>
+            <article class="agent-tile"><h3>Casey Fixture</h3><p class="role">POS sales representative</p></article>
+            </main><footer><a href="mailto:info@vendor.example.org">Company contact</a></footer>'''
+        candidate = self.candidate()
+        job = candidate.source.automation_job
+        self.run_until(job)
+        self.assertEqual(job.state, 'active')
+        self.assertEqual(job.current_recipe.status, 'known_good')
+        self.assertEqual(Lead.objects.filter(contact_scope='shared').count(), 2)
+        self.assertFalse(self.run.jobs.exists())
+        totals = production_totals(timezone.now() - timedelta(days=7))
+        self.assertEqual((totals['new'], totals['new_shared']), (2, 2))
+        out = StringIO()
+        call_command('discovery_yield', days=7, stdout=out)
+        self.assertIn('New production lead records: 2 (2 with shared company contact)', out.getvalue())
+        self.assertIn('No completed page jobs', out.getvalue())
+        self.assertIn('Setup canaries', out.getvalue())
+        self.assertEqual(Observation.objects.filter(source=job.source, present=True).count(), 2)

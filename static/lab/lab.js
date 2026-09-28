@@ -134,8 +134,8 @@
   // Latest leads panel (names come from the staff-only feed, not the activity log).
   var leadsList = document.getElementById("lab-leads"), leadsCount = document.getElementById("lab-leads-count"), leadsKey = "";
   function renderLeads(rows, totals){
-    leadsCount.textContent = totals.total + " total · " + totals.today + " in 24h · " + totals.shared + " shared-contact";
-    var key = rows.map(function(r){ return r.href + r.status; }).join("|");
+    leadsCount.textContent = totals.total + " total · " + totals.today + " new in 24h · " + totals.shared + " shared-contact";
+    var key = JSON.stringify(rows);
     if (key === leadsKey) return;
     leadsKey = key;
     leadsList.textContent = "";
@@ -151,7 +151,7 @@
       a.href = r.href;
       var scope = document.createElement("span");
       scope.className = "scope" + (r.shared ? " shared" : "");
-      scope.textContent = r.shared ? "shared contact" : "personal";
+      scope.textContent = r.shared ? "shared contact" : (r.scope_key === "person" ? "personal" : "unconfirmed");
       var who = document.createElement("span");
       who.className = "who";
       who.textContent = r.name;
@@ -160,7 +160,18 @@
       meta.textContent = (r.title || "Role unknown") + " · " + (r.company || r.site || "") + " · " + r.status + " · " +
         new Date(r.found * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
       a.appendChild(scope); a.appendChild(who); a.appendChild(meta);
-      li.appendChild(a); leadsList.appendChild(li);
+      li.appendChild(a);
+      if (r.source_url){
+        var source = document.createElement("a");
+        source.className = "lead-source";
+        source.href = r.source_url;
+        source.target = "_blank";
+        source.rel = "noopener noreferrer";
+        source.title = r.source_url;
+        source.textContent = r.source_present ? "View source ↗" : "View previous source ↗";
+        li.appendChild(source);
+      }
+      leadsList.appendChild(li);
     });
   }
 

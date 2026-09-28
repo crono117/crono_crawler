@@ -2,7 +2,7 @@ from django.test import SimpleTestCase, override_settings
 
 from automation.recipes import evaluate, proposals
 from leads.models import Source
-from leads.services.extraction import extract
+from leads.services.extraction import diagnostic_message, extract
 
 
 def page(cards, footer='<footer>Call (555) 010-2000 · <a href="mailto:info@fictional.example.org">info@fictional.example.org</a></footer>'):
@@ -57,9 +57,13 @@ class SharedContactLeadTests(SimpleTestCase):
 
     @override_settings(SHARED_CONTACT_LEADS=True)
     def test_operator_rules_sources_use_the_same_rule(self):
-        records, _ = extract(page(CARDS), self.source)
+        diagnostics = {}
+        records, _ = extract(page(CARDS), self.source, diagnostics=diagnostics)
         shared = [r for r in records if r["contact_scope"] == "shared"]
         self.assertEqual([(r["name"], r["email"]) for r in shared], [("Alex Fictional", "info@fictional.example.org")])
+        self.assertEqual(diagnostics["shared_contact_records"], 1)
+        self.assertIn("1 accepted using shared company contact fallback", diagnostic_message(diagnostics))
+        self.assertIn("Initial checks:", diagnostic_message(diagnostics))
 
 
 class DecoyAssessmentTests(SimpleTestCase):

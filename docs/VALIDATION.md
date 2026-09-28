@@ -50,6 +50,14 @@ Applying the additive migrations to the existing local sample database preserved
 
 The optional API is an authenticated integration surface in this application. A separate remote coordinator/desktop-client deployment, asymmetric signing, raw-HTML transfer, calibrated recipe accuracy, real-site extraction yield and visual screenshot QA have not been established. The new workflow does not claim to validate a Host Merchant recipe until tested against that site's actual local HTML. The operational limits and Hermes update steps are in [Automation](AUTOMATION.md).
 
+## Production yield reporting and queue capacity (September 28, 2026)
+
+Branch `feat/lead-yield-reporting-queue`, based on `main` at `0dd1f5e`, passed **559 Django tests**, system checks, migration-drift checks and JavaScript syntax validation. No database migration is required. The actual web/worker smoke, Jev smoke, extraction smoke and native held-out extraction fixture assertions also passed. These checks used isolated databases and fictional contacts; no production service or database was changed.
+
+Regressions cover successful shared-contact canaries appearing in production creation totals even with no discovery jobs, stable totals across repeated observations, demo exclusion, status handling and nonexclusive campaign attribution. Source-link checks exercise exact current/previous evidence pages and reject non-web URL schemes. Queue fixtures prove that automatically filtered URLs no longer consume useful URL/domain capacity within a batch, and that approved unseen profiles get run capacity when repeated seeds and sitemaps would otherwise fill it. Approval, manual-review, scope, blocked-source, setup and page-intent gates still apply.
+
+The report change reads existing records, so it needs no recrawl to include previously stored canary contacts. Queue allocation changes apply when a new run starts; resuming an open run preserves its jobs and retry deferrals. Real-source yield after rollout still needs a bounded desktop campaign check. No new live-site extraction recipe or visual browser screenshot was validated by this change.
+
 ## Still to validate on the user's environment
 
 - **Chromium rendering:** Playwright was installed in a separate build environment, but full Chromium and a subsequent headless-shell download timed out. The browser collector has not been exercised with a real browser. The separate browser-control service rejected navigation to the local application with `ERR_BLOCKED_BY_CLIENT`, so no visual screenshot QA was completed; templates were exercised through Django and real HTTP.

@@ -6,6 +6,7 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from discovery.yields import OriginYield, canary_pages, page_jobs, safe_origin, window_days
+from leads.services.reporting import production_totals
 
 
 class Command(BaseCommand):
@@ -19,18 +20,24 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         days = max(1, options["days"] or window_days())
-        jobs = page_jobs(since=timezone.now() - timedelta(days=days))  # discovery page jobs only
+        since = timezone.now() - timedelta(days=days)
+        totals = production_totals(since, campaign_id=options["campaign"])
+        self.stdout.write(f"Window: last {days} day(s)")
+        self.stdout.write(f"New production lead records: {totals['new']} ({totals['new_shared']} with shared company contact).")
+        self.stdout.write("All collection paths, including setup canaries; counted once by lead first-seen time. Demo-only leads excluded. Includes all review states.")
+        if options["campaign"]:
+            self.stdout.write("Lead totals cover current campaign sources; totals across campaigns may overlap.")
+        jobs = page_jobs(since=since).exclude(source__collector="demo")  # discovery page jobs only
         if options["campaign"]:
             jobs = jobs.filter(run__campaign_id=options["campaign"])
-        since = timezone.now() - timedelta(days=days)
         total = self.grouped(jobs, None)
         if not total or not total[0][1].fetched:
-            self.stdout.write(f"No completed page jobs in the last {days} day(s).")
+            self.stdout.write(f"No completed page jobs from real sources in the last {days} day(s).")
             self.canary_section(since, options["campaign"])
             return
         _, stats, new = total[0]
-        self.stdout.write(f"Window: last {days} day(s)")
-        self.stdout.write(f"Harvest rate: {self.ratio(stats)}; {new} new contact(s)")
+        self.stdout.write("\nDiscovery jobs only (demo jobs excluded; creation counters omit setup and regular collection):")
+        self.stdout.write(f"Harvest rate: {self.ratio(stats)}; {new} new contact(s) recorded by discovery jobs")
         self.section("By discovery method", self.grouped(jobs, "candidate__method"))
         searches = self.grouped(jobs.filter(candidate__method="search"), "candidate__search_query")
         if searches:
@@ -69,7 +76,7 @@ class Command(BaseCommand):
             self.stdout.write(f"  {self.ratio(stats, new):>30}  {name}")
 
     def canary_section(self, since, campaign):
-        pages = canary_pages(since)
+        pages = canary_pages(since).exclude(job__source__collector="demo")
         if campaign:
             pages = pages.filter(job__campaign_id=campaign)
         by_origin = {}
