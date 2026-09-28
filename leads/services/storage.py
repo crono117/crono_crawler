@@ -103,6 +103,7 @@ def save_records(source, url, content_hash, records, company_tags):
     page_history = list(Lead.objects.filter(pk__in=observed_ids).order_by("pk"))
     observations.update(present=False)
     records_by_name = Counter(record["name"].casefold() for record in records)
+    new = shared = 0
     for record in records:
         facts = {k: record[k] for k in LEAD_FIELDS}
         key = identity(record, source, url)
@@ -117,6 +118,8 @@ def save_records(source, url, content_hash, records, company_tags):
         created = lead is None
         if created:
             lead = Lead(identity=key, **facts, last_seen=now)
+            new += 1
+            shared += record.get("contact_scope") == "shared"
         held = [other for other in page_history if other.status in HELD_STATUSES and other.pk != lead.pk
                 and other.name.casefold() == record["name"].casefold()]
         if held and holdable(lead):
@@ -136,7 +139,18 @@ def save_records(source, url, content_hash, records, company_tags):
             "company_tags": company_tags, "evidence": record["evidence"], "method": source.extractor,
             "content_hash": content_hash, "present": True, "last_seen": now,
         })
+    if records:
+        _announce(url, new, shared, len(records))
     return len(records)
+
+
+def _announce(url, new, shared, seen):
+    """Tell the Lab once the save commits: counts only, never names or contact values."""
+    from .activity import current_lane, emit
+    lane = current_lane()
+    text = (f"{url}: {new} new lead(s)" + (f" ({shared} with shared company contact)" if shared else "")
+            + f", {seen - new} already known")
+    transaction.on_commit(lambda: emit("leads", text, lane=lane, url=url, contacts=new, seen=seen))
 
 @transaction.atomic
 def touch_unchanged(source, url):

@@ -157,6 +157,13 @@ def lab(request):
                                                    "activity_enabled": bool(settings.ACTIVITY_LOG)})
 
 
+def lead_totals(Lead, since):
+    """Real leads only: records from offline demo fixtures are not counted."""
+    real = Lead.objects.exclude(observations__source__collector="demo").distinct()
+    return {"total": real.count(), "today": real.filter(first_seen__gte=since).count(),
+            "shared": real.filter(contact_scope="shared").count()}
+
+
 def review_breakdown():
     """What waits for an operator: links whose page or label points at people (team, about, contact)
     or that scored positively are worth a look; the rest are low signal. Auto-filtered page chrome
@@ -184,7 +191,7 @@ def lab_feed(request):
     from django.utils import timezone
     from classification.models import Evaluation
     from discovery.models import DiscoveredURL, DiscoveryJob
-    from leads.models import PageJob, SourceCandidate, WorkerLease
+    from leads.models import Lead, PageJob, SourceCandidate, WorkerLease
     from leads.services import activity
     from .services import RUNNABLE
 
@@ -192,7 +199,7 @@ def lab_feed(request):
         after = float(request.GET.get("after", 0))
     except ValueError:
         after = 0.0
-    entries = activity.read(after=after, limit=300 if after else 120)
+    entries = activity.read(after=after, limit=300) if after else activity.recent_by_lane()
     lease = WorkerLease.objects.filter(key="collector").first()
     now = timezone.now()
     from django.conf import settings
@@ -225,6 +232,7 @@ def lab_feed(request):
         "worker_online": bool(lease and lease.token and lease.heartbeat_at > now - timedelta(minutes=10)),
         "queues": queues,
         "review": review,
+        "leads": lead_totals(Lead, now - timedelta(hours=24)),
         "review_href": reverse("discovery:candidates"),
         "server_time": now.timestamp(),
     })

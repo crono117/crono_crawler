@@ -25,6 +25,10 @@ def path():
     return Path(value) if value else None
 
 
+def current_lane():
+    return _lane.get()
+
+
 @contextmanager
 def lane(name):
     token = _lane.set(name)
@@ -57,7 +61,20 @@ def _truncate(target):
     os.replace(temporary, target)
 
 
-def read(after=0.0, limit=400):
+def recent_by_lane(per_lane=40):
+    """The last ``per_lane`` entries of each lane, oldest first, so a freshly opened Lab shows every
+    console's recent history even when one busy lane dominates the newest lines."""
+    entries = read(after=0.0, limit=100000, window=MAX_BYTES + 1)
+    kept, counts = [], {}
+    for entry in reversed(entries):
+        key = entry.get("lane", "worker")
+        if counts.get(key, 0) < per_lane:
+            counts[key] = counts.get(key, 0) + 1
+            kept.append(entry)
+    return list(reversed(kept))
+
+
+def read(after=0.0, limit=400, window=250_000):
     """Entries newer than ``after`` (a timestamp), oldest first, at most ``limit``."""
     target = path()
     if target is None or not target.exists():
@@ -65,7 +82,7 @@ def read(after=0.0, limit=400):
     try:
         size = target.stat().st_size
         with open(target, "rb") as handle:
-            handle.seek(max(0, size - 250_000))
+            handle.seek(max(0, size - window))
             tail = handle.read().decode("utf-8", errors="replace").splitlines()
     except OSError:
         return []

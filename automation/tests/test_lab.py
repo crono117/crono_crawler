@@ -60,6 +60,7 @@ class ActivityFeedTests(TestCase):
         self.assertEqual(set(data["queues"]), {"discovery", "approval", "automation", "collector", "jev"})
         self.assertEqual(data["queues"]["collector"], {"queued": 0, "ready": 0, "next_at": None})
         self.assertEqual(data["review"], {"worth_a_look": 0, "low_signal": 0, "auto_filtered": 0})
+        self.assertEqual(data["leads"], {"total": 0, "today": 0, "shared": 0})
         self.assertEqual(json.loads(self.client.get("/automation/lab/feed/?after=nonsense").content)["entries"][-1]["lane"], "collector")
 
 
@@ -92,3 +93,38 @@ class ApprovalActivityTests(AutomationCase):
         self.assertEqual(DiscoveredURL.objects.get(pk=pending.pk).decision, "dismissed")
         self.assertEqual(approval[-1]["kind"], "dismissed")
         self.assertEqual(approval[-1]["by"], "operator")
+
+
+class LeadEventTests(TestCase):
+    def setUp(self):
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        overrides = override_settings(ACTIVITY_LOG=str(Path(folder.name) / "activity.jsonl"))
+        overrides.enable()
+        self.addCleanup(overrides.disable)
+
+    def test_saved_leads_are_announced_after_commit_with_counts_only(self):
+        from leads.models import Source
+        from leads.services.storage import save_records
+        source = Source.objects.create(name="Fictional", url="https://vendor.example.org/team/", approved=True)
+        record = {"name": "Alex Fictional", "company": "", "title": "Sales Representative",
+                  "email": "info@vendor.example.org", "phone": "", "contact_scope": "shared",
+                  "person_tags": [], "evidence": "Alex Fictional Sales Representative info@vendor.example.org"}
+        with self.captureOnCommitCallbacks(execute=True):
+            with activity.lane("automation"):
+                save_records(source, source.url, "hash", [record], [])
+        (entry,) = [e for e in activity.read() if e["kind"] == "leads"]
+        self.assertEqual((entry["lane"], entry["contacts"], entry["seen"]), ("automation", 1, 1))
+        self.assertIn("1 with shared company contact", entry["text"])
+        self.assertNotIn("Alex", json.dumps(entry))
+        self.assertNotIn("info@", entry["text"])
+
+    def test_fresh_lab_shows_each_lanes_recent_history(self):
+        for index in range(200):
+            activity.emit("pick", f"discovery {index}", lane="discovery")
+        activity.emit("state", "setup moved", lane="automation")
+        for index in range(200):
+            activity.emit("pick", f"discovery later {index}", lane="discovery")
+        recent = activity.recent_by_lane(per_lane=40)
+        self.assertIn("setup moved", [e["text"] for e in recent])
+        self.assertEqual(sum(e["lane"] == "discovery" for e in recent), 40)

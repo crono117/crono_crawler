@@ -435,6 +435,11 @@
         flyToken(w.sprite, {x: BOARD.x, y: BOARD.y}, 0xffc94f);
         scene.time.delayedCall(hurry ? 80 : 450, done);
         return;
+      case "leads":
+        say(w, e.contacts ? "★ " + e.contacts + " new lead(s)!" : "leads refreshed", e.contacts ? "#9dffcf" : "#c8cfe8", 2600);
+        if (e.contacts){ toRack(w.sprite, e.contacts); }
+        scene.time.delayedCall(hurry ? 150 : 900, done);
+        return;
       case "result":
         say(w, e.contacts ? "★ " + e.contacts + " contact(s)" : "done", e.contacts ? "#9dffcf" : "#c8cfe8");
         if (e.contacts){ toRack(w.sprite, e.contacts); contactsToday += e.contacts; }
@@ -534,7 +539,8 @@
         LANES.forEach(function(l){
           consoles[l.key].dot.classList.toggle("online", now - consoles[l.key].last < 20);
         });
-        rackText.setText(contactsToday ? "+" + contactsToday + " this session" : "");
+        var leads = data.leads || {total: 0, today: 0};
+        rackText.setText(leads.total + " leads · +" + leads.today + " in 24h");
         statusText.setText(idleNote && now - idleNote.t < 180 ? idleNote.text
           : "one worker process · time-slices lanes · focus: " + (focusLane ? LANE[focusLane].label : "—"));
         first = false;
