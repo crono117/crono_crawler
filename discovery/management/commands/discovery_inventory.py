@@ -20,7 +20,8 @@ from django.utils import timezone
 
 from discovery.models import Campaign, DiscoveryJob
 from discovery.ranking import canonical_exact_start, direct_contact_page_intent
-from discovery.turnover import PARKED_REASON, eligible as turnover_eligible, park, parkable
+from discovery.turnover import (ORIGIN_CAP_REASON, PARKED_EXTERNAL_REASON, PARKED_REASON, eligible as turnover_eligible,
+                                origin_excess, park, parkable, parkable_external)
 from leads.models import Lead, Observation, PageSnapshot, WorkerLease
 from leads.services.reporting import production_leads
 
@@ -46,7 +47,8 @@ def report(campaign):
     now = timezone.now()
     rows = list(campaign.urls.values_list("pk", "url", "label", "kind", "method", "decision", "dismissal_scope",
                                           "archived_at", "archive_reason", "manual_review_required", "source_id",
-                                          "source__url", "source__blocked_at", "score", "origin", "last_seen"))
+                                          "source__url", "source__blocked_at", "score", "origin", "last_seen",
+                                          "first_seen"))
     active = [row for row in rows if row[7] is None and not (row[5] == "dismissed" and not row[6])]
     archived = [row for row in rows if row[7] is not None]
 
@@ -59,7 +61,8 @@ def report(campaign):
         else:
             decisions[row[5]] += 1
         if row[7] is not None:
-            inventory_state["archived_parked" if row[8] == PARKED_REASON else "archived_other"] += 1
+            inventory_state[{PARKED_REASON: "archived_parked", PARKED_EXTERNAL_REASON: "archived_parked_external",
+                             ORIGIN_CAP_REASON: "archived_origin_share"}.get(row[8], "archived_other")] += 1
         elif row[5] == "dismissed" and not row[6]:
             inventory_state["auto_filtered_uncounted"] += 1
         else:
@@ -85,7 +88,7 @@ def report(campaign):
     active_approved = Counter()
     fetch_state = Counter()
     no_intent_origins = Counter()
-    for pk, url, label, kind, method, decision, _, _, _, manual, source_id, source_url, blocked, score, item_origin, last_seen in active:
+    for pk, url, label, kind, method, decision, _, _, _, manual, source_id, source_url, blocked, score, item_origin, last_seen, _ in active:
         history = jobs_by_candidate.get(pk, {})
         if (source_id, url) in evidence or history.get("contacts"):
             fetch_state["produced_contacts"] += 1
@@ -117,6 +120,28 @@ def report(campaign):
     duplicate_rows = sum(count - 1 for count in groups.values() if count > 1)
     parkable_ids = parkable(campaign)
     stale_pending = sum(1 for row in active if row[5] == "pending" and row[15] < now - timedelta(days=7))
+    # What occupies capacity, by origin, and what arrived recently: finds a refill source directly.
+    by_origin = {}
+    for row in active:
+        entry = by_origin.setdefault(row[14], Counter())
+        entry["counted"] += 1
+        entry[row[5]] += 1
+        entry["direct_intent" if direct_contact_page_intent(row[1], row[2]) else "no_intent"] += 1
+    top_origins = [{"origin": item_origin, **entry} for item_origin, entry in
+                   sorted(by_origin.items(), key=lambda item: -item[1]["counted"])[:15]]
+    day = now - timedelta(hours=24)
+    fresh = [row for row in rows if row[16] >= day]
+    active_ids = {row[0] for row in active}
+    fresh_counted = [row for row in fresh if row[0] in active_ids]
+    recent = {"created": len(fresh), "counted_now": len(fresh_counted),
+              "counted_by_decision": dict(Counter(row[5] for row in fresh_counted)),
+              "counted_by_method": dict(Counter(row[4] for row in fresh_counted)),
+              "counted_top_origins": Counter(row[14] for row in fresh_counted).most_common(10),
+              "parked": sum(1 for row in fresh if row[8] in (PARKED_REASON, PARKED_EXTERNAL_REASON, ORIGIN_CAP_REASON))}
+    pending_rows = [row for row in active if row[5] == "pending"]
+    active_pending = {"total": len(pending_rows),
+                      "direct_intent": sum(1 for row in pending_rows if direct_contact_page_intent(row[1], row[2])),
+                      "stale_7d": stale_pending, "origins": len({row[14] for row in pending_rows})}
 
     week = now - timedelta(days=7)
     runs = campaign.runs.filter(created_at__gte=week)
@@ -153,6 +178,12 @@ def report(campaign):
         "archived": len(archived),
         "parkable_now": len(parkable_ids),
         "parkable_top_origins": no_intent_origins.most_common(10),
+        "parkable_external_now": len(parkable_external(campaign)),
+        "active_pending": active_pending,
+        "active_by_origin_top": top_origins,
+        "last_24h": recent,
+        "max_active_per_origin": campaign.max_active_per_origin,
+        "origin_excess_now": len(origin_excess(campaign, campaign.max_active_per_origin)),
         "turnover_eligible_now": turnover_eligible(campaign).count(),
         "stale_pending": stale_pending,
         "runs": run_summary,
@@ -177,6 +208,8 @@ class Command(BaseCommand):
                             help="Archive active approved pages that can never pass the direct-intent gate.")
         parser.add_argument("--enable-parking", action="store_true",
                             help="Turn on park_low_value_urls for this campaign.")
+        parser.add_argument("--origin-cap", type=int,
+                            help="Set max_active_per_origin and park each origin's lowest-scoring excess pages.")
         parser.add_argument("--apply", action="store_true", help="Write changes. Without it, only report.")
 
     def handle(self, *args, **options):
@@ -186,18 +219,33 @@ class Command(BaseCommand):
             raise CommandError("Campaign does not exist.") from exc
         before = report(campaign)
         result = {"before": before}
-        if options["park_low_value"] or options["enable_parking"]:
+        cap = options["origin_cap"]
+        if cap is not None and not 0 <= cap <= 10_000:
+            raise CommandError("--origin-cap must be between 0 and 10000.")
+        if options["park_low_value"] or options["enable_parking"] or cap is not None:
             if not options["apply"]:
                 result["dry_run"] = {"would_park": before["parkable_now"],
-                                     "would_enable_parking": options["enable_parking"] and not campaign.park_low_value_urls}
+                                     "would_park_external": before["parkable_external_now"],
+                                     "would_park_origin_excess": len(origin_excess(campaign, cap)) if cap else 0,
+                                     "would_enable_parking": options["enable_parking"] and not campaign.park_low_value_urls,
+                                     "would_set_origin_cap": cap}
             else:
                 with transaction.atomic():
                     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
-                    parked = park(campaign, parkable(campaign)) if options["park_low_value"] else 0
+                    parked = external = excess = 0
+                    if options["park_low_value"]:
+                        parked = park(campaign, parkable(campaign))
+                        external = park(campaign, parkable_external(campaign), PARKED_EXTERNAL_REASON)
                     if options["enable_parking"] and not campaign.park_low_value_urls:
                         campaign.park_low_value_urls = True
                         campaign.save(update_fields=["park_low_value_urls"])
-                result["applied"] = {"parked": parked, "parking_enabled": campaign.park_low_value_urls}
+                    if cap is not None:
+                        campaign.max_active_per_origin = cap
+                        campaign.save(update_fields=["max_active_per_origin"])
+                        excess = park(campaign, origin_excess(campaign, cap), ORIGIN_CAP_REASON)
+                result["applied"] = {"parked": parked, "parked_external": external, "parked_origin_excess": excess,
+                                     "parking_enabled": campaign.park_low_value_urls,
+                                     "max_active_per_origin": campaign.max_active_per_origin}
                 result["after"] = report(campaign)
                 if not campaign.park_low_value_urls:
                     result["warning"] = ("park_low_value_urls is off: new in-scope links without contact-page "

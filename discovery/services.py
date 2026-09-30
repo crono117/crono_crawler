@@ -1,5 +1,6 @@
 """Persistent discovery jobs, executed by the existing single collector worker."""
 import hashlib
+from collections import Counter
 import logging
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from pathlib import Path
@@ -156,10 +157,14 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     candidates = {candidate.url: candidate for candidate in
                   campaign.urls.filter(url__in=urls).select_related("source")}
     inventory_count = campaign.saved_url_count()
-    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope", "decision"))
-    known_origins = {item_origin for item_origin, scope, decision in origin_rows
+    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope", "decision", "archived_at"))
+    known_origins = {item_origin for item_origin, scope, decision, _ in origin_rows
                      if not (decision == "dismissed" and not scope)}
-    dismissed_origins = {item_origin for item_origin, scope, _ in origin_rows if scope == "origin"}
+    dismissed_origins = {item_origin for item_origin, scope, _, _ in origin_rows if scope == "origin"}
+    # Active (counted) rows per origin, for the optional per-origin share. Same query as above.
+    origin_active = Counter(item_origin for item_origin, scope, decision, archived in origin_rows
+                            if archived is None and not (decision == "dismissed" and not scope))
+    origin_cap = campaign.max_active_per_origin
     queue_state = _queue_state(run_state)
     results = []
     duplicate_count = candidate_count = new_domain_count = 0
@@ -170,8 +175,25 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 "domain_rejected", "archived_ignored", "archived", "parked", "unparked"):
         stats.setdefault(key, 0)
     baseline = {key: stats[key] for key in ("capacity_rejected", "parked")}  # callers may share stats
-    from .turnover import PARKED_REASON
+    from .turnover import ORIGIN_CAP_REASON, PARKED_EXTERNAL_REASON, PARKED_REASON
     parking = campaign.park_low_value_urls
+    # External pages are parked only when an enabled site policy requires intent: then automation
+    # can never admit a page without it, and it would only hold capacity until it went stale.
+    from automation.models import SitePolicy
+    intent_policy = parking and SitePolicy.objects.filter(campaign=campaign, enabled=True,
+                                                          require_page_intent=True).exists()
+
+    def park_new(reason, decision, bound_source):
+        nonlocal candidate_count
+        row = DiscoveredURL.objects.create(
+            campaign=campaign, first_run=run_state, url=url, origin=item_origin,
+            label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
+            search_query=query[:600], score=score, reasons=reasons, kind=kind, decision=decision,
+            source=bound_source, archived_at=timezone.now(), archive_reason=reason)
+        candidates[url] = row
+        candidate_count += 1
+        stats["parked"] += 1
+        results.append(row)
 
     for spec, url in prepared:
         if url is None:
@@ -205,13 +227,17 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 continue
 
         candidate = candidates.get(url)
-        if (candidate and candidate.archived_at and parking and candidate.archive_reason == PARKED_REASON
-                and candidate.decision == "approved" and source and not company_job
-                and not low_value_page(url, label, kind=candidate.kind) and inventory_count < campaign.max_candidates):
-            # Only automatic parking is reversible here, and only through the same intent gate.
+        if (candidate and candidate.archived_at and parking and not company_job
+                and ((candidate.archive_reason == PARKED_REASON and candidate.decision == "approved" and source)
+                     or (candidate.archive_reason == PARKED_EXTERNAL_REASON and candidate.decision == "pending"
+                         and not candidate.source_id))
+                and not low_value_page(url, label, kind=candidate.kind) and inventory_count < campaign.max_candidates
+                and not (origin_cap and origin_active[candidate.origin] >= origin_cap)):
+            # Only intent parking is reversible here, and only through the same intent gate.
             candidate.archived_at, candidate.archive_reason = None, ""
             candidate.save(update_fields=["archived_at", "archive_reason"])
             inventory_count += 1
+            origin_active[candidate.origin] += 1
             stats["unparked"] += 1
         if candidate and candidate.archived_at:
             stats["archived_ignored"] += 1
@@ -248,15 +274,15 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                     and low_value_page(url, label, kind=kind)):
                 # In scope, so approval is recorded exactly as before, but the ordinary gate can never
                 # queue it. Park it outside active capacity instead of letting it crowd out team pages.
-                candidate = DiscoveredURL.objects.create(
-                    campaign=campaign, first_run=run_state, url=url, origin=item_origin,
-                    label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
-                    search_query=query[:600], score=score, reasons=reasons, kind=kind, decision="approved",
-                    source=source, archived_at=timezone.now(), archive_reason=PARKED_REASON)
-                candidates[url] = candidate
-                candidate_count += 1
-                stats["parked"] += 1
-                results.append(candidate)
+                park_new(PARKED_REASON, "approved", source)
+                continue
+            if (intent_policy and not automatically_filtered and not source and not seed and not company_job
+                    and low_value_page(url, label, kind=kind)):
+                park_new(PARKED_EXTERNAL_REASON, "pending", None)
+                continue
+            if (origin_cap and not automatically_filtered and not seed and not company_job and kind == "page"
+                    and origin_active[item_origin] >= origin_cap):
+                park_new(ORIGIN_CAP_REASON, "approved" if source else "pending", source)
                 continue
             new_domain = not automatically_filtered and not source and item_origin not in known_origins
             domains_used = run_state.new_domains if domain_budget is None else 0
@@ -288,6 +314,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
                 search_query=query[:600], score=score, reasons=reasons, kind=kind,
                 decision="dismissed" if score < 0 or noise else ("approved" if source else "pending"), source=source)
+            if not automatically_filtered:
+                origin_active[item_origin] += 1
             candidates[url] = candidate
             if not automatically_filtered:
                 known_origins.add(item_origin)

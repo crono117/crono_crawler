@@ -65,6 +65,49 @@ def stage(job, assessment, page_messages):
     return "other", outcome or "unclassified"
 
 
+def pending_pool(campaign, policy, thresholds=(70, 50, 35)):
+    """How many pending pages (and distinct sites) could enter setup, now and if intent were required.
+
+    Mirrors consider()'s gate on stored data: no query string, not denied, inside the policy's path
+    scope, no existing source for the same site, no origin dismissal; then either score >= 0 (intent
+    optional) or score >= threshold with direct contact-page intent. The daily cap is not applied.
+    """
+    from automation.canonical import site_origins
+    from automation.policy import denied
+    from leads.models import Source
+    from urllib.parse import urlsplit
+    if not policy:
+        return None
+    rows = list(campaign.urls.filter(decision="pending", kind="page", manual_review_required=False,
+                                     archived_at__isnull=True).values_list("url", "label", "context", "origin"))
+    dismissed = set(campaign.urls.filter(dismissal_scope="origin").values_list("origin", flat=True))
+    with_source = set()
+    for source_url in Source.objects.values_list("url", flat=True):
+        try:
+            with_source.add(origin(source_url))
+        except (ValueError, UnicodeError):
+            continue
+    open_rows = []
+    for url, label, context, item_origin in rows:
+        try:
+            variants = set(site_origins(item_origin))
+        except (ValueError, UnicodeError):
+            continue
+        if (urlsplit(url).query or denied(policy, url) or variants & dismissed or variants & with_source
+                or not in_scope(policy_scope(policy, url), url)):
+            continue
+        open_rows.append((url, label, rank(campaign, url, label, context)[0], item_origin,
+                          direct_contact_page_intent(url, label)))
+    result = {"pending_pages": len(rows), "pending_sites": len({row[3] for row in rows}),
+              "admissible_intent_optional": {"pages": sum(1 for r in open_rows if r[2] >= 0),
+                                             "sites": len({r[3] for r in open_rows if r[2] >= 0})}}
+    for threshold in thresholds:
+        passing = [r for r in open_rows if r[4] and r[2] >= threshold]
+        result[f"admissible_intent_required_min_{threshold}"] = {"pages": len(passing),
+                                                                 "sites": len({r[3] for r in passing})}
+    return result
+
+
 class Command(BaseCommand):
     help = "Audit automatic source setup jobs for one campaign (read-only JSON)."
 
@@ -199,5 +242,6 @@ class Command(BaseCommand):
             "leads_from_audited_sources": dict(sum((Counter(r["observations_by_contact_scope"]) for r in rows), Counter())),
             "generated_at": timezone.now(),
         }
+        summary["pending_pool"] = pending_pool(campaign, policy)
         result = {"summary": summary} if options["no_jobs"] else {"summary": summary, "jobs": rows}
         self.stdout.write(json.dumps(result, cls=DjangoJSONEncoder, indent=2))

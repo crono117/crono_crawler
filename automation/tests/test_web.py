@@ -100,7 +100,18 @@ class AutomationWebTests(AutomationCase):
         invalid = self.client.post(reverse("automation:policy", args=[self.campaign.pk]), data | {"canary_pages": 1000})
         self.assertEqual(invalid.status_code, 200)
         self.assertIn("canary_pages", invalid.context["form"].errors)
-        response = self.client.post(reverse("automation:policy", args=[self.campaign.pk]), data)
+        # Admission-only changes apply to new sites without revoking existing setups.
+        state = self.job.state
+        response = self.client.post(reverse("automation:policy", args=[self.campaign.pk]),
+                                    data | {"require_page_intent": "on", "min_url_score": 80, "max_sites_per_day": 2})
+        self.assertEqual(response.status_code, 302)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.state, state)
+        self.policy.refresh_from_db()
+        self.assertEqual((self.policy.min_url_score, self.policy.max_sites_per_day), (80, 2))
+        # A setup-bounding change still pauses every job for revalidation.
+        response = self.client.post(reverse("automation:policy", args=[self.campaign.pk]),
+                                    data | {"require_page_intent": "on", "canary_pages": self.policy.canary_pages + 1})
         self.assertEqual(response.status_code, 302)
         self.job.refresh_from_db()
         self.assertEqual(self.job.state, "paused")

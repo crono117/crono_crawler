@@ -66,6 +66,12 @@ Raw HTML goes to `DATA_DIR/automation-private`, with private directory/file perm
 
 Accepted contacts, evidence and review decisions remain in the existing local database. Their retention is independent of the short HTML lifetime. There is no remote raw-HTML upload feature or automatic contact upload to a recipe service.
 
+### Admission settings versus setup settings
+
+`min_url_score`, `max_sites_per_day` and `require_page_intent` only decide which new sites enter setup. Changing them no longer revokes admitted setups: authorization compares only the setup-bounding fields (`min_recipe_score`, allowed paths, homepage permission, denied domains, probe and canary pages, delay, recheck interval). Saving the policy form pauses existing jobs only when one of those, or `enabled`, changes; an admission-only save leaves every job, recipe and active source running.
+
+`manage.py automation_policy --campaign ID [--require-page-intent on|off] [--min-url-score N] [--max-sites-per-day N] [--apply]` changes only those admission fields (validated against the model bounds, dry run unless `--apply`). Use it when the stored policy holds a value the form would now reject (for example `min_recipe_score` below 85): the form cannot be saved without also changing that setup field, which pauses every job. `automation_audit` includes `pending_pool`, the pending pages and distinct sites that could enter setup with intent optional and with intent required at minimum scores 70, 50 and 35, so the admission change can be sized before it is applied.
+
 ### Canonical onboarding
 
 Many sites redirect every request between `www` and the bare host, or from http to https. A policy-created source keeps its exact origin, so before this rule such a site failed setup before a single page was read (`redirect_out_of_scope`).

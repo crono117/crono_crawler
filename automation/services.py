@@ -11,7 +11,7 @@ from leads.services.extraction import signature, validate_recipe
 from leads.services.network import FetchError, fetch, in_scope, origin, require_success
 from leads.services.storage import save_records
 from .models import AutomationEvent, ProbePage, RecipeVersion, SiteAutomationJob, SitePolicy
-from .policy import authorized, scope_hash, snapshot
+from .policy import authorized, same_setup, scope_hash, snapshot
 from .private_pages import MAX_BYTES, purge_expired, read_html, write_html
 from .recipes import PROBE_VERSION, evaluate, proposals, readiness, recon_page
 
@@ -40,7 +40,7 @@ def start_setup(source, campaign):
     Run.objects.filter(source=source, status__in=("queued", "running", "paused")).update(status="cancelled", message="Automatic recipe setup owns this source.", finished_at=timezone.now())
     job, created = SiteAutomationJob.objects.get_or_create(source=source, defaults={
         "campaign": campaign, "scope_hash": scope_hash(source), "policy_snapshot": snapshot(policy)})
-    if not created and job.state in RUNNABLE and job.scope_hash == scope_hash(source) and job.policy_snapshot == snapshot(policy):
+    if not created and job.state in RUNNABLE and job.scope_hash == scope_hash(source) and same_setup(policy, job):
         return job
     if not created:
         job.generation += 1

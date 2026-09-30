@@ -85,7 +85,7 @@ def rebind(job, page, target_url):
     redirect is not eligible, in which case the caller keeps its normal fail-closed handling.
     """
     from .models import ProbePage, SiteAutomationJob, SitePolicy
-    from .policy import denied, scope_hash, snapshot
+    from .policy import denied, same_setup, scope_hash
     from .services import transition
     with transaction.atomic():
         job = SiteAutomationJob.objects.select_for_update().select_related("source", "campaign").get(pk=job.pk)
@@ -93,7 +93,7 @@ def rebind(job, page, target_url):
         policy = SitePolicy.objects.filter(campaign_id=job.campaign_id, enabled=True).first()
         if (job.generation != page.generation or job.state != "probing" or page.phase != "probe" or page.depth
                 or page.url != source.url or source.approval_kind != "policy" or not source.approved
-                or not policy or snapshot(policy) != job.policy_snapshot or scope_hash(source) != job.scope_hash
+                or not policy or not same_setup(policy, job) or scope_hash(source) != job.scope_hash
                 or job.canonical_rebinds >= MAX_REBINDS):
             return None
         authorized_url = job.original_url or source.url

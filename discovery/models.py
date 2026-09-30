@@ -33,6 +33,11 @@ class Campaign(models.Model):
     next_search_at = models.DateTimeField(default=timezone.now)
     search_query_cursor = models.PositiveIntegerField(default=0)
     auto_archive_candidates = models.BooleanField(default=False, help_text="When search needs space, archive eligible dismissed, stale or repeatedly unproductive URLs. Keeps their history and review decisions.")
+    max_active_per_origin = bounded(
+        0, 0, 10_000,
+        help_text="Most active (counted) page URLs one origin may hold; 0 means no per-origin limit. "
+                  "Further new pages from that origin are parked outside the active URL limit, so one "
+                  "large site cannot fill the inventory. Seeds, sitemaps and company follow-ups are exempt.")
     park_low_value_urls = models.BooleanField(
         default=False,
         help_text="Record newly found in-scope pages without direct team/profile/contact-page intent as parked: "

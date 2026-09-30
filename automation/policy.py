@@ -14,8 +14,25 @@ POLICY_FIELDS = ("min_url_score", "min_recipe_score", "allowed_paths", "allow_ho
                  "max_sites_per_day", "probe_pages", "canary_pages", "delay_seconds", "recheck_days", "notes")
 
 
+# Fields that bound what an admitted site's setup may do. Admission-only fields (min_url_score,
+# max_sites_per_day, notes, and require_page_intent, which was never snapshotted) decide which
+# new sites enter setup; changing them must not revoke setups that were already admitted.
+SETUP_FIELDS = ("min_recipe_score", "allowed_paths", "allow_homepage", "denied_domains",
+                "probe_pages", "canary_pages", "delay_seconds", "recheck_days")
+ADMISSION_FIELDS = ("min_url_score", "max_sites_per_day", "require_page_intent")
+
+
 def snapshot(policy):
     return {"campaign_id": policy.campaign_id, **{name: getattr(policy, name) for name in POLICY_FIELDS}}
+
+
+def setup_view(snap):
+    return {name: snap.get(name) for name in ("campaign_id",) + SETUP_FIELDS}
+
+
+def same_setup(policy, job):
+    """Whether the enabled policy still grants exactly what this job's setup was admitted under."""
+    return setup_view(snapshot(policy)) == setup_view(job.policy_snapshot)
 
 
 def scope_hash(source):
@@ -38,7 +55,7 @@ def authorized(job):
     policy = SitePolicy.objects.filter(campaign_id=job.campaign_id, enabled=True).first()
     return bool(policy and job.campaign.active and job.source.approved and
                 job.campaign.sources.filter(pk=job.source_id).exists() and
-                scope_hash(job.source) == job.scope_hash and snapshot(policy) == job.policy_snapshot and
+                scope_hash(job.source) == job.scope_hash and same_setup(policy, job) and
                 not denied(policy, job.source.url) and
                 not job.campaign.urls.filter(origin=origin(job.source.url), dismissal_scope="origin").exists() and
                 not job.campaign.urls.filter(url=job.source.url, dismissal_scope="url").exists())
