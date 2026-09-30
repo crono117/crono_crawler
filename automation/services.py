@@ -98,6 +98,7 @@ def fetch_probe_page(job, page):
     from leads.services.worker import prepare_domain, parse_robots, retry_delay
     from discovery.services import reserve_budget
     source = job.source
+    rejected = []  # redirect destinations the scope/robots guard refused, for canonical onboarding
     if not in_scope(source, page.url) or rank(job.campaign, page.url)[0] < 0 or job.campaign.urls.filter(url=page.url, decision="dismissed").exists():
         page.status, page.message = "skipped", "Outside source scope or excluded by campaign."
         page.save(update_fields=["status", "message"])
@@ -119,7 +120,13 @@ def fetch_probe_page(job, page):
             if guard is None:
                 return
             from classification.routing import before_fetch
-            response = fetch(page.url, settings.BOT_USER_AGENT, guard, max_bytes=MAX_BYTES, before_attempt=before_fetch(page))
+            def recording_guard(url, _guard=guard):
+                allowed = _guard(url)
+                if not allowed:
+                    rejected.append(url)
+                return allowed
+            response = fetch(page.url, settings.BOT_USER_AGENT, recording_guard, max_bytes=MAX_BYTES,
+                             before_attempt=before_fetch(page))
         require_success(response)
         if any(marker in response.text.lower() for marker in ("cf-chl-", "verify you are human", "g-recaptcha", "hcaptcha-container", "performing security verification")):
             raise FetchError("Access challenge; site setup paused.", status=403)
@@ -156,6 +163,20 @@ def fetch_probe_page(job, page):
         page.refresh_from_db()
         page.attempts += 1
         page.save(update_fields=["attempts"])
+        if isinstance(exc, FetchError) and rejected and page.phase == "probe" and not page.depth:
+            from .canonical import rebind
+            outcome = rebind(job, page, rejected[-1])
+            if outcome == "rebound":
+                page.status, page.message = "skipped", ("Redirected to the same site's canonical origin; "
+                                                        "setup rebound the source.")
+                page.save(update_fields=["status", "message"])
+                return
+            if outcome == "conflict":
+                page.status, page.message = "failed", str(exc)[:1000]
+                page.save(update_fields=["status", "message"])
+                pause_job(job, "Canonical origin conflict: " + str(exc) + " Another source or setup job already "
+                               "uses that site; review before merging.")
+                return
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             page.metadata = {"url": page.url, "result": "page_blocked_or_unavailable", "status": exc.status}
             page.save(update_fields=["metadata"])

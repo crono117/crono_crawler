@@ -3,6 +3,7 @@ import hashlib
 import json
 from urllib.parse import urlsplit
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from discovery.ranking import direct_contact_page_intent, lines, rank
 from leads.models import Source
@@ -79,10 +80,17 @@ def consider(candidate):
         # Intent wording is advisory in this mode, but an explicit exclusion/negative score
         # is never optional, and scope/robots enforcement is never optional either.
         return None
-    # Preserve unreviewed/operator-created sources and previous explicit dismissals.
-    if Source.objects.filter(url__startswith=candidate.origin + "/").exists() or campaign.urls.filter(origin=candidate.origin, dismissal_scope="origin").exists():
+    # Preserve unreviewed/operator-created sources and previous explicit dismissals. The same
+    # website under its http/https and www/bare forms counts as one site here: a source or setup
+    # job for any form blocks a duplicate, and an origin dismissal of any form is honored.
+    from .canonical import site_origins
+    variants = site_origins(candidate.origin)
+    same_site_sources = Q()
+    for variant in variants:
+        same_site_sources |= Q(url__startswith=variant + "/")
+    if Source.objects.filter(same_site_sources).exists() or campaign.urls.filter(origin__in=variants, dismissal_scope="origin").exists():
         return None
-    if SiteAutomationJob.objects.filter(campaign=campaign, source__url__startswith=candidate.origin + "/").exists():
+    if SiteAutomationJob.objects.filter(campaign=campaign, source__in=Source.objects.filter(same_site_sources)).exists():
         return None
     if SiteAutomationJob.objects.filter(campaign=campaign, created_at__date=timezone.now().date()).count() >= policy.max_sites_per_day:
         return None

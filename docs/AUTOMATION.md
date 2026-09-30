@@ -31,7 +31,7 @@ Saving policy settings pauses existing automatic setups for revalidation. Use **
 | Scheduled re-probe | 7 days | Configurable 1–90 days |
 | Private HTML lifetime | 24 hours | Snapshots become unreadable to validation after expiry |
 
-Default path prefixes cover team, staff, people, sales, agents, representatives, reps, partners, contact, about, leadership, executive-team and independent-sales pages. Inspect the actual list in the policy. An optional **exact homepage** permission permits `/` without permitting every other path. A literal `/` in the prefix list grants the whole origin and should be a deliberate choice. Origins include scheme and port: redirects to a different origin remain disallowed, even between `www` and bare hostnames.
+Default path prefixes cover team, staff, people, sales, agents, representatives, reps, partners, contact, about, leadership, executive-team and independent-sales pages. Inspect the actual list in the policy. An optional **exact homepage** permission permits `/` without permitting every other path. A literal `/` in the prefix list grants the whole origin and should be a deliberate choice. Origins include scheme and port: a policy-created source's scope never follows a redirect to a different origin. The one exception happens during setup, not during collection: see Canonical onboarding below.
 
 **`require_page_intent`** (default: on) additionally requires the candidate URL/label to already look like a team, staff or sales-role page before automatic setup, on top of the new-site discovery score. Turning it off lets a bare company homepage qualify too — in practice, many collector-discovered links are a company's root URL rather than a URL that already names a team/staff page. The unchanged safety gates still apply regardless of this setting: `denied_domains`, in-scope/robots enforcement, and a negative or campaign-excluded score are always disqualifying. Everything after authorization is identical either way — the same bounded probe, recipe validation and canary decide whether the site actually yields anything; turning this off does not skip or weaken that pipeline, it only widens which URLs are offered to it.
 
@@ -65,6 +65,20 @@ Recon contains final URL and redirect metadata, response size/type, declared enc
 Raw HTML goes to `DATA_DIR/automation-private`, with private directory/file permissions. Neither the recon API nor the dashboard exposes that HTML. Recon excludes extracted names, emails, phone values and page text; URLs themselves can still identify individual public pages. Snapshots expire after 24 hours and the running worker deletes expired files, including orphaned files from interrupted writes. When the worker is stopped, deletion waits for restart, but expired snapshots cannot be used by validation. Disk encryption is the host operator's responsibility.
 
 Accepted contacts, evidence and review decisions remain in the existing local database. Their retention is independent of the short HTML lifetime. There is no remote raw-HTML upload feature or automatic contact upload to a recipe service.
+
+### Canonical onboarding
+
+Many sites redirect every request between `www` and the bare host, or from http to https. A policy-created source keeps its exact origin, so before this rule such a site failed setup before a single page was read (`redirect_out_of_scope`).
+
+Now, when the starting probe page's redirect is refused by the scope guard and the destination is the same site as the URL the policy authorized (`leads.services.network.same_site`: http->https and/or one leading `www.`), setup rebinds the source to the destination URL instead of failing. The destination's path must be inside the policy's allowed paths (or be the permitted exact homepage). The job starts a new generation with a fresh scope hash under the same policy snapshot; every later request is checked against the new exact origin again, including public DNS, robots.txt for the new origin, scope, policy snapshot, lease and generation. The source note records the rebind; `SiteAutomationJob.original_url` and `canonical_rebinds` keep the provenance.
+
+Never rebound, and still failing closed: downgrades to http, other subdomains, other ports, credentials, lookalike or unrelated hosts, same-site destinations outside the allowed paths, operator-approved sources, non-start pages, canary pages, stale worker generations, changed policies, denied domains, and origins an operator dismissed under any http/https or www/bare form. Rebinds are judged against the originally authorized URL and capped at two, so a redirect bouncing back to the original origin stops after one. If another source or setup job already uses the canonical origin, setup pauses with `canonical_conflict` for review instead of merging.
+
+Admission treats the http/https and www/bare forms of a site as one site: a source or setup job under any form blocks a duplicate job, and an origin dismissal under any form is honored.
+
+`manage.py automation_audit --campaign ID [--since DATE] [--no-jobs]` is a read-only JSON audit of every setup job: the funnel stage where it stopped (redirect scope with the redirect classified, access, no people page, cards without sales records, recipe segmentation, active), best and accepted recipe scores, observations by contact scope, setup requests, and two replays against stored data: whether `require_page_intent` would have admitted the job, and whether an accepted recipe scored below the model's 85 floor. It prints IDs, origins, paths, codes and counts only.
+
+`manage.py automation_requeue_canonical --campaign ID [--limit 25] [--apply]` re-queues failed jobs whose recorded redirect classifies as canonical, through `start_setup` (the operator resume path, current policy snapshot). Dry run unless `--apply`; it creates no job and edits no source, approval or policy.
 
 ## Deterministic recipes and validation
 

@@ -55,6 +55,10 @@ class SiteAutomationJob(models.Model):
     next_probe_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     message = models.CharField(max_length=1000, blank=True)
+    # Canonical onboarding: the URL the policy originally authorized, and how many times setup
+    # rebound the source to a same-site canonical form (http->https, www<->bare). Bounded.
+    original_url = models.URLField(max_length=1500, blank=True)
+    canonical_rebinds = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
