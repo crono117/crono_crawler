@@ -12,6 +12,7 @@ The GitHub repository is `crono117/crono_crawler`. Base new work on `main`. The 
 - Live web/worker smoke test: `.venv/bin/python scripts/smoke_local.py` (isolated temporary database, synthetic contacts, no external requests).
 - Bulk-import smoke: `.venv/bin/python scripts/run_smoke_bulk_import.py` (copies the checkout to a temporary `bulk-import-*` directory without `.env`; never run `smoke_bulk_import.py` directly beside a real `.env`).
 - If `setup.py` reports that `ensurepip` is unavailable, install `python3-venv` / `python3.12-venv`, delete the partial `.venv`, and rerun.
+- Discovery inventory smoke: `.venv/bin/python scripts/smoke_inventory.py` (temporary synthetic database at a full pilot's scale; no network).
 - Django checks: `.venv/bin/python manage.py check`
 - Migration drift: `.venv/bin/python manage.py makemigrations --check --dry-run`
 - Web and worker: `python3 run-local.py`

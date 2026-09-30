@@ -33,6 +33,12 @@ class Campaign(models.Model):
     next_search_at = models.DateTimeField(default=timezone.now)
     search_query_cursor = models.PositiveIntegerField(default=0)
     auto_archive_candidates = models.BooleanField(default=False, help_text="When search needs space, archive eligible dismissed, stale or repeatedly unproductive URLs. Keeps their history and review decisions.")
+    park_low_value_urls = models.BooleanField(
+        default=False,
+        help_text="Record newly found in-scope pages without direct team/profile/contact-page intent as parked: "
+                  "kept for history and deduplication, never queued, and not counted toward the active URL limit. "
+                  "Approval and source bindings are unchanged; a parked URL rediscovered with a direct-intent "
+                  "label returns to active inventory when there is room.")
     active = models.BooleanField(default=False)
     next_due_at = models.DateTimeField(default=timezone.now)
     next_intake_at = models.DateTimeField(
@@ -68,6 +74,9 @@ class DiscoveryRun(models.Model):
     candidates_found = models.PositiveIntegerField(default=0)
     new_domains = models.PositiveIntegerField(default=0)
     duplicates_seen = models.PositiveIntegerField(default=0)
+    capacity_rejected = models.PositiveIntegerField(default=0)
+    parked = models.PositiveIntegerField(default=0)
+    intake_only = models.BooleanField(default=False)
     message = models.CharField(max_length=1000, blank=True)
 
     @property

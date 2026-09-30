@@ -9,6 +9,11 @@ from leads.models import Observation, PageJob
 from .models import Campaign, DiscoveredURL, DiscoveryJob
 
 ARCHIVE_BATCH_LIMIT = 20
+# Parking is a distinct, automatic archive class: the URL failed the shared direct-intent gate
+# (ranking.low_value_page), so the ordinary queue could never dispatch it. Only rows with this
+# exact reason may leave the archive automatically, and only when the same gate later passes.
+PARKED_REASON = "Parked: in-scope page without direct contact-page intent; never queued, kept for history."
+PARK_BATCH_SIZE = 500
 
 
 def eligible(campaign):
@@ -82,3 +87,49 @@ def restore(candidate):
     candidate.archived_at, candidate.archive_reason = None, ""
     candidate.save(update_fields=["archived_at", "archive_reason"])
     return candidate
+
+
+def parkable(campaign):
+    """Active approved pages the ordinary gate can never queue, minus anything with evidence or work.
+
+    Uses ranking.low_value_page (the intent half of ordinary_page_eligible), so the result does not
+    depend on score, campaign keywords or site yield. Protected: seeds, operator imports, exact
+    starting URLs, sitemaps, manual-review rows, company follow-ups, URLs with active jobs, URLs
+    whose own fetch stored contacts or whose exact page has a contact observation, and sources in
+    automated setup. Source productivity does NOT protect a page: a blog post on a productive site
+    is still never queued. Bounded queries; no per-row lookups.
+    """
+    from automation.models import SiteAutomationJob
+    from automation.services import RUNNABLE
+    from .ranking import canonical_exact_start, low_value_page
+    setup_sources = set(SiteAutomationJob.objects.filter(state__in=RUNNABLE).values_list("source_id", flat=True))
+    working = set(DiscoveryJob.objects.filter(run__campaign=campaign, candidate__isnull=False,
+        status__in=("queued", "processing"), run__status__in=("queued", "running", "paused"))
+        .values_list("candidate_id", flat=True))
+    productive = set(DiscoveryJob.objects.filter(run__campaign=campaign, candidate__isnull=False, contacts_seen__gt=0)
+                     .values_list("candidate_id", flat=True))
+    followups = set(DiscoveryJob.objects.filter(run__campaign=campaign, candidate__isnull=False,
+                                                company_job__isnull=False).values_list("candidate_id", flat=True))
+    rows = list(campaign.urls.filter(archived_at__isnull=True, decision="approved", kind="page",
+                                     manual_review_required=False, source__isnull=False)
+                .exclude(method__in=("seed", "operator_import"))
+                .values_list("pk", "url", "label", "source_id", "source__url"))
+    evidence = set(Observation.objects.filter(source_id__in={row[3] for row in rows},
+                                              page_url__in=[row[1] for row in rows])
+                   .values_list("source_id", "page_url"))
+    return [pk for pk, url, label, source_id, source_url in rows
+            if pk not in working and pk not in productive and pk not in followups
+            and source_id not in setup_sources and (source_id, url) not in evidence
+            and not canonical_exact_start(url, source_url)
+            and low_value_page(url, label)]
+
+
+def park(campaign, ids):
+    """Archive parkable rows with PARKED_REASON. Decisions, sources and history are untouched."""
+    ids = list(ids)
+    now = timezone.now()
+    parked = 0
+    for start in range(0, len(ids), PARK_BATCH_SIZE):
+        parked += (campaign.urls.filter(pk__in=ids[start:start + PARK_BATCH_SIZE], archived_at__isnull=True)
+                   .update(archived_at=now, archive_reason=PARKED_REASON))
+    return parked

@@ -15,7 +15,7 @@ class CampaignForm(forms.ModelForm):
         fields = ["name", "category", "sources", "keywords", "sales_terms", "exclusions", "add_contact_exclusions", "region", "use_sitemaps",
                   "max_pages", "max_depth", "max_candidates", "max_new_domains", "daily_requests", "min_score",
                   "interval_hours", "search_enabled", "search_queries", "daily_search_limit",
-                  "auto_search_queries", "search_interval_minutes", "auto_archive_candidates"]
+                  "auto_search_queries", "search_interval_minutes", "auto_archive_candidates", "park_low_value_urls"]
         widgets = {name: forms.Textarea(attrs={"rows": 4}) for name in ("keywords", "sales_terms", "exclusions", "search_queries")}
         labels = {"category": "Campaign focus", "sources": "Approved starting sources", "daily_requests": "Daily fetch attempts",
                   "min_score": "Minimum page priority", "search_enabled": "Use Brave web search"}
@@ -67,11 +67,12 @@ class SourceSearchForm(forms.ModelForm):
     class Meta:
         model = Campaign
         fields = ["search_enabled", "auto_search_queries", "search_queries", "search_interval_minutes",
-                  "daily_search_limit", "auto_archive_candidates"]
+                  "daily_search_limit", "auto_archive_candidates", "park_low_value_urls"]
         widgets = {"search_queries": forms.Textarea(attrs={"rows": 4})}
         labels = {"search_enabled": "Find new sources with Brave search",
                   "auto_search_queries": "Generate and rotate queries",
-                  "auto_archive_candidates": "Allow reversible inventory turnover"}
+                  "auto_archive_candidates": "Allow reversible inventory turnover",
+                  "park_low_value_urls": "Park in-scope pages without contact-page intent"}
 
     def clean(self):
         data = super().clean()

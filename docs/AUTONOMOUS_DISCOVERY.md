@@ -66,6 +66,13 @@ queueing and policy scans. Repeated search results cannot revive them. Choose th
 making room. Restore preserves its previous approval/dismissal; it is not a new
 authorization and does not dispatch a request itself.
 
+Turnover only reclaims dismissed, stale pending or zero-yield-source backlog. It cannot
+reclaim approved pages that fail the direct-intent gate, which is what usually fills the
+limit; use low-value parking for those (see [Discovery](DISCOVERY.md) and
+`manage.py discovery_inventory`). Search scheduling also treats an inventory more than
+20 URLs over its limit as full even with turnover on, because one result batch cannot
+archive more than 20 rows.
+
 If the inventory is full and no eligible turnover exists, the bot reports that
 condition without spending a search request. If results cannot replace eligible
 rows, the attempt reports capacity rejections rather than claiming they were saved.
