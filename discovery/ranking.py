@@ -178,11 +178,24 @@ def canonical_exact_start(url, source_url):
         return False
 
 
+def host_word_matches(host, word):
+    """True when a hostname label part equals or ends with ``word`` (``host:bank`` matches
+    pncbank.com, first-bank.com and bank.example, not bankcardusa.com). The public suffix is
+    ignored, so the rule never matches a TLD. Only hostnames are inspected, never page prose."""
+    word = word.strip().lower()
+    if not word or not re.fullmatch(r"[a-z0-9]+", word):
+        return False
+    labels = host.split(".")[:-1]
+    return any(part == word or part.endswith(word) for label in labels for part in label.split("-"))
+
+
 def exclusion_matches(rule, url, label, context):
     parsed = urlsplit(url)
     host, path = parsed.hostname.lower().rstrip("."), unquote(parsed.path)
     if rule.startswith("path:"):
         return phrase_matches(path, rule[5:].strip())
+    if rule.startswith("host:"):
+        return host_word_matches(host, rule[5:])
     # Bare domain names are accepted too, so x.com matches a hostname, not page prose.
     if rule.startswith("domain:") or re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", rule):
         domain = rule.removeprefix("domain:").strip().lower().rstrip(".")

@@ -72,7 +72,9 @@ class AcquisitionTests(TestCase):
         self.campaign.sales_terms = "account executive\nsales representative"
         pool = acquisition.query_pool(self.campaign)
         self.assertEqual(len(pool), len(set(pool)))
-        self.assertIn('"merchant services" "our team" "Florida"', pool)
+        self.assertIn('"merchant services" "meet our team" "Florida"', pool)
+        self.assertIn('"merchant services" "independent sales agent" "Florida"', pool)
+        self.assertFalse(any('"contact"' in q for q in pool))  # bare contact pages yield shared inboxes
         self.assertIn('"payment processing" "account executive team" "Florida"', pool)
         self.assertTrue(all(len(q) <= 600 and len(q.split()) <= 75 and "https://" not in q for q in pool))
 

@@ -15,17 +15,36 @@ from .ranking import clean_url, rank
 from .turnover import has_room
 
 
+REP_INTENTS = ("independent sales agent", "meet our team", "sales representative", "agent program")
+MAX_NEGATIVE_TERMS = 5
+
+
+def negative_terms(campaign):
+    """`` -word`` operators for generated queries, from the campaign's ``host:`` exclusions."""
+    from .ranking import lines
+    words = []
+    for rule in lines(campaign.exclusions):
+        if rule.startswith("host:"):
+            word = rule[5:].strip().lower()
+            if word.isalnum() and word not in words:
+                words.append(word)
+    return "".join(f" -{word}" for word in words[:MAX_NEGATIVE_TERMS])
+
+
 def query_pool(campaign):
     queries = [q.strip() for q in campaign.search_queries.splitlines() if q.strip()][:10]
+    negatives = negative_terms(campaign)
     if campaign.auto_search_queries:
         def phrase(value):
             return " ".join(value.replace('"', "").replace("\\", "").split())[:160]
         industries = list(dict.fromkeys(phrase(k) for k in campaign.keywords.splitlines() if phrase(k)))[:6]
         roles = list(dict.fromkeys(phrase(k) for k in campaign.sales_terms.splitlines() if phrase(k)))[:2]
-        intents = ["our team", "sales team", "contact"] + [f"{role} team" for role in roles]
+        # Intents aim at pages that name individual reps; bare "contact" pages mostly yield
+        # shared company inboxes, so they are no longer generated.
+        intents = list(REP_INTENTS) + [f"{role} team" for role in roles]
         region = f' "{phrase(campaign.region)}"' if phrase(campaign.region) else ""
         # Rotate industry before moving to another intent; no domains or people are invented.
-        queries.extend(f'"{industry}" "{intent}"{region}' for intent in intents for industry in industries)
+        queries.extend(f'"{industry}" "{intent}"{region}{negatives}' for intent in intents for industry in industries)
     return list(dict.fromkeys(q for q in queries if len(q) <= 600 and len(q.split()) <= 75))
 
 

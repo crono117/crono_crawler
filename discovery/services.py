@@ -431,12 +431,17 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
     key = (kind, candidate.url)
     if capacity is not None and key in capacity["keys"]:
         return
+    if not (seed or exact_start) and queue_allowance_spent(run, candidate, kind, company_job, origin_yields, capacity):
+        return
     _, created = DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
         "candidate": candidate, "source": candidate.source, "depth": depth, "company_job": company_job,
         "priority": job_priority if job_priority is not None else (95 if kind == "sitemap" else score)})
     if capacity is not None:
         capacity["keys"].add(key)
         capacity["count"] += int(created)
+        if created and "allowance" in capacity:
+            bucket = _allowance_key(candidate, kind)
+            capacity["allowance"][bucket] = capacity["allowance"].get(bucket, 0) + 1
 
 
 COMMON_CRAWL_MAX_SOURCES = 25
@@ -938,15 +943,71 @@ def done(job, message, status="done"):
 
 def finish(run):
     if not run.jobs.filter(status__in=("queued", "processing")).exists():
-        failed = run.jobs.filter(status="failed").count()
+        counts = Counter(run.jobs.values_list("status", flat=True))
+        status = "failed" if counts.get("failed") else "completed"
+        # Always say why: a "failed" run with no message hid that most jobs were skips.
+        current = DiscoveryRun.objects.filter(pk=run.pk).values_list("message", flat=True).first() or ""
+        message = " ".join(part for part in (current, run_outcome(run, counts)) if part)
         DiscoveryRun.objects.filter(pk=run.pk, status__in=("queued", "running")).update(
-            status="failed" if failed else "completed", finished_at=timezone.now())
+            status=status, finished_at=timezone.now(), message=message[:1000])
+
+
+def _reason_bucket(message):
+    message = (message or "").strip()
+    if not message:
+        return "no message"
+    head = message.split(":", 1)[0] if ":" in message[:60] else message
+    return " ".join(head.split()[:8])[:80]
+
+
+def run_outcome(run, counts=None):
+    """One-line summary of how a run ended: job counts by status and the top failure and
+    skip reasons. Contains no contact values, page content or credentials."""
+    counts = counts or Counter(run.jobs.values_list("status", flat=True))
+    if not counts:
+        return ""
+    parts = [f"{n} {status}" for status, n in sorted(counts.items())]
+    text = "Jobs: " + (", ".join(parts) or "none")
+    for status, label in (("failed", "Top failures"), ("skipped", "Top skips")):
+        reasons = Counter(_reason_bucket(m) for m in run.jobs.filter(status=status).values_list("message", flat=True))
+        if reasons:
+            text += f". {label}: " + "; ".join(f"{reason} ({n})" for reason, n in reasons.most_common(3))
+    return text + "."
 
 
 # Per-run allowances that keep the shared daily budget for sites that can still yield.
 ZERO_YIELD_MIN_FETCHED = 10
 ZERO_YIELD_PAGES_PER_RUN = 5
 SITEMAPS_PER_SOURCE_PER_RUN = 5
+
+
+def _allowance_key(candidate, kind):
+    return (candidate.source_id, kind, "" if kind == "sitemap" else origin(candidate.url))
+
+
+def queue_allowance_spent(run, candidate, kind, company_job, origin_yields, capacity):
+    """Apply run_allowance_spent's per-run limits when *queueing*, so jobs that would only be
+    skipped never take one of the run's max_pages slots. Seeds, exact starts and company
+    follow-ups are exempt, exactly as at processing time; processing keeps its own check."""
+    if company_job or candidate.method == "seed" or not candidate.source_id or kind not in ("page", "sitemap"):
+        return False
+    bucket = _allowance_key(candidate, kind)
+    if kind == "page":
+        # A batch's origin_yields covers the origins it can fetch; an origin absent from it has
+        # no recorded history. Only an unbatched call looks the origin up itself.
+        history = (lookup_origin_yields({bucket[2]}) if origin_yields is None else origin_yields).get(bucket[2])
+        if not (history and history.fetched >= ZERO_YIELD_MIN_FETCHED and not history.productive):
+            return False
+        limit = ZERO_YIELD_PAGES_PER_RUN
+    else:
+        limit = SITEMAPS_PER_SOURCE_PER_RUN
+    counts = capacity.setdefault("allowance", {}) if capacity is not None else {}
+    if bucket not in counts:
+        jobs = run.jobs.filter(source_id=candidate.source_id, kind=kind).exclude(status="skipped")
+        if kind == "page":
+            jobs = jobs.filter(candidate__origin=bucket[2])
+        counts[bucket] = jobs.count()
+    return counts[bucket] >= limit
 
 
 def run_allowance_spent(job, source):

@@ -1,0 +1,8 @@
+"merchant services" "independent sales agent" -bank
+"ISO agent program" "merchant services" -bank
+"merchant services" "meet our team" "sales representative" -bank
+"payment processing" "independent sales" "our agents" -bank
+"merchant services" "sales agent" "Florida" -bank
+"merchant services" "sales agent" "California" -bank
+"merchant services" "sales agent" "Texas" -bank
+"credit card processing" "meet the team" "account executive" -bank
