@@ -90,6 +90,8 @@ At the start of a new run, up to half the page/sitemap allowance (rounded up) is
 - `discovery_inventory` also reports `active_by_origin_top`, `last_24h` (rows created, still counted, by decision, method and origin, and how many were parked) and `active_pending`, which show what refilled the limit.
 - Saved URL caps do not delete history. Automatically filtered and archived URLs do not consume active inventory capacity. Optional source-search turnover archives up to 20 eligible old URLs per result batch only when a relevant new result needs room. Explicit dismissals survive archiving; archived URLs never reactivate automatically. The Archived filter provides a capacity-checked restore action. Starting pages, active jobs, manual imports and sources with contact observations are protected. Only the latest discovery context/referrer is retained per URL; this is not a complete historical web graph.
 
+Ranked intake and search precision (opt-in, off by default): `SitePolicy.explore_share` reserves daily setup slots for direct team/person pages and ranks the rest by tier, yield and past setup outcomes; `Campaign.search_precision` makes generated Brave queries target team/people page titles. See [the intake ranking handoff](INTAKE_RANKING_HANDOFF.md) before enabling either, and `manage.py automation_intake` to preview.
+
 ## Optional Brave web search
 
 Link/sitemap discovery expands from starting sources. Search can find sites that are not linked from them. Enable only if you have an appropriate Brave Search API account/key. Usage is subject to the provider's plan and terms.
@@ -109,7 +111,7 @@ Then open the campaign’s **Configure source search** page. Enable search and e
 "POS reseller" "our team"
 ```
 
-Each independent search performs one result page (up to 20 results), at most once per configured interval (default 60 minutes), subject to persisted retries and daily quotas. At most one search per campaign is pending. Up to 10 exact queries can be combined with at most 30 generated queries from six industry phrases, team/contact intents, the first two sales roles and the campaign region. Exact queries are never rewritten. There is no paginated search. Search-only campaigns are supported. Existing run-bound search jobs drain first with their original delays; new searches use the independent queue.
+Each independent search performs one result page (up to 20 results), at most once per configured interval (default 60 minutes), subject to persisted retries and daily quotas. At most one search per campaign is pending. Up to 10 exact queries can be combined with at most 30 generated queries from six industry phrases, team/contact intents, the first two sales roles and the campaign region (with `search_precision`, `intitle:` team/staff/people/agents/representatives queries instead of the generic intents). Exact queries are never rewritten. There is no paginated search. Search-only campaigns are supported. Existing run-bound search jobs drain first with their original delays; new searches use the independent queue.
 
 The adapter uses the [Brave Web Search API](https://api-dashboard.search.brave.com/api-reference/web/search/get), not its AI answer endpoint. It fixes the destination, disables redirects for API-key requests, bounds responses, and handles rate limits with persisted backoff. Keys stay in the environment and never appear in the dashboard. Both the campaign and shared daily cap must permit a request; failed attempts also count. This is a request cap, not a dollar-based billing limit.
 

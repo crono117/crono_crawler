@@ -101,6 +101,15 @@ def pending_pool(campaign, policy, thresholds=(70, 50, 35)):
     result = {"pending_pages": len(rows), "pending_sites": len({row[3] for row in rows}),
               "admissible_intent_optional": {"pages": sum(1 for r in open_rows if r[2] >= 0),
                                              "sites": len({r[3] for r in open_rows if r[2] >= 0})}}
+    # Sites by the best intake tier any of their admissible pages has (what ranked intake would see).
+    from automation.intake import TIER_BASE, tier_for
+    best_tier = {}
+    for url, label, score, item_origin, _direct in open_rows:
+        if score >= 0:
+            tier = tier_for(url, label)
+            if item_origin not in best_tier or TIER_BASE[tier] > TIER_BASE[best_tier[item_origin]]:
+                best_tier[item_origin] = tier
+    result["admissible_sites_by_intake_tier"] = dict(Counter(best_tier.values()))
     for threshold in thresholds:
         passing = [r for r in open_rows if r[4] and r[2] >= threshold]
         result[f"admissible_intent_required_min_{threshold}"] = {"pages": len(passing),
@@ -243,5 +252,7 @@ class Command(BaseCommand):
             "generated_at": timezone.now(),
         }
         summary["pending_pool"] = pending_pool(campaign, policy)
+        from automation.learning import admission_funnel
+        summary["admission_funnel"] = admission_funnel(campaign)
         result = {"summary": summary} if options["no_jobs"] else {"summary": summary, "jobs": rows}
         self.stdout.write(json.dumps(result, cls=DjangoJSONEncoder, indent=2))

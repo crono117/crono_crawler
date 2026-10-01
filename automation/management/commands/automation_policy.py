@@ -1,6 +1,6 @@
 """Show or change a campaign's automation *admission* settings. Dry run unless --apply.
 
-Only require_page_intent, min_url_score and max_sites_per_day can be changed here. They decide
+Only require_page_intent, min_url_score, max_sites_per_day and explore_share can be changed here. They decide
 which new sites enter setup; they do not bound an admitted setup (see policy.SETUP_FIELDS), so
 changing them leaves existing jobs, recipes and active sources alone. Setup-bounding fields such
 as min_recipe_score stay a deliberate change in the policy form, which pauses jobs for review.
@@ -24,6 +24,9 @@ class Command(BaseCommand):
         parser.add_argument("--require-page-intent", choices=("on", "off"))
         parser.add_argument("--min-url-score", type=int)
         parser.add_argument("--max-sites-per-day", type=int)
+        parser.add_argument("--explore-share", type=int,
+                            help="Percent of the daily setup allowance open to pages without direct team/person "
+                                 "intent (0-100). 100 = first eligible wins. Preview with automation_intake.")
         parser.add_argument("--apply", action="store_true")
 
     def handle(self, *args, **options):
@@ -38,6 +41,8 @@ class Command(BaseCommand):
             changes["min_url_score"] = options["min_url_score"]
         if options["max_sites_per_day"] is not None:
             changes["max_sites_per_day"] = options["max_sites_per_day"]
+        if options["explore_share"] is not None:
+            changes["explore_share"] = options["explore_share"]
         for name, value in changes.items():
             setattr(policy, name, value)
         try:

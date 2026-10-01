@@ -29,6 +29,7 @@ class Campaign(models.Model):
     search_queries = models.TextField(blank=True, max_length=6000, help_text="One exact search query per line, up to 10. Include a location here to target it in search.")
     daily_search_limit = bounded(5, 1, 100)
     auto_search_queries = models.BooleanField(default=False, help_text="Rotate team/contact searches built from campaign industry phrases, sales roles and region, alongside your exact queries.")
+    search_precision = models.BooleanField(default=False, help_text="Generated queries ask for pages whose title names a team, staff, people, agents or representatives (intitle:) instead of generic 'contact' pages, so results land on person-listing pages rather than homepages. Exact queries are never rewritten.")
     search_interval_minutes = bounded(60, 15, 1440)
     next_search_at = models.DateTimeField(default=timezone.now)
     search_query_cursor = models.PositiveIntegerField(default=0)

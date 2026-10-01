@@ -81,11 +81,12 @@ class SourceSearchForm(OriginShareMixin, forms.ModelForm):
     """These controls never cancel a crawl or change its fetch budget."""
     class Meta:
         model = Campaign
-        fields = ["search_enabled", "auto_search_queries", "search_queries", "search_interval_minutes",
+        fields = ["search_enabled", "auto_search_queries", "search_precision", "search_queries", "search_interval_minutes",
                   "daily_search_limit", "auto_archive_candidates", "park_low_value_urls", "max_active_per_origin"]
         widgets = {"search_queries": forms.Textarea(attrs={"rows": 4})}
         labels = {"search_enabled": "Find new sources with Brave search",
                   "auto_search_queries": "Generate and rotate queries",
+                  "search_precision": "Generated queries target team/people page titles",
                   "auto_archive_candidates": "Allow reversible inventory turnover",
                   "park_low_value_urls": "Park in-scope pages without contact-page intent",
                   "max_active_per_origin": "Active URL share per origin (0 = unlimited)"}

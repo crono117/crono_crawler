@@ -21,7 +21,7 @@ from django.utils import timezone
 from discovery.models import Campaign, DiscoveryJob
 from discovery.ranking import canonical_exact_start, direct_contact_page_intent
 from discovery.turnover import (ORIGIN_CAP_REASON, PARKED_EXTERNAL_REASON, PARKED_REASON, eligible as turnover_eligible,
-                                origin_excess, park, parkable, parkable_external)
+                                origin_excess, park, parkable, parkable_external, protection_breakdown)
 from leads.models import Lead, Observation, PageSnapshot, WorkerLease
 from leads.services.reporting import production_leads
 
@@ -181,6 +181,7 @@ def report(campaign):
         "parkable_external_now": len(parkable_external(campaign)),
         "active_pending": active_pending,
         "active_by_origin_top": top_origins,
+        "top_origin_protection": protection_breakdown(campaign, [entry["origin"] for entry in top_origins[:5]]),
         "last_24h": recent,
         "max_active_per_origin": campaign.max_active_per_origin,
         "origin_excess_now": len(origin_excess(campaign, campaign.max_active_per_origin)),

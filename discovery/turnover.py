@@ -178,6 +178,60 @@ def origin_excess(campaign, cap):
     return selected
 
 
+def protection_breakdown(campaign, origins):
+    """{origin: {reason: rows}} for the counted rows of ``origins``: why origin-share parking cannot take them.
+
+    Reasons, in precedence order: seed, operator_import, manual_review, sitemap, active_job,
+    produced_contacts, company_followup, setup_source, contact_evidence, starting_url, and
+    ``parkable`` for rows the origin cap *can* archive. Read-only; bounded queries. It explains a
+    large origin that stays large after ``--origin-cap`` (protected history is never parked).
+    """
+    from automation.models import SiteAutomationJob
+    from automation.services import RUNNABLE
+    from .ranking import canonical_exact_start
+    origins = set(origins)
+    if not origins:
+        return {}
+    jobs = DiscoveryJob.objects.filter(run__campaign=campaign, candidate__isnull=False)
+    working = set(jobs.filter(status__in=("queued", "processing"), run__status__in=("queued", "running", "paused"))
+                  .values_list("candidate_id", flat=True))
+    productive = set(jobs.filter(contacts_seen__gt=0).values_list("candidate_id", flat=True))
+    followups = set(jobs.filter(company_job__isnull=False).values_list("candidate_id", flat=True))
+    setup_sources = set(SiteAutomationJob.objects.filter(state__in=RUNNABLE).values_list("source_id", flat=True))
+    rows = list(campaign.urls.filter(origin__in=origins, archived_at__isnull=True)
+                .exclude(decision="dismissed", dismissal_scope="")
+                .values_list("pk", "url", "source_id", "source__url", "origin", "method", "kind", "manual_review_required"))
+    evidence = set(Observation.objects.filter(source_id__in={row[2] for row in rows if row[2]},
+                                              page_url__in=[row[1] for row in rows])
+                   .values_list("source_id", "page_url"))
+    result = {item: {} for item in origins}
+    for pk, url, source_id, source_url, item_origin, method, kind, manual in rows:
+        if method == "seed":
+            reason = "seed"
+        elif method == "operator_import":
+            reason = "operator_import"
+        elif manual:
+            reason = "manual_review"
+        elif kind != "page":
+            reason = "sitemap"
+        elif pk in working:
+            reason = "active_job"
+        elif pk in productive:
+            reason = "produced_contacts"
+        elif pk in followups:
+            reason = "company_followup"
+        elif source_id in setup_sources:
+            reason = "setup_source"
+        elif (source_id, url) in evidence:
+            reason = "contact_evidence"
+        elif source_url and canonical_exact_start(url, source_url):
+            reason = "starting_url"
+        else:
+            reason = "parkable"
+        result[item_origin][reason] = result[item_origin].get(reason, 0) + 1
+    return result
+
+
 def park(campaign, ids, reason=PARKED_REASON):
     """Archive rows with a parking reason. Decisions, sources and history are untouched."""
     ids = list(ids)
