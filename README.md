@@ -1,5 +1,7 @@
 # Lead Console
 
+**Paused production snapshot:** The operator stopped the intake-ranking deployment on October 2, 2026 Pacific time. See the [paused deployment handoff](docs/PAUSED_INTAKE_RANKING_HANDOFF.md) for the preserved version, shutdown state, observed lead yield, local backup locations and recommended next improvements.
+
 **Parallel extraction trial:** `feat/jev-extraction-packs` extends the Jev test branch with opt-in Extruct structured data, WordPress/Webflow/Squarespace recipe suggestions, an isolated AutoScraper comparison, and an offline worker demo. Start with [the extraction testing handoff](docs/EXTRACTION_TESTING.md). The original Jev branch remains available separately.
 
 **Jev trial branch:** `feat/jev-integration-v1` adds optional evidence-backed classification, bounded company follow-ups, a staff review console, durable spending controls and a complete offline demo. Start with [the local-agent setup and testing handoff](docs/JEV_TESTING.md). Paid calls, capture and routing are disabled by default. No key is needed to test the system.
