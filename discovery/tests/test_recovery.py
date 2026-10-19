@@ -79,3 +79,17 @@ class QueueRecoveryTests(TestCase):
         self.assertEqual(self.run.status, 'completed')
         self.assertIn('empty', self.run.message.lower())
         release_lease(token)
+
+    def test_old_empty_run_makes_active_campaign_due_and_resumes_work(self):
+        later = timezone.now() + timedelta(days=30)
+        Campaign.objects.filter(pk=self.campaign.pk).update(next_due_at=later)
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(created_at=timezone.now() - timedelta(days=1))
+        token = acquire_lease()
+        self.campaign.refresh_from_db()
+        self.assertLessEqual(self.campaign.next_due_at, timezone.now())
+        schedule_due()
+        replacement = self.campaign.runs.get(status__in=('queued', 'running'))
+        self.assertNotEqual(replacement.pk, self.run.pk)
+        self.assertTrue(replacement.jobs.filter(status='queued').exists())
+        self.assertIsNone(acquire_lease())
+        release_lease(token)

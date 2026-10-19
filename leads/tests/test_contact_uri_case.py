@@ -41,3 +41,18 @@ class ContactUriCaseTests(SimpleTestCase):
         accepted, _, _ = evaluate(html, source, {})
         self.assertEqual({(r['name'], r['email']) for r in accepted}, {
             ('Robin Sample', 'robin@fixture.example.test'), ('Morgan Sample', 'morgan@fixture.example.test')})
+
+    def test_explicit_uppercase_selectors_preserve_original_dom_and_evidence(self):
+        from leads.services.extraction import soup_for
+        html = '''<div class="team-member"><h3>Robin Sample</h3><h4>Sales Representative</h4>
+        <a href="MAILTO:robin@fixture.example.test">Email me</a>
+        <a href="TEL:+1-202-555-0142">Call me</a></div>'''
+        source = Source(url='https://fixture.example.test/team', recipe={
+            'email': 'a[href^="MAILTO:"]', 'phone': 'a[href^="TEL:"]'})
+        self.assertEqual(len(soup_for(html).select('a[href^="MAILTO:"]')), 1)
+        records, _ = extract(html, source)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['email'], 'robin@fixture.example.test')
+        self.assertEqual(records[0]['phone'], '+1-202-555-0142')
+        self.assertEqual(records[0]['contact_provenance'], {'email': 'selector', 'phone': 'selector'})
+        self.assertEqual(len(evaluate(html, source, source.recipe)[0]), 1)
