@@ -12,6 +12,8 @@ class ContactUriCaseTests(SimpleTestCase):
                 card = f'''<{row} class="team-member"><h3>Robin Sample</h3><h4>Sales Representative</h4>
                 <a href="MAILTO:robin@fixture.example.test?subject=Hello">Email me</a>
                 <a href="TeL:+1-202-555-0142">Call me</a></{row}>'''
+                if row == 'tr':
+                    card = card.replace('<h3>', '<td><h3>', 1).replace('</tr>', '</td></tr>')
                 html = f'<{markup}>{card}</{markup}>' if markup else card
                 source = Source(url='https://fixture.example.test/team')
                 records, _ = extract(html, source)

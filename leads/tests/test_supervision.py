@@ -55,3 +55,21 @@ class SupervisionTests(SimpleTestCase):
         self.assertTrue(status['enabled'])
         self.assertFalse(status['active'])
         self.assertEqual(status['checkout_status'], 'stale_checkout')
+
+    def test_success_preserves_existing_disabled_stopped_state(self):
+        state = {'unit': 'fixture.service', 'enabled_state': 'disabled', 'active_state': 'inactive'}
+        with patch.object(supervision, 'snapshot', return_value=state), \
+             patch.object(supervision, 'systemctl') as ctl:
+            events = []
+            supervision.guarded_update('fixture.service', lambda: events.append('changed'),
+                lambda: events.append('rollback'), lambda _: events.append('recorded'))
+        self.assertEqual(events, ['recorded', 'changed'])
+        self.assertEqual([c.args for c in ctl.call_args_list], [
+            ('stop', 'fixture.service'), ('disable', 'fixture.service'), ('stop', 'fixture.service')])
+
+    def test_execstart_revision_mismatch_is_detected(self):
+        with patch.object(supervision, 'snapshot', return_value={'unit': 'index.service',
+                'active_state': 'inactive', 'enabled_state': 'disabled', 'working_directory': '/new',
+                'entry_checkouts': ['/old']}), \
+             patch.object(supervision, 'revision', side_effect=lambda path: 'new' if path == '/new' else 'old'):
+            self.assertEqual(supervision.status('index.service', 'new')['checkout_status'], 'stale_checkout')
