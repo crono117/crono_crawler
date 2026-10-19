@@ -33,9 +33,11 @@ def summarize(run):
     counts = Counter()
     rejected, failures = Counter(), Counter()
     measured = 0
+    creation_measured = 0
     for job in run.jobs.all().iterator():
         data = job.diagnostics
         measured += bool(data.get('extraction_measured'))
+        creation_measured += bool(data.get('creation_measured'))
         for key in ('pages_fetched', 'candidate_people', 'candidate_contact_methods', 'duplicates',
                     'new_non_synthetic_leads', 'worker_interruptions'):
             counts[key] += data.get(key, 0)
@@ -43,13 +45,15 @@ def summarize(run):
         if job.status == 'failed':
             failures[job.failure_code or 'legacy_unknown'] += 1
     run.refresh_from_db()
+    partial = measured < max(run.pages_done, run.jobs.filter(kind='page', status='done').count())
     return {**{key: counts[key] for key in ('pages_fetched', 'candidate_people', 'candidate_contact_methods',
                 'duplicates', 'new_non_synthetic_leads', 'worker_interruptions')},
             'pages_saved': run.pages_done, 'accepted_observations': run.contacts_seen,
             'new_contacts_all_collectors': run.new_contacts,
             'rejected_candidates': dict(rejected), 'failures': dict(failures),
             'jobs_with_extraction_diagnostics': measured,
-            'coverage': 'partial_or_none' if measured < run.jobs.filter(kind='page', status='done').count() else 'current'}
+            'coverage': 'partial_or_none' if partial else 'current',
+            'new_non_synthetic_leads': None if creation_measured < run.pages_done else counts['new_non_synthetic_leads']}
 
 
 def terminal(run):

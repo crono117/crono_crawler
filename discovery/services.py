@@ -618,7 +618,7 @@ def start(campaign):
     campaign.next_due_at = timezone.now() + timedelta(hours=campaign.interval_hours)
     campaign.save()
     if run:
-        run.status, run.message = "queued", "Resumed by operator."
+        run.status, run.message, run.terminal_reason = "queued", "Resumed by operator.", ""
         run.save()
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
@@ -923,7 +923,7 @@ def save_page(job, response):
         if not cached:
             job.diagnostics.update(extraction_counts(metrics if source.setup_mode == "automatic" else diagnostics,
                                                     automatic=source.setup_mode == "automatic"))
-        job.diagnostics.update(extraction_measured=not cached, pages_fetched=1,
+        job.diagnostics.update(extraction_measured=not cached, creation_measured=True, pages_fetched=1,
             new_non_synthetic_leads=created if source.collector != "demo" else 0)
         job.contacts_seen, job.new_contacts = count, created
         message = f"{count} contact(s); {created} new." if count else "No validated contacts; review page suitability and CSS recipe."
@@ -1141,7 +1141,9 @@ def process(job):
         # Messages never include request headers, API keys, or provider response bodies.
         from .diagnostics import failure_category
         job.failure_code = failure_category(exc)
-        message = f"{job.failure_code}: request or processing stopped; review source and configuration."
+        transport = f" HTTP {exc.status}." if isinstance(exc, FetchError) and isinstance(exc.status, int) else ""
+        policy = " robots.txt policy denied or invalid." if job.failure_code.startswith("robots_") else ""
+        message = f"{job.failure_code}:{transport}{policy} Request or processing stopped; review source and configuration."
         job.save(update_fields=["failure_code"])
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":

@@ -52,7 +52,7 @@ class RunDiagnosticsTests(TestCase):
         self.assertIn('35', self.run.message)
         self.assertIn('8', self.run.message)
         self.assertEqual(self.run.diagnostics['accepted_observations'], 8)
-        self.assertEqual(self.run.diagnostics['new_non_synthetic_leads'], 0)
+        self.assertIsNone(self.run.diagnostics['new_non_synthetic_leads'])
 
     def test_extraction_rejections_and_counts_are_persisted_without_personal_data(self):
         html = '''<div class="team-member"><h3>Robin Sample</h3><h4>Engineer</h4>
@@ -103,3 +103,28 @@ class RunDiagnosticsTests(TestCase):
         self.assertEqual(data['lease']['state'], 'stale')
         self.assertEqual(data['http']['state'], 'unhealthy_http')
         self.assertNotIn('not-displayed', output.getvalue())
+
+    def test_uppercase_contact_reaches_non_demo_observation_then_refreshes(self):
+        from leads.models import Lead, Observation
+        self.source.collector = 'http'
+        self.source.save()
+        self.job.refresh_from_db()
+        html = '''<div class="team-member"><h3>Robin Sample</h3><h4>Sales Representative</h4>
+        <a href="MAILTO:robin@fixture.example.test">Email me</a></div>'''
+        response = Response(self.source.url, 200, {'content-type': 'text/html'}, html.encode())
+        with patch('discovery.services.fetch') as fetch:
+            save_page(self.job, response)
+            finish(self.run)
+        fetch.assert_not_called()
+        self.run.refresh_from_db()
+        self.assertEqual((Lead.objects.count(), Observation.objects.count()), (1, 1))
+        self.assertEqual(self.run.diagnostics['new_non_synthetic_leads'], 1)
+        next_run = DiscoveryRun.objects.create(campaign=self.campaign)
+        next_job = DiscoveryJob.objects.create(run=next_run, source=self.source, url=self.source.url)
+        save_page(next_job, response)
+        finish(next_run)
+        next_run.refresh_from_db()
+        self.assertEqual((Lead.objects.count(), Observation.objects.count()), (1, 1))
+        self.assertEqual(next_run.terminal_reason, 'refresh_only')
+        self.assertEqual(next_run.contacts_seen, 1)
+        self.assertEqual(next_run.diagnostics['new_non_synthetic_leads'], 0)
