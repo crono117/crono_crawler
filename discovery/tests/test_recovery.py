@@ -72,6 +72,7 @@ class QueueRecoveryTests(TestCase):
         release_lease(token)
 
     def test_restart_closes_empty_orphan_run_but_preserves_paused_run(self):
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(created_at=timezone.now() - timedelta(days=1))
         token = acquire_lease()
         self.run.refresh_from_db()
         self.assertEqual(self.run.status, 'completed')
