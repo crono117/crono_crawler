@@ -23,7 +23,7 @@ systemctl --user list-timers --all
 Replace placeholders with inspected unit names and the intended approved commit. Never
 paste an entire Environment/ExecStart dump into a report: it may contain secrets. The status
 command extracts only checkout paths and git revisions from ExecStart and WorkingDirectory.
-It reports active/enabled/stopped separately, stale checkout, stale/empty/missing/fresh lease,
+It reports active/enabled/stopped separately, stale/dirty/uninspected checkout, stale/empty/missing/fresh lease,
 HTTP health, job queues and terminal reasons. It makes no target/provider requests. The
 optional numeric-loopback HTTP probe does not follow redirects and reads no response body.
 HTTP 200/302 only proves the console answers; a fresh lease and queue progress are separate checks.
@@ -45,8 +45,10 @@ create a second worker to hurry it. Queued jobs retain deferrals; blocked/paused
 First record the original enabled/active state and private unit/drop-in backups. Review the
 tracked template `deploy/systemd/crono-lead-engine.service.in`. Substitute @CHECKOUT@ with
 the absolute approved checkout and @CONFIG@ with the existing private configuration file
-path; do not copy credentials into the repository or command output. Paths must be systemd-escaped
-if they contain spaces or specifiers. Render to a temporary file and validate it before install.
+path; do not copy credentials into the repository or command output. The automated guard
+supports unambiguous absolute paths and direct .venv/bin/python entry points only. Escaped
+paths, shell wrappers or alternate entry points require a separate reviewed manual procedure;
+the guard refuses them before stopping anything. Render to a temporary file and validate it before install.
 
 ```bash
 systemd-analyze --user verify /absolute/path/to/rendered/crono-lead-engine.service
@@ -69,6 +71,11 @@ systemctl --user is-active crono-lead-engine.service
 loginctl show-user "$USER" -p Linger
 ```
 
+The user manager's network-online.target ordering is only a hint and does not establish host
+network readiness. The existing transport retries transient network failures with persisted
+backoff; failed processes are restarted by the unit. After boot, verify actual HTTP/lease/queue
+progress rather than treating target ordering as a readiness probe.
+
 The user manager starts default.target; WantedBy=default.target supplies its startup link.
 Linger keeps that user manager available at boot without interactive login. Restart=on-failure
 recovers launcher/child failures, subject to systemd's rate limits. Check `systemctl --user status`
@@ -84,22 +91,48 @@ The optional helper is for a FUTURE authorized, reviewed release:
 python3 scripts/guard_service_update.py --unit crono-lead-engine.service \
   --state-file /private/backup/release-UNIQUE-state.json \
   --change-script /absolute/path/to/reviewed-change-script \
-  --rollback-script /absolute/path/to/reviewed-rollback-script
+  --rollback-script /absolute/path/to/reviewed-rollback-script \
+  --identity-file /absolute/path/to/additional-reviewed-config
 ```
 
-It writes an exclusive mode-0600 state file before stopping the unit, rejects masked/static/
-transitional states, runs the executable change script without shell interpolation, and restores
-both prior enablement and activity with readback. A failing change runs the rollback script
-first, then restores the prior service state only if rollback succeeds. If rollback fails,
-it restores the prior enablement but explicitly leaves the service stopped, verifies that
-readback, and propagates the error. It never knowingly restarts an unverified checkout.
-If a failed rollback leaves a previously enabled unit stopped, repair its checkout/configuration
-before rebooting or starting it; the nonzero guard result requires operator recovery.
-Scripts own the actual checkout/unit switch and private backups; this helper alone
-cannot undo an application configuration change. Rollback must restore the PREVIOUS code/unit
-before starting its service. It must not restore an old database and discard later evidence.
-The change script must do local preflight, supported migrations, check and collectstatic before
-returning successfully. Normal disabled deployments stay disabled; first boot enablement is separate.
+The guard records a clean prior Git revision for every recognized checkout, SHA-256 hashes
+of unit fragments/drop-ins, declared EnvironmentFiles, the interpreter and script, checkout
+.env files when present, and any additional --identity-file dependencies. It also hashes
+stable effective unit configuration (including explicit environment and argv) without persisting
+its raw secret values. This fingerprint covers the declared files/configuration; it is not a
+snapshot of the entire host, installed dependencies, manager environment, or database. The
+reviewed release must explicitly inventory any other configuration dependencies.
+
+The exclusive mode-0600 state file AND its parent directory are fsynced before any stop.
+Preflight refuses dirty/uninspectable checkouts, unknown entry wrappers, pending daemon-reload,
+missing identity files, masked/static/transitional units, and service states other than active
+or inactive. Only direct .venv/bin/python followed by an absolute manage.py or run-local.py
+(and optional -u) is recognized. A status report never labels unknown wrappers current.
+
+Before change and EVERY rollback, it issues stop and verifies ActiveState=inactive, MainPID=0,
+ControlPID=0, KillMode=control-group, and an empty or removed cgroup (cgroup v2 populated=0 when
+a group remains). A stop return code alone is not proof. If these checks fail, no change/rollback
+callback runs; the helper attempts a stop, preserves prior enablement as far as possible,
+never starts the unit, and reports operator recovery required. It does not bypass an unavailable
+user manager or uncertain cgroup state.
+
+A change script must leave the service stopped and the new checkout clean/config inspectable.
+If post-start readback fails, the guard stops and proves quiescence AGAIN before rollback.
+A zero-exit rollback script is not enough: after rollback, the guard stops/checks the unit again
+and verifies the recorded code/config fingerprints before restarting a previously active unit.
+No-op/partial rollback, dirty or wrong revision, altered configuration, or failed rollback leaves
+the unit stopped (as far as can be proven), preserves prior enablement, and raises an error.
+The unit must not be rebooted/started until operator recovery restores the known configuration.
+Successful rollback restores prior enablement/activity but still propagates the deployment error.
+
+Scripts own the actual checkout/unit/schema switch and private backups. They must not start
+services themselves, modify shared code under live writers, silently restore an old database,
+or discard later observations. The change script must perform reviewed preflight/migration,
+check and collectstatic, daemon-reload when needed, and verify the intended new revision before
+returning. Use an immutable clean checkout for the release and for this guard; one operator
+must own the update, with other timers/automation disabled under the coordinated outage plan.
+The helper validates one unit, not concurrent administrator changes or the entire database's
+writer population. Normal disabled deployments stay disabled; boot enablement is separate.
 
 A SIGKILL, power loss or unavailable user manager can interrupt any script. The durable state
 file supports explicit recovery: restore the reviewed prior checkout/unit configuration, reload
@@ -121,3 +154,21 @@ Common Crawl with the intended revision before resuming it. A rollback to the ba
 reverse discovery 0011 with the new code (on a backup-tested database), then switch code; reversal
 drops ONLY the new diagnostics columns/constraint. Existing lead/review data is retained. The
 prior architecture/automation rollback cautions also apply. No migration was run on production.
+
+## Required release evidence before migration 0011
+
+Maintain an operator-reviewed writer inventory: each service/timer/cron/manual process,
+actual database path/inode, checkout SHA and dirty status, entry point, enabled/active state,
+and stop/resume owner. Stop scheduling triggers first, stop every writer, verify unit PID/cgroup
+emptiness and absence of manual writers, then use the SQLite Backup API for a fresh private copy.
+Do not assume list-timers or the one-unit guard finds every writer. The isolated Jev soak must
+remain on its own synthetic database/configuration and outside production revision alignment.
+
+On that fresh copy, check SQLite integrity, retained row counts and decisions; record migration
+0010→0011 timing, peak copy/table-rebuild disk usage and available disk; rehearse reversal and
+reapplication, then run the offline checks and read-only status against the copy. SQLite 0011
+rebuilds tables multiple times, so synthetic timings are not a production downtime estimate.
+Old-writer incompatibility remains a release gate, not a reason to weaken schema constraints.
+No actual production-backup rehearsal, writer inventory, installed-unit verification, or host
+network/reboot validation has been performed here. A new independent review of the amended
+exact commit and separate deployment authorization are required.

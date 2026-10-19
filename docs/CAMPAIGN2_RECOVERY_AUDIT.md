@@ -1,5 +1,9 @@
 # Campaign 2 recovery and yield audit — 2026-10-19
 
+**Current amendment:** see [INDEPENDENT_REVIEW_RESPONSE.md](INDEPENDENT_REVIEW_RESPONSE.md).
+Descriptions below document earlier reviewed commits; the independent review rejected 247b7ca
+and the response supersedes its guard, recovery and URI-normalization implementations.
+
 Baseline: remote `work/campaign2-intake-precision` verified by `git ls-remote` at
 `10f37e8538e634ad46b000a8db49f5475e65e4d2`. Work is local on
 `fix/campaign2-recovery-and-yield`. The user authorized this baseline as an exception
