@@ -158,3 +158,22 @@ The production host, credentials and deployment state were not accessed or modif
 provider calls or target-website fetches were made, and no remote branches were modified.
 Only repository Git reads and package installation used external network access; verification
 used offline/loopback fixtures.
+
+
+## Follow-up review — 2026-10-19
+
+This is an author second pass, not independent sign-off. The previously reported clean HEAD
+was d886ff21bd5a388afdc8d580d63246a070d7d76e. Review found that guarded_update restarted the
+unit even if its rollback callback failed. A revised regression was RED on that behavior.
+The correction restores prior enablement but leaves the unit stopped with checked readback
+when rollback fails, propagating the error. Successful rollback still restores prior activity.
+
+A historical-model insertion into a throwaway migrated database also confirmed that 0011 is
+not compatible with old-code writers (new required JSON columns have no database defaults,
+besides the terminal-reason constraint). The real deployment must quiesce every writer,
+including the separate Common Crawl service/timer, and align compatible checkouts before
+resuming them. The single-unit guard cannot establish this by itself. No production unit was
+inspected or stopped. Synthetic migration rehearsal was repeated; no actual production-backup
+rehearsal was possible because no backup was provided. Independent review remains outstanding.
+
+Follow-up verification: 708 tests passed in 91.682 seconds; 19 focused recovery/diagnostic/supervision tests passed; synthetic migration reversal/reapplication passed. The full-suite result applies to the corrected guard. No new production access or remote write occurred.

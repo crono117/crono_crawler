@@ -32,13 +32,14 @@ def validate_restorable(state):
         raise ValueError('Unsupported/masked/transitional unit state; inspect manually before deployment.')
 
 
-def restore(state):
-    """Restore enablement AND liveness, then require successful readback."""
+def restore(state, *, restart=True):
+    """Restore enablement and verified liveness; failed rollbacks stay stopped."""
     validate_restorable(state)
     systemctl('enable' if state['enabled_state'] == 'enabled' else 'disable', state['unit'])
-    systemctl('start' if state['active_state'] == 'active' else 'stop', state['unit'])
+    should_start = restart and state['active_state'] == 'active'
+    systemctl('start' if should_start else 'stop', state['unit'])
     actual = snapshot(state['unit'])
-    expected_active = 'active' if state['active_state'] == 'active' else 'inactive'
+    expected_active = 'active' if should_start else 'inactive'
     if actual['enabled_state'] != state['enabled_state'] or actual['active_state'] != expected_active:
         raise RuntimeError('Service state restoration failed readback; operator recovery required.')
     return actual
@@ -67,7 +68,7 @@ def status(unit, expected_revision):
 
 
 def guarded_update(unit, change, rollback, record):
-    """Callbacks own the checkout/config switch. Always restore prior systemd state.
+    """Callbacks own the checkout/config switch. Failed rollbacks remain stopped.
 
     Not a database rollback: only use backward-compatible code/schema changes, backed up
     separately. SIGKILL/power loss still require the recorded-state recovery procedure.
@@ -82,7 +83,12 @@ def guarded_update(unit, change, rollback, record):
     except BaseException:
         try:
             rollback()
-        finally:
+        except BaseException:
+            # The rollback did not confirm restoration of the previous checkout.
+            # Preserve boot enablement, but do not start unknown/broken code now.
+            restore(state, restart=False)
+            raise
+        else:
             restore(state)
         raise
     return state

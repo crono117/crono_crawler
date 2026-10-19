@@ -30,14 +30,15 @@ class SupervisionTests(SimpleTestCase):
                     lambda _: (_ for _ in ()).throw(OSError('disk full')))
         ctl.assert_not_called()
 
-    def test_rollback_failure_still_restores_state_and_is_reported(self):
+    def test_rollback_failure_restores_enablement_but_never_restarts_unverified_code(self):
         state = {'unit': 'fixture.service', 'enabled_state': 'enabled', 'active_state': 'active'}
-        with patch.object(supervision, 'snapshot', return_value=state), patch.object(supervision, 'systemctl') as ctl:
+        with patch.object(supervision, 'snapshot', side_effect=[state, {**state, 'active_state': 'inactive'}]), patch.object(supervision, 'systemctl') as ctl:
             with self.assertRaisesRegex(RuntimeError, 'rollback failed'):
                 supervision.guarded_update('fixture.service', lambda: (_ for _ in ()).throw(ValueError()),
                     lambda: (_ for _ in ()).throw(RuntimeError('rollback failed')), lambda _: None)
         self.assertIn(('enable', 'fixture.service'), [c.args for c in ctl.call_args_list])
-        self.assertIn(('start', 'fixture.service'), [c.args for c in ctl.call_args_list])
+        self.assertNotIn(('start', 'fixture.service'), [c.args for c in ctl.call_args_list])
+        self.assertIn(('stop', 'fixture.service'), [c.args for c in ctl.call_args_list])
 
     def test_mismatched_readback_fails_loudly(self):
         expected = {'unit': 'fixture.service', 'enabled_state': 'enabled', 'active_state': 'active'}

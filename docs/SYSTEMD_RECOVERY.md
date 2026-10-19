@@ -90,8 +90,12 @@ python3 scripts/guard_service_update.py --unit crono-lead-engine.service \
 It writes an exclusive mode-0600 state file before stopping the unit, rejects masked/static/
 transitional states, runs the executable change script without shell interpolation, and restores
 both prior enablement and activity with readback. A failing change runs the rollback script
-first, then restores service state even if rollback fails; errors propagate rather than claiming
-success. Scripts own the actual checkout/unit switch and private backups; this helper alone
+first, then restores the prior service state only if rollback succeeds. If rollback fails,
+it restores the prior enablement but explicitly leaves the service stopped, verifies that
+readback, and propagates the error. It never knowingly restarts an unverified checkout.
+If a failed rollback leaves a previously enabled unit stopped, repair its checkout/configuration
+before rebooting or starting it; the nonzero guard result requires operator recovery.
+Scripts own the actual checkout/unit switch and private backups; this helper alone
 cannot undo an application configuration change. Rollback must restore the PREVIOUS code/unit
 before starting its service. It must not restore an old database and discard later evidence.
 The change script must do local preflight, supported migrations, check and collectstatic before
@@ -102,9 +106,18 @@ file supports explicit recovery: restore the reviewed prior checkout/unit config
 systemd, then enable/disable and start/stop according to that file. Verify actual states, revision,
 HTTP, single worker and lease afterward. Never claim an in-process finally block survives power loss.
 
+Before migrating, quiesce ALL database writers, including the independent Common Crawl
+service/timer, and record each unit's original state. This helper guards only its named unit;
+it does not stop sibling timers. The reviewed deployment scripts must handle those units
+and restore their prior state only with compatible checkout references. Preserve the separate
+synthetic Jev soak configuration. A stale Common Crawl checkout must not write the upgraded DB.
+
 Migration 0011 backfills old failed/paused messages as legacy_unknown and enforces nonempty
 terminal reasons/messages. Existing errors cannot be reconstructed. Older code cannot safely
-write terminal rows under the new constraint. A rollback to the baseline must stop this worker,
+write this schema: new required JSON columns lack database defaults for old ORM inserts,
+and the new constraint also rejects old blank terminal updates. A throwaway historical-model
+insert reproduced this incompatibility. Stop all old-code writers before migration, and align
+Common Crawl with the intended revision before resuming it. A rollback to the baseline must stop this worker,
 reverse discovery 0011 with the new code (on a backup-tested database), then switch code; reversal
 drops ONLY the new diagnostics columns/constraint. Existing lead/review data is retained. The
 prior architecture/automation rollback cautions also apply. No migration was run on production.
