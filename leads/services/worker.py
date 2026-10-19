@@ -103,10 +103,17 @@ def acquire_lease():
     # A hard stop between opening a run and registering jobs can leave an empty
     # open run that schedule_due() will never replace. Only reap old, truly empty
     # runs; preserve paused campaigns and any run that has checkpointed jobs.
-    DiscoveryRun.objects.filter(status__in=("queued", "running"), campaign__active=True,
-        created_at__lt=now - timedelta(seconds=LEASE_SECONDS), jobs__isnull=True).update(
-            status="completed", finished_at=now, terminal_reason="recovered_empty",
-            message="Recovered empty run after worker restart.")
+    from discovery.models import Campaign
+    orphans = DiscoveryRun.objects.filter(status__in=("queued", "running"), campaign__active=True,
+        created_at__lt=now - timedelta(seconds=LEASE_SECONDS), jobs__isnull=True)
+    campaign_ids = list(orphans.values_list("campaign_id", flat=True))
+    # The same transaction closes the orphan and makes its active owner due. The
+    # normal scheduler creates replacement work through all existing scope gates.
+    list(Campaign.objects.select_for_update().filter(pk__in=campaign_ids).values_list("pk", flat=True))
+    recovered_ids = list(orphans.values_list("campaign_id", flat=True))
+    orphans.update(status="completed", finished_at=now, terminal_reason="recovered_empty",
+                   message="Recovered empty run after worker restart; campaign is due now.")
+    Campaign.objects.filter(pk__in=recovered_ids, active=True, next_due_at__gt=now).update(next_due_at=now)
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
     for job in DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).iterator():
