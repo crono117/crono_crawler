@@ -128,3 +128,11 @@ class RunDiagnosticsTests(TestCase):
         self.assertEqual(next_run.terminal_reason, 'refresh_only')
         self.assertEqual(next_run.contacts_seen, 1)
         self.assertEqual(next_run.diagnostics['new_non_synthetic_leads'], 0)
+
+    def test_bad_http_ports_are_command_errors_without_connections(self):
+        from django.core.management.base import CommandError
+        for url in ('http://127.0.0.1:abc/', 'http://127.0.0.1:65536/', 'http://127.0.0.1:0/', 'http://[bad/'):
+            with self.subTest(url=url), patch('leads.management.commands.crawler_status.HTTPConnection') as connection:
+                with self.assertRaises(CommandError):
+                    call_command('crawler_status', http=url, stdout=io.StringIO())
+                connection.assert_not_called()

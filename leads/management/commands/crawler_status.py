@@ -37,10 +37,16 @@ class Command(BaseCommand):
                 units.append({'unit': unit, 'error': 'Unable to inspect unit; check user-systemd availability.'})
         http = {'state': 'not_checked'}
         if options['http']:
-            url = urlsplit(options['http'])
-            if url.scheme != 'http' or url.hostname != '127.0.0.1' or url.username or url.password or url.fragment:
-                raise CommandError('HTTP probe must be an explicit numeric loopback HTTP URL without credentials.')
-            conn = HTTPConnection('127.0.0.1', url.port or 80, timeout=3)
+            try:
+                url = urlsplit(options['http'])
+                port = url.port  # validates numeric/range before opening any socket
+                valid = (url.scheme == 'http' and url.hostname == '127.0.0.1' and not url.username
+                         and not url.password and not url.fragment and (port is None or 1 <= port <= 65535))
+            except ValueError:
+                valid = False
+            if not valid:
+                raise CommandError('HTTP probe requires a valid numeric-loopback HTTP URL and port 1-65535, without credentials.')
+            conn = HTTPConnection('127.0.0.1', port if port is not None else 80, timeout=3)
             try:
                 conn.request('GET', url.path or '/')
                 response = conn.getresponse()

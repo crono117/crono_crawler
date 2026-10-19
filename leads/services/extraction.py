@@ -398,7 +398,8 @@ def extract_rules(html, source, diagnostics=None):
                                row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"],
                                shared_contact_records=stats["shared_contact_records"],
                                candidate_people=stats["signals"].get("name", 0),
-                               candidate_contact_methods=stats.get("candidate_contact_methods", 0))
+                               candidate_contact_methods=stats.get("candidate_contact_methods", 0),
+                               duplicates=stats["primary_rejections"].get("duplicate_card", 0))
         return records
     soup = soup_for(html)
     selectors = DEFAULT_SELECTORS | validate_recipe(source.recipe or {})
@@ -489,7 +490,7 @@ def extract(html, source, *, diagnostics=None):
     for record in records:
         unique[(record["name"].casefold(), record["email"], record["phone"])] = record
     if diagnostics is not None:
-        diagnostics["duplicates"] = len(records) - len(unique)
+        diagnostics["duplicates"] = diagnostics.get("duplicates", 0) + len(records) - len(unique)
     records = list(unique.values())
     if diagnostics is not None:
         diagnostics["validated_contacts"] = len(records)
