@@ -1001,6 +1001,10 @@ def process(job):
             if not campaign.active or not campaign.search_enabled:
                 done(job, "Campaign or search was disabled after this job was claimed; no search made.", "skipped")
                 return
+            from .acquisition import query_pool
+            if job.url not in query_pool(campaign):
+                done(job, "Search queries changed; no request made.", "skipped")
+                return
             if not search_ready():
                 defer(job, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
                 return

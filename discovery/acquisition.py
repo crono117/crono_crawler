@@ -198,11 +198,12 @@ def process(attempt):
     if not campaign.active or not campaign.search_enabled:
         complete(attempt, "Campaign or source search is disabled; no request made.", "skipped")
         return
-    if not search_ready() or not query_pool(campaign):
-        defer(attempt, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
-        return
-    if attempt.query not in query_pool(campaign):
+    pool = query_pool(campaign)
+    if attempt.query not in pool:
         complete(attempt, "Search queries changed; no request made.", "skipped")
+        return
+    if not search_ready():
+        defer(attempt, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
         return
     if not has_room(campaign):
         defer(attempt, timezone.now() + timedelta(hours=1), "Active URL inventory is full; no eligible turnover space.")
