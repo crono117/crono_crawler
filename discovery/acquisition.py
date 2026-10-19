@@ -201,6 +201,9 @@ def process(attempt):
     pool = query_pool(campaign)
     if attempt.query not in pool:
         complete(attempt, "Search queries changed; no request made.", "skipped")
+        # Invalidation did not consume a search slot. Let the next scheduler tick
+        # select from the current pool, still under all ordinary quota/cooldown gates.
+        Campaign.objects.filter(pk=campaign.pk).update(next_search_at=timezone.now())
         return
     if not search_ready():
         defer(attempt, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")

@@ -58,3 +58,14 @@ class PrecisionQueueTests(TestCase):
         acquisition.process(attempt)
         attempt.refresh_from_db()
         self.assertEqual(attempt.status, 'queued')  # disabled provider, exact query stays valid
+
+    @override_settings(BRAVE_SEARCH_ENABLED=True, BRAVE_SEARCH_API_KEY='fixture')
+    def test_stale_row_allows_replacement_on_next_schedule_without_provider_call(self):
+        attempt = SourceSearch.objects.create(campaign=self.campaign, query=self.old)
+        with patch('discovery.acquisition.brave_search') as provider:
+            acquisition.process(attempt)
+            replacement = acquisition.schedule(self.campaign)
+        self.assertIsNotNone(replacement)
+        self.assertIn('intitle:', replacement.query)
+        self.assertFalse(DailyUsage.objects.exists())
+        provider.assert_not_called()
