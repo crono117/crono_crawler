@@ -80,3 +80,29 @@ class GuardIndependentReviewTests(SimpleTestCase):
             self.run_guard(fake, change, lambda: fake.events.append('rollback'))
         self.assertEqual(fake.active, 'inactive')
         self.assertNotIn('start', fake.events)
+
+    def test_failed_stop_after_start_never_runs_rollback(self):
+        fake = FakeUnit()
+        fake.fail_after_start = True
+        original_ctl = fake.ctl
+        def ctl(action, unit):
+            original_ctl(action, unit)
+            if action == 'start':
+                fake.refuse_stop = True
+        fake.ctl = ctl
+        with self.assertRaisesRegex(RuntimeError, 'quiescence'):
+            self.run_guard(fake, lambda: None, lambda: fake.events.append('rollback'))
+        self.assertNotIn('rollback', fake.events)
+        self.assertEqual(fake.events.count('start'), 1)
+
+    def test_populated_cgroup_forbids_change_and_rollback(self):
+        fake = FakeUnit()
+        with patch.object(supervision, 'systemctl', side_effect=fake.ctl), \
+             patch.object(supervision, 'snapshot', side_effect=fake.snapshot), \
+             patch.object(supervision, 'capture_identity', return_value={'code': 'old'}), \
+             patch.object(supervision, 'cgroup_empty', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'quiescence'):
+                supervision.guarded_update('fixture.service', lambda: fake.events.append('change'),
+                    lambda: fake.events.append('rollback'), lambda s: None)
+        self.assertNotIn('change', fake.events)
+        self.assertNotIn('rollback', fake.events)
