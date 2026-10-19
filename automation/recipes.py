@@ -176,7 +176,7 @@ def recon_page(response, source, campaign):
         "encoding": response.headers.get("content-type", "").split("charset=")[-1][:40] if "charset=" in response.headers.get("content-type", "") else "utf-8 (default)",
         "content_hash": hashlib.sha256(response.body).hexdigest(), "response_bytes": len(response.body),
         "framework_hints": hints or ["unknown HTML"], "javascript_heavy_hint": len(soup.get_text(" ", strip=True)) < 200 and "<script" in html.lower(),
-        "contact_mechanisms": {"mailto": len(soup.select("a[href^='mailto:']")), "tel": len(soup.select("a[href^='tel:']")),
+        "contact_mechanisms": {"mailto": len(soup.select(DEFAULT_SELECTORS["email"])), "tel": len(soup.select(DEFAULT_SELECTORS["phone"])),
             "visible_email_count": len(EMAIL.findall(soup.get_text(" ", strip=True))), "visible_phone_count": len(PHONE.findall(soup.get_text(" ", strip=True))),
             # Counted, never decoded: this obfuscation exists to keep emails from crawlers.
             "protected_emails": len(soup.select("[data-cfemail], a[href*='/cdn-cgi/l/email-protection']"))},

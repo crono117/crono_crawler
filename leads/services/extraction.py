@@ -9,19 +9,19 @@ import httpx
 import soupsieve
 from django.conf import settings
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 DEFAULT_SELECTORS = {
     "row": '[itemtype*="schema.org/Person"], .team-member, .team-card, .person-card, .staff-member, .agent-card, .sales-rep',
     "name": '[itemprop="name"], .name, .person-name, .team-name, h2, h3',
     "title": '[itemprop="jobTitle"], .role, .job-title, .title, h4',
-    "email": 'a[href^="mailto:"]', "phone": 'a[href^="tel:"]', "company": '.company',
+    "email": 'a[href^="mailto:" i]', "phone": 'a[href^="tel:" i]', "company": '.company',
     "evidence": "",
 }
 CONTACT_FIELDS = ("email", "phone")
 # Default/generated link selectors. Only these opt a card into visible-contact inference;
 # an explicit recipe selector (including "") keeps exactly its own selection.
-INFERABLE_SELECTORS = {"email": {'a[href^="mailto:"]', "a[href^='mailto:']"},
-                       "phone": {'a[href^="tel:"]', "a[href^='tel:']"}}
+INFERABLE_SELECTORS = {"email": {'a[href^="mailto:"]', "a[href^='mailto:']", DEFAULT_SELECTORS["email"]},
+                       "phone": {'a[href^="tel:"]', "a[href^='tel:']", DEFAULT_SELECTORS["phone"]}}
 NON_CARD_TAGS = {"header", "nav", "footer", "form"}
 REJECTION_LABELS = {
     "evidence_too_long": "evidence container too broad",
@@ -170,14 +170,6 @@ def soup_for(html):
     for node in [node for node in soup.find_all(True) if hidden_node(node)]:
         if not node.decomposed:
             node.decompose()
-    # URI schemes are case-insensitive. Normalize only mailto/tel scheme names so
-    # existing default, generated and operator CSS selectors see the same links.
-    # Preserve the exact published target and keep all card/evidence gates intact.
-    for link in soup.select("a[href]"):
-        href = link["href"]
-        if href.lower().startswith(("mailto:", "tel:")):
-            scheme, target = href.split(":", 1)
-            link["href"] = scheme.lower() + ":" + target
     return soup
 
 def page_text(html):
@@ -198,6 +190,12 @@ def signature(source):
 def selected_text(row, selector):
     if not selector:
         return ""
+    # Upgrade only the exact historical default/generated selectors. Preserve the
+    # original DOM and every other operator selector, including explicit uppercase.
+    for kind in CONTACT_FIELDS:
+        if selector.strip() in INFERABLE_SELECTORS[kind]:
+            selector = DEFAULT_SELECTORS[kind]
+            break
     node = row.select_one(selector)
     if not node:
         return ""
