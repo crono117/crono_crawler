@@ -704,8 +704,9 @@ def start(campaign):
 
 @transaction.atomic
 def pause(campaign, message="Paused by operator."):
+    message = message.strip() or "Campaign paused; queued work retained."
     Campaign.objects.filter(pk=campaign.pk).update(active=False, last_error=message)
-    campaign.runs.filter(status__in=("queued", "running")).update(status="paused", message=message)
+    campaign.runs.filter(status__in=("queued", "running")).update(status="paused", message=message, terminal_reason="campaign_paused")
 
 
 def pause_for_source(source, message="A source used by this campaign was paused or edited."):
@@ -918,6 +919,12 @@ def save_page(job, response):
             "content_hash": content_hash, "extraction_signature": sig, "last_checked": timezone.now()})
         record_links(job, response.text, response.url)
         DiscoveryRun.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count, new_contacts=F("new_contacts") + created)
+        from .diagnostics import extraction_counts
+        if not cached:
+            job.diagnostics.update(extraction_counts(metrics if source.setup_mode == "automatic" else diagnostics,
+                                                    automatic=source.setup_mode == "automatic"))
+        job.diagnostics.update(extraction_measured=not cached, pages_fetched=1,
+            new_non_synthetic_leads=created if source.collector != "demo" else 0)
         job.contacts_seen, job.new_contacts = count, created
         message = f"{count} contact(s); {created} new." if count else "No validated contacts; review page suitability and CSS recipe."
         if diagnostics:
@@ -929,6 +936,8 @@ def save_page(job, response):
 
 def done(job, message, status="done"):
     job.status, job.message = status, message[:1000]
+    if status == "failed" and not job.failure_code:
+        job.failure_code = "legacy_unknown"
     job.save()
     from leads.services.activity import emit
     emit("result" if status == "done" else status, f"{job.url}: {job.message}", url=job.url)
@@ -938,9 +947,14 @@ def done(job, message, status="done"):
 
 def finish(run):
     if not run.jobs.filter(status__in=("queued", "processing")).exists():
-        failed = run.jobs.filter(status="failed").count()
+        from .diagnostics import terminal
+        code, message, stats = terminal(run)
+        # Preserve intake-specific capacity explanations when no crawl was performed.
+        if not stats["failures"] and not run.pages_done and run.message:
+            message = run.message
         DiscoveryRun.objects.filter(pk=run.pk, status__in=("queued", "running")).update(
-            status="failed" if failed else "completed", finished_at=timezone.now())
+            status="failed" if stats["failures"] else "completed", finished_at=timezone.now(),
+            terminal_reason=code, message=message, diagnostics=stats)
 
 
 # Per-run allowances that keep the shared daily budget for sites that can still yield.
@@ -1079,6 +1093,9 @@ def process(job):
         if job.kind == "sitemap" and response.status in (404, 410):
             done(job, "No sitemap at this address.", "skipped")
             return
+        if job.kind == "page":
+            job.diagnostics["pages_fetched"] = 1
+            job.save(update_fields=["diagnostics"])
         require_success(response)
         if any(marker in response.text.lower() for marker in ("cf-chl-", "verify you are human", "g-recaptcha", "hcaptcha-container")):
             raise FetchError("Access challenge detected; source paused for review.", status=403)
@@ -1118,7 +1135,10 @@ def process(job):
         job.attempts += 1
         job.save(update_fields=["attempts"])
         # Messages never include request headers, API keys, or provider response bodies.
-        message = str(exc)[:1000]
+        from .diagnostics import failure_category
+        job.failure_code = failure_category(exc)
+        message = f"{job.failure_code}: request or processing stopped; review source and configuration."
+        job.save(update_fields=["failure_code"])
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
                 defer(job, timezone.now() + timedelta(hours=24),

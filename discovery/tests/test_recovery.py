@@ -49,6 +49,7 @@ class QueueRecoveryTests(TestCase):
         job.refresh_from_db()
         held.refresh_from_db()
         self.assertEqual((job.status, job.attempts), ('queued', 2))
+        self.assertEqual(job.diagnostics['worker_interruptions'], 1)
         # Paused checkpoint can be requeued but never dispatched while paused.
         self.assertEqual(held.status, 'queued')
         with patch('discovery.services.process') as process:

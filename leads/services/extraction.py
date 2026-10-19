@@ -390,7 +390,9 @@ def extract_rules(html, source, diagnostics=None):
         if diagnostics is not None:
             diagnostics.update(extractor="rules", rows_checked=stats["matched_cards"],
                                row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"],
-                               shared_contact_records=stats["shared_contact_records"])
+                               shared_contact_records=stats["shared_contact_records"],
+                               candidate_people=stats["signals"].get("name", 0),
+                               candidate_contact_methods=stats.get("candidate_contact_methods", 0))
         return records
     soup = soup_for(html)
     selectors = DEFAULT_SELECTORS | validate_recipe(source.recipe or {})
@@ -411,6 +413,9 @@ def extract_rules(html, source, diagnostics=None):
             continue
         cards.append(card_record(row, selectors, evidence_row, chrome))
         evidence_texts.append(contact_evidence(evidence_row))
+    if diagnostics is not None:
+        diagnostics["candidate_people"] = sum(len(r["name"].split()) >= 2 for r, _ in cards)
+        diagnostics["candidate_contact_methods"] = sum(bool(r[k]) for r, _ in cards for k in CONTACT_FIELDS)
     drop_repeated_visible(cards)
     records = []
     shared = shared_company_contact(soup, source) if settings.SHARED_CONTACT_LEADS else None
@@ -477,6 +482,8 @@ def extract(html, source, *, diagnostics=None):
     unique = {}
     for record in records:
         unique[(record["name"].casefold(), record["email"], record["phone"])] = record
+    if diagnostics is not None:
+        diagnostics["duplicates"] = len(records) - len(unique)
     records = list(unique.values())
     if diagnostics is not None:
         diagnostics["validated_contacts"] = len(records)

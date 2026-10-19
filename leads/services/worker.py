@@ -105,10 +105,15 @@ def acquire_lease():
     # runs; preserve paused campaigns and any run that has checkpointed jobs.
     DiscoveryRun.objects.filter(status__in=("queued", "running"), campaign__active=True,
         created_at__lt=now - timedelta(seconds=LEASE_SECONDS), jobs__isnull=True).update(
-            status="completed", finished_at=now, message="Recovered empty run after worker restart.")
+            status="completed", finished_at=now, terminal_reason="recovered_empty",
+            message="Recovered empty run after worker restart.")
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
-    DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    for job in DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).iterator():
+        job.diagnostics["worker_interruptions"] = job.diagnostics.get("worker_interruptions", 0) + 1
+        job.status, job.available_at = "queued", now
+        job.message = "Worker interrupted; checkpoint requeued after lease recovery."
+        job.save(update_fields=["diagnostics", "status", "available_at", "message"])
     from discovery.models import SourceSearch
     # Preserve durable search reservations and deferrals after an uncertain send.
     SourceSearch.objects.filter(status="processing").update(status="queued")

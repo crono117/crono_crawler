@@ -1,0 +1,18 @@
+[Unit]
+Description=Crono Crawler console and single leased worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@CHECKOUT@
+EnvironmentFile=@CONFIG@
+ExecStart=@CHECKOUT@/.venv/bin/python @CHECKOUT@/run-local.py
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

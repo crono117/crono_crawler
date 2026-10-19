@@ -55,6 +55,7 @@ def evaluate(html, source, recipe):
     global_emails = {value.casefold() for value in EMAIL.findall(global_text)}
     global_phones = {re.sub(r"\D", "", value) for value in PHONE.findall(global_text)}
     signals = Counter()
+    contact_methods = 0
     uncontacted = []  # (fields, evidence) of named cards without a usable personal contact
     for row in rows[:500]:
         if structured:
@@ -62,6 +63,7 @@ def evaluate(html, source, recipe):
         else:
             # Shared, generic and page-chrome contacts are removed after validation below.
             fields, _ = card_record(row, selectors, evidence_node(row, selectors["evidence"]))
+        contact_methods += sum(bool(fields[kind]) for kind in ("email", "phone"))
         plausible_name = len(fields["name"].split()) >= 2
         signals["name"] += int(plausible_name)
         signals["role"] += int(bool(fields["title"] and SALES_ROLE.search(fields["title"])))
@@ -137,7 +139,7 @@ def evaluate(html, source, recipe):
         counts["structured_parse_error"] += parse_stats["parse_errors"]
     result = "contacts_accepted" if accepted else ("no_matching_cards" if not total else
         "cards_without_contacts" if counts.get("missing_contact", 0) + counts.get("shared_or_global_contact", 0) == total else "contacts_or_evidence_invalid")
-    stats = {"result": result, "matched_cards": total, "accepted_records": len(accepted),
+    stats = {"result": result, "matched_cards": total, "candidate_contact_methods": contact_methods, "accepted_records": len(accepted),
              "rejected_records": sum(counts.values()), "primary_rejections": dict(counts), "signals": dict(signals),
              "shared_contact_records": shared_records,
              "row_limit_reached": len(rows) > 500 or parse_stats.get("limit_reached", False),

@@ -85,13 +85,26 @@ class DiscoveryRun(models.Model):
     intake_only = models.BooleanField(default=False)
     message = models.CharField(max_length=1000, blank=True)
 
+    terminal_reason = models.CharField(max_length=64, blank=True)
+    diagnostics = models.JSONField(default=dict)
+
+    def save(self, *args, **kwargs):
+        if self.status in ("failed", "paused"):
+            self.terminal_reason = self.terminal_reason or "legacy_unknown"
+            self.message = self.message or "Run stopped; no historical reason recorded."
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"terminal_reason", "message"}
+        return super().save(*args, **kwargs)
+
     @property
     def needs_recipe_review(self):
         return self.status == "completed" and self.pages_done > 0 and self.contacts_seen == 0
 
     class Meta:
         ordering = ["-id"]
-        constraints = [models.UniqueConstraint(fields=["campaign"], condition=Q(status__in=["queued", "running", "paused"]), name="one_open_discovery_run")]
+        constraints = [models.UniqueConstraint(fields=["campaign"], condition=Q(status__in=["queued", "running", "paused"]), name="one_open_discovery_run"),
+            models.CheckConstraint(condition=~Q(status__in=["failed", "paused"]) |
+                (~Q(terminal_reason="") & ~Q(message="")), name="discovery_terminal_reason_required")]
 
 
 class DiscoveredURL(models.Model):
@@ -137,6 +150,8 @@ class DiscoveryJob(models.Model):
     message = models.CharField(max_length=1000, blank=True)
     contacts_seen = models.PositiveIntegerField(default=0)
     new_contacts = models.PositiveIntegerField(default=0)
+    failure_code = models.CharField(max_length=64, blank=True)
+    diagnostics = models.JSONField(default=dict)
 
     class Meta:
         ordering = ["-priority", "id"]
