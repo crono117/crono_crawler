@@ -9,7 +9,7 @@ import httpx
 import soupsieve
 from django.conf import settings
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 DEFAULT_SELECTORS = {
     "row": '[itemtype*="schema.org/Person"], .team-member, .team-card, .person-card, .staff-member, .agent-card, .sales-rep',
     "name": '[itemprop="name"], .name, .person-name, .team-name, h2, h3',
@@ -170,6 +170,14 @@ def soup_for(html):
     for node in [node for node in soup.find_all(True) if hidden_node(node)]:
         if not node.decomposed:
             node.decompose()
+    # URI schemes are case-insensitive. Normalize only mailto/tel scheme names so
+    # existing default, generated and operator CSS selectors see the same links.
+    # Preserve the exact published target and keep all card/evidence gates intact.
+    for link in soup.select("a[href]"):
+        href = link["href"]
+        if href.lower().startswith(("mailto:", "tel:")):
+            scheme, target = href.split(":", 1)
+            link["href"] = scheme.lower() + ":" + target
     return soup
 
 def page_text(html):
