@@ -216,7 +216,7 @@ def _leave_stopped(state):
         systemctl('enable' if state['enabled_state'] == 'enabled' else 'disable', state['unit'])
 
 
-def guarded_update(unit, change, rollback, record, *, identity_files=()):
+def guarded_update(unit, change, rollback, record, *, identity_files=(), read_record=None):
     """One-unit guard. Verified stop before any change and EVERY rollback."""
     state = snapshot(unit)
     validate_restorable(state)
@@ -248,6 +248,8 @@ def guarded_update(unit, change, rollback, record, *, identity_files=()):
         try:
             rollback()
             quiesce(unit)  # callback must leave writers stopped, even on partial rollback
+            if read_record is not None and read_record() != state:
+                raise RecoveryRequired('Rollback state file differs from the recorded state.')
             verify_identity(state)
         except BaseException:
             _leave_stopped(state)

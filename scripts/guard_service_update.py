@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from leads.services.supervision import guarded_update
+from leads.services.supervision import RecoveryRequired, guarded_update
 
 
 def write_state(path, state):
@@ -26,6 +26,18 @@ def write_state(path, state):
         os.close(directory)
 
 
+def read_state(path):
+    """Unreadable durable rollback evidence must never authorize a restart."""
+    try:
+        with Path(path).open() as handle:
+            state = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise RecoveryRequired('Rollback state file is unreadable or invalid.') from exc
+    if not isinstance(state, dict):
+        raise RecoveryRequired('Rollback state file is missing or invalid.')
+    return state
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--unit', required=True)
@@ -41,7 +53,8 @@ def main():
 
     guarded_update(args.unit, lambda: subprocess.run([args.change_script], check=True),
                    lambda: subprocess.run([args.rollback_script], check=True),
-                   lambda state: write_state(args.state_file, state), identity_files=args.identity_file)
+                   lambda state: write_state(args.state_file, state), identity_files=args.identity_file,
+                   read_record=lambda: read_state(args.state_file))
 
 
 if __name__ == '__main__':
