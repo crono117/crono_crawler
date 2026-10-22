@@ -4,9 +4,9 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import user_passes_test
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import transaction, connection
 from django.db.models import Q
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
@@ -17,6 +17,28 @@ from .services.worker import enqueue, pause_source
 from .services.health import recipe_review_runs
 
 staff_required = user_passes_test(lambda u: u.is_authenticated and u.is_active and u.is_staff)
+
+def healthz(request):
+    """Unauthenticated liveness/readiness check.
+    - status: 'ok' when DB answers; 'error' when it does not
+    - db: 'ok' or 'error'
+    - worker_heartbeat_age_seconds: integer seconds since last heartbeat, or None when no lease
+    Never include exception details or settings in the response.
+    """
+    db_ok = True
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except Exception:
+        db_ok = False
+    lease = WorkerLease.objects.filter(key="collector").only("heartbeat_at").first() if db_ok else None
+    age = None
+    if lease:
+        delta = timezone.now() - lease.heartbeat_at
+        age = max(0, int(delta.total_seconds()))
+    body = {"status": "ok" if db_ok else "error", "db": "ok" if db_ok else "error", "worker_heartbeat_age_seconds": age}
+    return JsonResponse(body, status=200 if db_ok else 503)
 
 def console_context(request):
     if not request.user.is_authenticated:
