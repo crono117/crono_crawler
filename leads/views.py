@@ -26,17 +26,18 @@ def healthz(request):
     Never include exception details or settings in the response.
     """
     db_ok = True
+    age = None
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
             cursor.fetchone()
+        lease = WorkerLease.objects.filter(key="collector").only("heartbeat_at").first()
+        if lease:
+            delta = timezone.now() - lease.heartbeat_at
+            age = max(0, int(delta.total_seconds()))
     except Exception:
         db_ok = False
-    lease = WorkerLease.objects.filter(key="collector").only("heartbeat_at").first() if db_ok else None
-    age = None
-    if lease:
-        delta = timezone.now() - lease.heartbeat_at
-        age = max(0, int(delta.total_seconds()))
+        age = None
     body = {"status": "ok" if db_ok else "error", "db": "ok" if db_ok else "error", "worker_heartbeat_age_seconds": age}
     return JsonResponse(body, status=200 if db_ok else 503)
 
