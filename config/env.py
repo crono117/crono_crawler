@@ -19,9 +19,19 @@ def _find_unquoted_char(s: str, target: str) -> int | None:
 
 
 def _strip_unquoted_comment(s: str) -> str:
-    """Strip inline comment that starts with # outside of quotes."""
-    idx = _find_unquoted_char(s, "#")
-    return s[:idx].rstrip() if idx is not None else s.rstrip()
+    """Strip inline comment that starts with ' #' (whitespace then #) outside quotes."""
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(s):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            prev = s[i - 1] if i > 0 else ""
+            if prev.isspace():
+                return s[:i].rstrip()
+    return s.rstrip()
 
 
 def parse_dotenv(content: str) -> dict[str, str]:
@@ -45,26 +55,18 @@ def parse_dotenv(content: str) -> dict[str, str]:
         key = line[:eq_idx].strip()
         if not key:
             raise DotenvParseError(f"Malformed .env line {line_no}")
-        value_part = line[eq_idx + 1 :].strip()
-        # Strip inline comment outside quotes
-        value_visible = _strip_unquoted_comment(value_part)
+        value_raw = line[eq_idx + 1 :]
+        # Strip inline comment outside quotes, then trim surrounding whitespace
+        value_visible = _strip_unquoted_comment(value_raw).strip()
         # Handle surrounding quotes if present
-        if len(value_visible) >= 2 and (
-            (value_visible[0] == value_visible[-1] == "'")
-            or (value_visible[0] == value_visible[-1] == '"')
-        ):
-            value = value_visible[1:-1]
-        else:
-            # Validate quotes are balanced after comment removal
-            in_single = False
-            in_double = False
-            for ch in value_visible:
-                if ch == "'" and not in_double:
-                    in_single = not in_single
-                elif ch == '"' and not in_single:
-                    in_double = not in_double
-            if in_single or in_double:
+        if value_visible.startswith(("'", '"')):
+            quote = value_visible[0]
+            if len(value_visible) >= 2 and value_visible.endswith(quote):
+                value = value_visible[1:-1]
+            else:
+                # Starts with a quote but never closes
                 raise DotenvParseError(f"Malformed .env line {line_no}")
+        else:
             value = value_visible
         result[key] = value
     return result
