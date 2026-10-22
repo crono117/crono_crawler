@@ -154,11 +154,21 @@ def capture_identity(state, extra_files=()):
 
 
 def verify_identity(previous):
-    # Accept only a dict identity; missing or wrong types are invalid.
+    # Accept only a dict record and dict identity; missing or wrong types are invalid.
+    if not isinstance(previous, dict):
+        raise RecoveryRequired('Rollback identity is missing or invalid.')
     identity = previous.get('identity')
     if not isinstance(identity, dict):
         raise RecoveryRequired('Rollback identity is missing or invalid.')
-    actual = capture_identity(snapshot(previous['unit']), identity.get('extra_files', ()))
+    # extra_files must be a JSON-serializable list of strings
+    extra_files = identity.get('extra_files', [])
+    if not isinstance(extra_files, list) or not all(isinstance(p, str) for p in extra_files):
+        raise RecoveryRequired('Rollback identity is missing or invalid.')
+    # unit must be a string for snapshot()
+    unit = previous.get('unit')
+    if not isinstance(unit, str):
+        raise RecoveryRequired('Rollback identity is missing or invalid.')
+    actual = capture_identity(snapshot(unit), extra_files)
     if actual != identity:
         raise RecoveryRequired('Rollback identity differs from the recorded checkout/unit/config identity.')
 
