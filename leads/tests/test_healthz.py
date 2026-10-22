@@ -4,6 +4,7 @@ from django.test import TestCase
 from django.utils import timezone
 from django.urls import reverse
 from leads.models import WorkerLease
+from django.db import DatabaseError
 
 
 class HealthzTests(TestCase):
@@ -60,4 +61,21 @@ class HealthzTests(TestCase):
         self.assertNotIn("DATABASE_URL", body)
         self.assertNotIn("/workspace", body)
         self.assertNotIn("\\", body)  # Avoid Windows-style path leaks too
+
+    @patch("leads.views.WorkerLease.objects.filter", side_effect=DatabaseError("no such table: leads_workerlease"))
+    def test_schema_missing_on_lease_lookup_returns_503_json_without_leakage(self, _filter):
+        # SELECT 1 should still succeed; only the lease query is broken.
+        response = self.client.get(reverse("healthz"))
+        self.assertEqual(response.status_code, 503)
+        body = response.content.decode()
+        data = response.json()
+        self.assertEqual(set(data.keys()), {"status", "db", "worker_heartbeat_age_seconds"})
+        self.assertEqual(data["db"], "error")
+        self.assertEqual(data["status"], "error")
+        self.assertIsNone(data["worker_heartbeat_age_seconds"])
+        self.assertNotIn("no such table", body)
+        self.assertNotIn("SECRET", body)
+        self.assertNotIn("DATABASE_URL", body)
+        self.assertNotIn("/workspace", body)
+        self.assertNotIn("\\", body)
 
