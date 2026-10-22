@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
 class DotenvParseError(ValueError):
     """Raised when a .env line cannot be parsed. Message MUST include only the line number."""
 
