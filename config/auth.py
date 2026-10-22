@@ -23,7 +23,10 @@ def _client_ip(request) -> str:
     if getattr(settings, "TRUST_X_FORWARDED_FOR", False):
         forwarded_for = (request.META.get("HTTP_X_FORWARDED_FOR") or "").strip()
         if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
+            parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
+            if parts:
+                # Assumes exactly one trusted proxy; use the right-most address.
+                return parts[-1]
     return (request.META.get("REMOTE_ADDR") or "").strip() or "unknown"
 
 
@@ -36,6 +39,34 @@ def _cache_keys(ip: str, username: str) -> Tuple[str, str]:
     )
 
 
+def _rate_limited_clean(form: AuthenticationForm, parent_clean):
+    # Resolve identity for rate keying before attempting authentication.
+    ip = _client_ip(form.request)
+    # `data` carries the raw submitted value; normalize to case-insensitive.
+    submitted_username = (form.data.get(form.username_field, "") or "").strip()
+    fail_key, lock_key = _cache_keys(ip, submitted_username)
+
+    # Refuse immediately while locked, even if the password is now correct.
+    if cache.get(lock_key):
+        raise forms.ValidationError(LOCKED_MESSAGE)
+
+    try:
+        cleaned = parent_clean()
+    except forms.ValidationError as e:
+        # Increment the failure counter with a TTL. On threshold, set a lock.
+        failures = int(cache.get(fail_key) or 0) + 1
+        cache.set(fail_key, failures, LOCK_SECONDS)
+        if failures >= MAX_FAILED_ATTEMPTS:
+            cache.set(lock_key, 1, LOCK_SECONDS)
+            raise forms.ValidationError(LOCKED_MESSAGE)
+        # Not locked yet: surface the standard invalid-login message.
+        raise e
+
+    # Successful authentication: clear any recorded failures/lock.
+    cache.delete_many([fail_key, lock_key])
+    return cleaned
+
+
 class LimitedAuthenticationForm(AuthenticationForm):
     """
     Authentication form that enforces a small in-project rate limiter:
@@ -45,31 +76,7 @@ class LimitedAuthenticationForm(AuthenticationForm):
     """
 
     def clean(self):
-        # Resolve identity for rate keying before attempting authentication.
-        ip = _client_ip(self.request)
-        # `data` carries the raw submitted value; normalize to case-insensitive.
-        submitted_username = (self.data.get(self.username_field, "") or "").strip()
-        fail_key, lock_key = _cache_keys(ip, submitted_username)
-
-        # Refuse immediately while locked, even if the password is now correct.
-        if cache.get(lock_key):
-            raise forms.ValidationError(LOCKED_MESSAGE)
-
-        try:
-            cleaned = super().clean()
-        except forms.ValidationError as e:
-            # Increment the failure counter with a TTL. On threshold, set a lock.
-            failures = int(cache.get(fail_key) or 0) + 1
-            cache.set(fail_key, failures, LOCK_SECONDS)
-            if failures >= MAX_FAILED_ATTEMPTS:
-                cache.set(lock_key, 1, LOCK_SECONDS)
-                raise forms.ValidationError(LOCKED_MESSAGE)
-            # Not locked yet: surface the standard invalid-login message.
-            raise e
-
-        # Successful authentication: clear any recorded failures/lock.
-        cache.delete_many([fail_key, lock_key])
-        return cleaned
+        return _rate_limited_clean(self, super().clean)
 
 
 class LimitedAdminAuthenticationForm(AdminAuthenticationForm):
@@ -78,23 +85,5 @@ class LimitedAdminAuthenticationForm(AdminAuthenticationForm):
     """
 
     def clean(self):
-        ip = _client_ip(self.request)
-        submitted_username = (self.data.get(self.username_field, "") or "").strip()
-        fail_key, lock_key = _cache_keys(ip, submitted_username)
-
-        if cache.get(lock_key):
-            raise forms.ValidationError(LOCKED_MESSAGE)
-
-        try:
-            cleaned = super().clean()
-        except forms.ValidationError as e:
-            failures = int(cache.get(fail_key) or 0) + 1
-            cache.set(fail_key, failures, LOCK_SECONDS)
-            if failures >= MAX_FAILED_ATTEMPTS:
-                cache.set(lock_key, 1, LOCK_SECONDS)
-                raise forms.ValidationError(LOCKED_MESSAGE)
-            raise e
-
-        cache.delete_many([fail_key, lock_key])
-        return cleaned
+        return _rate_limited_clean(self, super().clean)
 
