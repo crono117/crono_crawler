@@ -173,7 +173,7 @@ def require_success(response):
     if not 200 <= response.status < 300:
         raise FetchError(f"HTTP {response.status}.", status=response.status)
 
-def fetch_browser(url, user_agent, guard):
+def fetch_browser(url, user_agent, guard, *, render_wait_ms=1500):
     """Render without stealth. Route every request through the public-only client."""
     import asyncio
     try:
@@ -221,7 +221,8 @@ def fetch_browser(url, user_agent, guard):
                 await context.route("**/*", route_handler)
                 await context.route_web_socket("**/*", lambda ws: ws.close())
                 await page.goto(initial.url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(1500)
+                # Allow a short, bounded post-DOMContentLoaded settle time tuned per source.
+                await page.wait_for_timeout(int(max(1, min(10000, render_wait_ms))))
                 if errors:
                     raise errors[0]
                 html = await page.content()

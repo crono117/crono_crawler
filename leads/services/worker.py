@@ -282,8 +282,10 @@ def process(job):
             guard = prepare_domain(source, job)
             if guard is None:
                 return
-            collector = fetch_browser if source.collector == "browser" else fetch
-            response = collector(job.url, settings.BOT_USER_AGENT, guard)
+            if source.collector == "browser":
+                response = fetch_browser(job.url, settings.BOT_USER_AGENT, guard, render_wait_ms=source.render_wait_ms)
+            else:
+                response = fetch(job.url, settings.BOT_USER_AGENT, guard)
             require_success(response)
             if not any(t in response.headers.get("content-type", "").lower() for t in ("text/html", "application/xhtml")):
                 job.status = "skipped"
