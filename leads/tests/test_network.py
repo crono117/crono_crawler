@@ -127,3 +127,45 @@ class ResponseTextTests(SimpleTestCase):
         )
         # If meta were honored, we'd see the proper ç; instead, it should not equal cp1252 decoding.
         self.assertNotEqual(res.text, body_bytes.decode("cp1252"))
+
+    def test_meta_charset_unquoted_windows_1252(self):
+        # Unquoted charset value should be detected.
+        body_head = "<!doctype html><html><head><meta charset=windows-1252></head>"
+        body_tail = "<body>Gonçalves & Damião</body></html>"
+        body_bytes = (body_head + body_tail).encode("cp1252")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        self.assertIn("Gonçalves", res.text)
+        self.assertIn("Damião", res.text)
+
+    def test_meta_content_before_http_equiv(self):
+        # Order of attributes should not matter: content before http-equiv still contains charset.
+        body_head = '<html><head><meta content="text/html; charset=windows-1252" http-equiv="Content-Type"></head>'
+        body_tail = "<body>Julián & Andrés</body></html>"
+        body_bytes = (body_head + body_tail).encode("cp1252")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        self.assertIn("Julián", res.text)
+        self.assertIn("Andrés", res.text)
+
+    def test_meta_http_equiv_unquoted_value(self):
+        # Unquoted http-equiv value with charset inside content should be detected.
+        body_head = '<html><head><meta http-equiv=Content-Type content="text/html; charset=windows-1252"></head>'
+        body_tail = "<body>João & Luís</body></html>"
+        body_bytes = (body_head + body_tail).encode("cp1252")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        self.assertIn("João", res.text)
+        self.assertIn("Luís", res.text)
