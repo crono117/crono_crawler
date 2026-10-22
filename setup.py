@@ -7,6 +7,7 @@ import secrets
 import subprocess
 import sys
 import venv
+import shutil
 
 def main():
     parser = argparse.ArgumentParser(description="Set up the local Lead Console.")
@@ -19,6 +20,38 @@ def main():
     root = Path(__file__).resolve().parent
     os.chdir(root)
     if not (root / ".venv").exists():
+        # Ensure ensurepip is available; install the system venv package if missing.
+        try:
+            import ensurepip  # noqa: F401
+        except Exception:
+            apt = shutil.which("apt-get") or shutil.which("apt")
+            sudo = shutil.which("sudo")
+            # Try to install the versioned python-venv first, then fall back to python3-venv.
+            pkg_versioned = f"python{sys.version_info.major}.{sys.version_info.minor}-venv"
+            install_cmds = []
+            if apt:
+                if sudo:
+                    install_cmds.append([sudo, apt, "update", "-y"])
+                    install_cmds.append([sudo, apt, "install", "-y", pkg_versioned])
+                    install_cmds.append([sudo, apt, "install", "-y", "python3-venv"])
+                else:
+                    install_cmds.append([apt, "update", "-y"])
+                    install_cmds.append([apt, "install", "-y", pkg_versioned])
+                    install_cmds.append([apt, "install", "-y", "python3-venv"])
+                for cmd in install_cmds:
+                    try:
+                        subprocess.run(cmd, check=True)
+                    except Exception:
+                        # Continue to next attempt; we'll re-check ensurepip below.
+                        pass
+            # Re-check after attempted installation.
+            try:
+                import ensurepip  # noqa: F401
+            except Exception:
+                raise SystemExit(
+                    "The virtual environment could not be created because ensurepip is unavailable. "
+                    "Install the appropriate python*-venv package for your system and rerun."
+                )
         venv.EnvBuilder(with_pip=True).create(root / ".venv")
     python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run([str(python), "-m", "pip", "install", "-r", "requirements-browser.txt" if args.browser else "requirements.txt"], check=True)
