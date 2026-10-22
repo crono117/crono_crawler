@@ -176,7 +176,9 @@ def collect_links(source, job, html, base_url):
     if not source.follow_links and not source.discover_external:
         return []
     from discovery.ranking import link_priority
-    remaining = max(0, source.max_pages - job.run.jobs.count())
+    # Count only live page jobs (done/processing/queued) toward the page allowance.
+    live_statuses = ("done", "processing", "queued")
+    remaining = max(0, source.max_pages - job.run.jobs.filter(status__in=live_statuses).count())
     seen, follow, external = set(), [], []
     for link in soup_for(html).select("a[href]")[:2000]:
         try:
