@@ -6,6 +6,7 @@ import socket
 import ssl
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
+import re
 
 MAX_BYTES = 6 * 1024 * 1024
 
@@ -95,12 +96,46 @@ class Response:
     redirect_chain: list = field(default_factory=list)
     @property
     def text(self):
-        content_type = self.headers.get("content-type", "")
-        charset = content_type.split("charset=")[-1].split(";")[0].strip(" \"'") if "charset=" in content_type else "utf-8"
-        try:
-            return self.body.decode(charset, errors="replace")
-        except LookupError:
-            return self.body.decode("utf-8", errors="replace")
+        content_type = (self.headers.get("content-type", "") or "")
+        # Header-declared charset always wins.
+        if "charset=" in content_type.lower():
+            # Be tolerant of spacing/quotes and parameter order.
+            m = re.search(r"charset\s*=\s*([^;]+)", content_type, re.IGNORECASE)
+            header_charset = (m.group(1) if m else "").strip(" \"'")
+            try:
+                return self.body.decode(header_charset or "utf-8", errors="replace")
+            except LookupError:
+                return self.body.decode("utf-8", errors="replace")
+        # No charset in the header: sniff the first 4096 bytes for an HTML meta declaration.
+        sniff = self.body[:4096]
+        # Pattern 1: <meta charset="...">
+        m = re.search(
+            br"<meta\s[^>]*?charset\s*=\s*([\"'])?\s*([a-z0-9._-]+)\s*\1",
+            sniff,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            # Pattern 2: <meta http-equiv="content-type" content="text/html; charset=...">
+            m = re.search(
+                br"<meta\s[^>]*?http-equiv\s*=\s*([\"'])?\s*content-type\s*\1[^>]*?"
+                br"content\s*=\s*([\"'])[^\"']*?charset\s*=\s*([a-z0-9._-]+)[^\"']*\2",
+                sniff,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if m:
+                candidate = m.group(3)
+            else:
+                candidate = None
+        else:
+            candidate = m.group(2)
+        if candidate:
+            try:
+                # Decode using the sniffed charset if Python recognizes it.
+                return self.body.decode(candidate.decode("ascii", "ignore"), errors="replace")
+            except LookupError:
+                pass
+        # Fallback: UTF-8 with replacement to avoid crashes.
+        return self.body.decode("utf-8", errors="replace")
 
 def fetch(url, user_agent, guard=None, max_bytes=MAX_BYTES, timeout=25, *, request_headers=None, allow_redirects=True, before_attempt=None):
     """Resolve once per hop; connect to that exact public IP with hostname TLS."""
