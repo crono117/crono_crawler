@@ -447,6 +447,12 @@ def extract_ollama(html, source):
                 "options": {"temperature": 0, "num_ctx": 16384},
             })
             response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = getattr(exc.response, "status_code", None)
+        if status in (502, 503, 504):
+            raise FetchError(f"Local model HTTP {status}; retry scheduled.", retryable=True,
+                             status=status, retry_after=exc.response.headers.get("retry-after")) from exc
+        raise
     except (httpx.ConnectError, httpx.TimeoutException, httpx.TransportError) as exc:
         # Local model connectivity/timeout/transport failures are retryable fetch errors.
         raise FetchError(f"Local model request failed: {type(exc).__name__}.", retryable=True) from exc
