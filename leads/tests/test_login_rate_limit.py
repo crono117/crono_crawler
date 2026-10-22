@@ -102,3 +102,53 @@ class LoginRateLimitTests(TestCase):
         resp = self.client.get(reverse("leads"))
         self.assertEqual(resp.status_code, 200)
 
+    def test_xff_rotation_does_not_bypass_lock(self):
+        # Rotate X-Forwarded-For on each attempt; limiter must still lock by REMOTE_ADDR.
+        for i in range(5):
+            r = self.client.post(
+                self.login_url,
+                {"username": self.username, "password": "wrong-pass"},
+                REMOTE_ADDR=self.ip_a,
+                HTTP_X_FORWARDED_FOR=f"198.51.100.{i+1}",
+            )
+            self.assertEqual(r.status_code, 200)
+        # 6th attempt with correct password must be refused while locked
+        r = self.client.post(
+            self.login_url,
+            {"username": self.username, "password": self.password},
+            REMOTE_ADDR=self.ip_a,
+            HTTP_X_FORWARDED_FOR="203.0.113.200",
+        )
+        self.assertLockedMessage(r)
+
+
+class AdminLoginRateLimitTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.username = "admin1"
+        self.password = "CorrectHorseBatteryStaple1!"
+        self.user = get_user_model().objects.create_superuser(self.username)
+        self.user.set_password(self.password)
+        self.user.save()
+        self.admin_login_url = reverse("admin:login")
+        self.ip = "203.0.113.77"
+
+    def test_admin_login_is_rate_limited(self):
+        # 5 wrong attempts to /admin/login/ should lock
+        for _ in range(5):
+            r = self.client.post(
+                self.admin_login_url,
+                {"username": self.username, "password": "wrong-pass"},
+                REMOTE_ADDR=self.ip,
+            )
+            self.assertEqual(r.status_code, 200)
+        # 6th attempt with correct password must be refused while locked
+        r = self.client.post(
+            self.admin_login_url,
+            {"username": self.username, "password": self.password},
+            REMOTE_ADDR=self.ip,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "Too many failed login attempts")
+
