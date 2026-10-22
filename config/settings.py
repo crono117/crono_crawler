@@ -92,6 +92,9 @@ COMMON_CRAWL_COLLECTION = os.environ.get("COMMON_CRAWL_COLLECTION", "")
 # Rolling window of completed discovery page jobs used for per-origin yield priority.
 DISCOVERY_YIELD_WINDOW_DAYS = max(1, int(os.environ.get("DISCOVERY_YIELD_WINDOW_DAYS", "60")))
 
+# Trust client IPs forwarded by a reverse proxy only when explicitly enabled.
+TRUST_X_FORWARDED_FOR = os.environ.get("TRUST_X_FORWARDED_FOR", "0") == "1"
+
 # Merely installing this app or supplying a key never enables paid work.
 JEV_MODE = os.environ.get("JEV_MODE", "off")
 if JEV_MODE not in ("off", "mock", "live"):

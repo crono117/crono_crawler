@@ -5,6 +5,8 @@ from typing import Tuple
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
+from django.conf import settings
+from django.contrib.admin.forms import AdminAuthenticationForm
 
 
 MAX_FAILED_ATTEMPTS = 5
@@ -17,10 +19,11 @@ LOCKED_MESSAGE = (
 
 
 def _client_ip(request) -> str:
-    # Prefer the first address in X-Forwarded-For when present.
-    forwarded_for = (request.META.get("HTTP_X_FORWARDED_FOR") or "").strip()
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    # Default to REMOTE_ADDR; only honor X-Forwarded-For when explicitly trusted.
+    if getattr(settings, "TRUST_X_FORWARDED_FOR", False):
+        forwarded_for = (request.META.get("HTTP_X_FORWARDED_FOR") or "").strip()
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
     return (request.META.get("REMOTE_ADDR") or "").strip() or "unknown"
 
 
@@ -65,6 +68,33 @@ class LimitedAuthenticationForm(AuthenticationForm):
             raise e
 
         # Successful authentication: clear any recorded failures/lock.
+        cache.delete_many([fail_key, lock_key])
+        return cleaned
+
+
+class LimitedAdminAuthenticationForm(AdminAuthenticationForm):
+    """
+    Admin login form with the same limiter logic, preserving admin's permission checks.
+    """
+
+    def clean(self):
+        ip = _client_ip(self.request)
+        submitted_username = (self.data.get(self.username_field, "") or "").strip()
+        fail_key, lock_key = _cache_keys(ip, submitted_username)
+
+        if cache.get(lock_key):
+            raise forms.ValidationError(LOCKED_MESSAGE)
+
+        try:
+            cleaned = super().clean()
+        except forms.ValidationError as e:
+            failures = int(cache.get(fail_key) or 0) + 1
+            cache.set(fail_key, failures, LOCK_SECONDS)
+            if failures >= MAX_FAILED_ATTEMPTS:
+                cache.set(lock_key, 1, LOCK_SECONDS)
+                raise forms.ValidationError(LOCKED_MESSAGE)
+            raise e
+
         cache.delete_many([fail_key, lock_key])
         return cleaned
 

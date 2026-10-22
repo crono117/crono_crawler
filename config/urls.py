@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
 from django.urls import include, path
-from .auth import LimitedAuthenticationForm
+from .auth import LimitedAuthenticationForm, LimitedAdminAuthenticationForm
 
 urlpatterns = [
     path(
@@ -19,3 +19,6 @@ urlpatterns = [
     path("classification/", include("classification.urls")),
     path("", include("leads.urls")),
 ]
+
+# Apply limiter to admin login as well.
+admin.site.login_form = LimitedAdminAuthenticationForm
