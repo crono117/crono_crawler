@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 class SourceForm(forms.ModelForm):
     class Meta:
         model = Source
-        fields = ["name", "url", "company", "category", "collector", "extractor", "require_sales_role", "recipe", "setup_mode",
+        fields = ["name", "url", "company", "category", "collector", "render_wait_ms", "extractor", "require_sales_role", "recipe", "setup_mode",
                   "allowed_paths", "allow_homepage", "follow_links", "discover_external", "interval_hours", "delay_seconds",
                   "max_pages", "max_depth", "approved", "approval_notes"]
         labels = {"category": "Source business type", "recipe": "Extraction recipe (optional JSON)",
@@ -21,6 +21,7 @@ class SourceForm(forms.ModelForm):
                       "recipe": "Leave blank for common team cards. Field selectors are relative to each person row. Optional evidence selects the row itself or a smaller container inside it; it must contain the name and contact evidence. Never use a page-wide footer contact as a person's contact.",
                       "setup_mode": "Operator-configured rules use this recipe directly. Automated setup runs through a campaign policy, validation and a canary first.",
                       "discover_external": "Candidates are saved for review; the collector does not fetch them automatically.",
+                      "render_wait_ms": "Browser only: milliseconds to wait after DOMContentLoaded (max 10000).",
                       "require_sales_role": "Turn off only when the selected page is already a curated directory of relevant representatives."}
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -30,6 +31,11 @@ class SourceForm(forms.ModelForm):
         self.fields["interval_hours"].max_value = 8760
         self.fields["delay_seconds"].min_value = 2
         self.fields["delay_seconds"].max_value = 3600
+        # Render wait is optional in the form (defaults to 1500) and bounded.
+        if "render_wait_ms" in self.fields:
+            self.fields["render_wait_ms"].required = False
+            self.fields["render_wait_ms"].min_value = 1
+            self.fields["render_wait_ms"].max_value = 10000
         self.fields["max_pages"].min_value = 1
         self.fields["max_pages"].max_value = 500
         self.fields["max_depth"].max_value = 5
@@ -56,10 +62,14 @@ class SourceForm(forms.ModelForm):
     def clean(self):
         data = super().clean()
         data["setup_mode"] = data.get("setup_mode") or self.instance.setup_mode or "rules_only"
-        for field, bounds in {"interval_hours": (1, 8760), "delay_seconds": (2, 3600), "max_pages": (1, 500), "max_depth": (0, 5)}.items():
+        for field, bounds in {"interval_hours": (1, 8760), "delay_seconds": (2, 3600), "max_pages": (1, 500), "max_depth": (0, 5),
+                              "render_wait_ms": (1, 10000)}.items():
             value = data.get(field)
             if value is not None and not bounds[0] <= value <= bounds[1]:
                 self.add_error(field, f"Use a value from {bounds[0]} to {bounds[1]}.")
+        # Default the render wait when omitted.
+        if data.get("render_wait_ms") in (None, ""):
+            data["render_wait_ms"] = 1500
         if data.get("extractor") == "ollama" and not settings.OLLAMA_MODEL:
             self.add_error("extractor", "Configure OLLAMA_MODEL in .env before choosing local AI.")
         if data.get("url") and data.get("allowed_paths"):
