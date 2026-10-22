@@ -99,3 +99,71 @@ class OllamaRetryableErrorTests(TestCase):
         self.assertEqual(job.attempts, 4)
         self.assertEqual(job.status, "failed")
 
+    def test_503_status_is_retryable_and_uses_retry_after(self):
+        def respond_503(request):
+            headers = {"content-type": "application/json", "retry-after": "120"}
+            return httpx.Response(503, headers=headers, request=request, content=b"Service Unavailable")
+
+        transport = httpx.MockTransport(respond_503)
+        with self._patch_client_with_transport(transport):
+            with self.assertRaises(FetchError) as ctx:
+                extract_ollama(self.html, self.source)
+        self.assertTrue(getattr(ctx.exception, "retryable", False))
+        # Ensure worker schedules a retry and propagates retry-after via retry_delay
+        DomainState.objects.create(origin=origin(self.source.url))
+        run = self.source.runs.create()
+        job = run.jobs.create(url=self.source.url)
+        handle_error(job, self.source, ctx.exception)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "queued")
+        self.assertEqual(job.attempts, 1)
+        self.assertGreater(job.available_at, timezone.now() + timedelta(seconds=110))
+        self.assertEqual(DomainState.objects.get(origin=origin(self.source.url)).next_allowed_at, job.available_at)
+
+    def test_502_status_is_retryable(self):
+        def respond_502(request):
+            return httpx.Response(502, headers={"content-type": "application/json"}, request=request, content=b"Bad Gateway")
+
+        transport = httpx.MockTransport(respond_502)
+        with self._patch_client_with_transport(transport):
+            with self.assertRaises(FetchError) as ctx:
+                extract_ollama(self.html, self.source)
+        self.assertTrue(getattr(ctx.exception, "retryable", False))
+        run = self.source.runs.create()
+        job = run.jobs.create(url=self.source.url)
+        handle_error(job, self.source, ctx.exception)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "queued")
+        self.assertEqual(job.attempts, 1)
+
+    def test_504_status_is_retryable(self):
+        def respond_504(request):
+            return httpx.Response(504, headers={"content-type": "application/json"}, request=request, content=b"Gateway Timeout")
+
+        transport = httpx.MockTransport(respond_504)
+        with self._patch_client_with_transport(transport):
+            with self.assertRaises(FetchError) as ctx:
+                extract_ollama(self.html, self.source)
+        self.assertTrue(getattr(ctx.exception, "retryable", False))
+        run = self.source.runs.create()
+        job = run.jobs.create(url=self.source.url)
+        handle_error(job, self.source, ctx.exception)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "queued")
+        self.assertEqual(job.attempts, 1)
+
+    def test_500_status_is_permanent(self):
+        def respond_500(request):
+            return httpx.Response(500, headers={"content-type": "application/json"}, request=request, content=b"Internal Error")
+
+        transport = httpx.MockTransport(respond_500)
+        with self._patch_client_with_transport(transport):
+            with self.assertRaises(Exception) as ctx:
+                extract_ollama(self.html, self.source)
+        # Worker should mark a non-FetchError as a permanent failure
+        run = self.source.runs.create()
+        job = run.jobs.create(url=self.source.url)
+        handle_error(job, self.source, ctx.exception)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "failed")
+
