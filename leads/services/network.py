@@ -108,32 +108,26 @@ class Response:
                 return self.body.decode("utf-8", errors="replace")
         # No charset in the header: sniff the first 4096 bytes for an HTML meta declaration.
         sniff = self.body[:4096]
-        # Pattern 1: <meta charset="...">
-        m = re.search(
-            br"<meta\s[^>]*?charset\s*=\s*([\"'])?\s*([a-z0-9._-]+)\s*\1",
-            sniff,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if not m:
-            # Pattern 2: <meta http-equiv="content-type" content="text/html; charset=...">
-            m = re.search(
-                br"<meta\s[^>]*?http-equiv\s*=\s*([\"'])?\s*content-type\s*\1[^>]*?"
-                br"content\s*=\s*([\"'])[^\"']*?charset\s*=\s*([a-z0-9._-]+)[^\"']*\2",
-                sniff,
-                re.IGNORECASE | re.DOTALL,
-            )
+        # Find each <meta ...> tag and search for a charset=... attribute (quoted or unquoted),
+        # regardless of attribute order or presence of http-equiv/content.
+        for tag_match in re.finditer(br"<meta\b[^>]*>", sniff, re.IGNORECASE | re.DOTALL):
+            tag = tag_match.group(0)
+            # Prefer quoted value if present.
+            m = re.search(br"charset\s*=\s*([\"'])([^\"']+)\1", tag, re.IGNORECASE | re.DOTALL)
+            candidate_bytes = None
             if m:
-                candidate = m.group(3)
+                candidate_bytes = m.group(2)
             else:
-                candidate = None
-        else:
-            candidate = m.group(2)
-        if candidate:
-            try:
-                # Decode using the sniffed charset if Python recognizes it.
-                return self.body.decode(candidate.decode("ascii", "ignore"), errors="replace")
-            except LookupError:
-                pass
+                m2 = re.search(br"charset\s*=\s*([a-z0-9._:-]+)", tag, re.IGNORECASE)
+                if m2:
+                    candidate_bytes = m2.group(1)
+            if candidate_bytes:
+                try:
+                    candidate = candidate_bytes.decode("ascii", "ignore")
+                    return self.body.decode(candidate, errors="replace")
+                except LookupError:
+                    # Unknown label; continue scanning or fall back below.
+                    continue
         # Fallback: UTF-8 with replacement to avoid crashes.
         return self.body.decode("utf-8", errors="replace")
 
