@@ -68,6 +68,41 @@ class EnvParserTests(unittest.TestCase):
                 os.environ["DJANGO_SECRET_KEY"] = old_secret
             os.environ.pop("DJANGO_ALLOWED_HOSTS", None)
 
+    def test_inline_hash_without_space_is_literal_and_space_hash_is_comment(self):
+        from config import env as config_env  # type: ignore
+        parse_dotenv = getattr(config_env, "parse_dotenv")
+        content = (
+            "API_KEY=abc#def\n"
+            "URL=https://x.test/#frag\n"
+            "KEEP=one#two#three\n"
+            "CUT=abc # comment\n"
+            "TAB=xyz\t#tabcomment\n"
+        )
+        result = parse_dotenv(content)
+        self.assertEqual(result["API_KEY"], "abc#def")
+        self.assertEqual(result["URL"], "https://x.test/#frag")
+        self.assertEqual(result["KEEP"], "one#two#three")
+        self.assertEqual(result["CUT"], "abc")
+        self.assertEqual(result["TAB"], "xyz")
+
+    def test_unquoted_quotes_are_literal_and_quoted_wrapping_is_stripped(self):
+        from config import env as config_env  # type: ignore
+        parse_dotenv = getattr(config_env, "parse_dotenv")
+        DotenvParseError = getattr(config_env, "DotenvParseError", ValueError)
+        content = (
+            "COMPANY=O'Brien\n"
+            "PASS=ab\"c\n"
+            "Q=\"abc\"\n"
+            "R='def'\n"
+        )
+        result = parse_dotenv(content)
+        self.assertEqual(result["COMPANY"], "O'Brien")
+        self.assertEqual(result["PASS"], "ab\"c")
+        self.assertEqual(result["Q"], "abc")
+        self.assertEqual(result["R"], "def")
+        with self.assertRaises(DotenvParseError):
+            parse_dotenv("BAD='abc")  # unmatched opening quote must error
+
 
 if __name__ == "__main__":
     unittest.main()
