@@ -71,15 +71,12 @@ class OllamaRetryableErrorTests(TestCase):
 
         transport = httpx.MockTransport(good_200_with_invalid_model_payload)
         with self._patch_client_with_transport(transport):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ValueError) as ctx:
                 extract_ollama(self.html, self.source)
         # Worker should treat non-FetchError exceptions as permanent failures
         run = self.source.runs.create()
         job = run.jobs.create(url=self.source.url)
-        try:
-            extract_ollama(self.html, self.source)
-        except Exception as exc:
-            handle_error(job, self.source, exc)
+        handle_error(job, self.source, ctx.exception)
         job.refresh_from_db()
         self.assertEqual(job.status, "failed")
 
