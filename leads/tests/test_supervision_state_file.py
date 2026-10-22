@@ -1,5 +1,5 @@
 """Exercise the CLI's durable state path; all service/script execution is mocked."""
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import io
 import json
 from pathlib import Path
@@ -15,9 +15,10 @@ from scripts import guard_service_update
 
 
 class GuardStateFileTests(SimpleTestCase):
-    def run_failed_update(self, corrupt=None, *, remove=False):
+    def run_failed_update(self, corrupt=None, *, remove=False, patch_json_load=None):
         fake = FakeUnit()
         output = io.StringIO()
+        err = io.StringIO()
         error = None
         with tempfile.TemporaryDirectory(prefix='guard-state-') as temp:
             root = Path(temp)
@@ -44,25 +45,43 @@ class GuardStateFileTests(SimpleTestCase):
             argv = ['guard_service_update.py', '--unit', 'fixture.service',
                     '--state-file', str(state_file), '--change-script', str(change),
                     '--rollback-script', str(rollback)]
-            with patch('sys.argv', argv), redirect_stdout(output), \
+            argv_patch = patch('sys.argv', argv)
+            json_patch = patch('scripts.guard_service_update.json.load', side_effect=patch_json_load) if patch_json_load is not None else None
+            cm = argv_patch if json_patch is None else argv_patch
+            if json_patch is None:
+                with argv_patch, redirect_stdout(output), redirect_stderr(err), \
+                     patch.object(supervision, 'snapshot', side_effect=fake.snapshot), \
+                     patch.object(supervision, 'systemctl', side_effect=fake.ctl), \
+                     patch.object(supervision, 'capture_identity', return_value={'code': 'old'}), \
+                     patch.object(supervision, 'cgroup_empty', return_value=True), \
+                     patch.object(guard_service_update.subprocess, 'run', side_effect=run_script):
+                    try:
+                        guard_service_update.main()
+                    except BaseException as exc:
+                        error = exc
+            else:
+                with argv_patch, json_patch, redirect_stdout(output), redirect_stderr(err), \
                  patch.object(supervision, 'snapshot', side_effect=fake.snapshot), \
                  patch.object(supervision, 'systemctl', side_effect=fake.ctl), \
                  patch.object(supervision, 'capture_identity', return_value={'code': 'old'}), \
                  patch.object(supervision, 'cgroup_empty', return_value=True), \
                  patch.object(guard_service_update.subprocess, 'run', side_effect=run_script):
-                try:
-                    guard_service_update.main()
-                except Exception as exc:
-                    error = exc
-        return fake, error, output.getvalue()
+                    try:
+                        guard_service_update.main()
+                    except BaseException as exc:
+                        error = exc
+        return fake, error, output.getvalue(), err.getvalue()
 
     def assert_refused(self, payload=None, *, remove=False):
-        fake, error, output = self.run_failed_update(payload, remove=remove)
+        fake, error, stdout, stderr = self.run_failed_update(payload, remove=remove)
         self.assertEqual(fake.active, 'inactive', 'unreadable rollback record allowed restart')
         self.assertNotIn('start', fake.events)
         self.assertEqual(fake.enabled, 'enabled')
-        self.assertIsInstance(error, supervision.RecoveryRequired)
-        self.assertEqual(output, '')
+        # CLI should exit with a non-zero code and print a single error line to stderr
+        self.assertIsInstance(error, SystemExit)
+        self.assertNotEqual(error.code, 0)
+        self.assertEqual(stdout, '')
+        self.assertTrue(stderr.strip().startswith('Refused:'))
 
     def test_truncated_json_refuses_restart(self):
         self.assert_refused(b'{"unit": "fixture.service", "identity":')
@@ -82,9 +101,18 @@ class GuardStateFileTests(SimpleTestCase):
                 self.assert_refused(payload)
 
     def test_intact_record_restores_service_and_propagates_deployment_failure(self):
-        fake, error, output = self.run_failed_update()
+        fake, error, stdout, stderr = self.run_failed_update()
         self.assertIsInstance(error, subprocess.CalledProcessError)
         self.assertEqual((fake.active, fake.enabled), ('active', 'enabled'))
         self.assertEqual(fake.events.count('start'), 1)
         self.assertIn('rollback', fake.events)
-        self.assertEqual(output, '')
+        self.assertEqual(stdout, '')
+        self.assertEqual(stderr, '')
+
+    def test_deeply_nested_json_refuses_restart(self):
+        # Simulate the JSON loader raising RecursionError for excessively deep nesting
+        fake, error, stdout, stderr = self.run_failed_update(patch_json_load=RecursionError())
+        self.assertIsInstance(error, SystemExit)
+        self.assertNotEqual(error.code, 0)
+        self.assertEqual(stdout, '')
+        self.assertIn('Rollback state file is unreadable or invalid.', stderr)
