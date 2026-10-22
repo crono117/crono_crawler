@@ -2,7 +2,7 @@ import socket
 from unittest.mock import patch
 from django.test import SimpleTestCase
 from leads.models import Source
-from leads.services.network import FetchError, canonical_url, fetch, in_scope, public_addresses, same_site
+from leads.services.network import FetchError, Response, canonical_url, fetch, in_scope, public_addresses, same_site
 
 class NetworkTests(SimpleTestCase):
     def test_url_rejects_credentials_protocols_and_nonstandard_ports(self):
@@ -72,3 +72,58 @@ class NetworkTests(SimpleTestCase):
         with self.assertRaises(FetchError):
             fetch("http://example.com/", "TestBot", max_bytes=5)
         connection.assert_called_once_with("example.com", "8.8.8.8", 80, 25)
+
+
+class ResponseTextTests(SimpleTestCase):
+    def test_meta_charset_windows_1252_decodes_correctly(self):
+        # Body contains accented characters encoded as Windows-1252; no charset in header.
+        body_text = "<!doctype html><html><head><meta charset=\"windows-1252\"></head><body>François & Mário</body></html>"
+        body_bytes = body_text.encode("cp1252")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        self.assertIn("François", res.text)
+        self.assertIn("Mário", res.text)
+
+    def test_header_charset_beats_meta(self):
+        # Body is Windows-1252 but header declares UTF-8; header must win over meta.
+        body_text = "<!doctype html><html><head><meta charset=\"windows-1252\"></head><body>Jérôme & Anaïs</body></html>"
+        body_bytes = body_text.encode("cp1252")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            body=body_bytes,
+        )
+        self.assertEqual(res.text, body_bytes.decode("utf-8", errors="replace"))
+
+    def test_unknown_meta_charset_falls_back_utf8(self):
+        # Unknown meta charset should not crash and should fall back to UTF-8 default.
+        body_text = "<html><head><meta charset=\"x-unknown-charset\"></head><body>Hello – world</body></html>"
+        # Use valid UTF-8 bytes so fallback produces an intact string.
+        body_bytes = body_text.encode("utf-8")
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        self.assertEqual(res.text, body_text)
+
+    def test_meta_beyond_4096_is_ignored(self):
+        # Place the meta tag after 4096 bytes; without a header charset, fallback is UTF-8 replace.
+        prefix = ("<html><head>" + (" " * 4100)).encode("ascii")
+        meta = '<meta charset="windows-1252">'.encode("ascii")
+        content_cp1252 = "<body>François</body></html>".encode("cp1252")
+        body_bytes = prefix + meta + content_cp1252
+        res = Response(
+            url="https://example.com/",
+            status=200,
+            headers={"content-type": "text/html"},
+            body=body_bytes,
+        )
+        # If meta were honored, we'd see the proper ç; instead, it should not equal cp1252 decoding.
+        self.assertNotEqual(res.text, body_bytes.decode("cp1252"))
