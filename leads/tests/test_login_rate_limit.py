@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.core.cache import cache
 from unittest import mock
@@ -120,6 +120,25 @@ class LoginRateLimitTests(TestCase):
             HTTP_X_FORWARDED_FOR="203.0.113.200",
         )
         self.assertLockedMessage(r)
+
+    def test_trusted_proxy_uses_last_xff_entry(self):
+        # With TRUST_X_FORWARDED_FOR=1, rotating the left-most spoofed value must not bypass lockout.
+        with override_settings(TRUST_X_FORWARDED_FOR=True):
+            for i in range(5):
+                r = self.client.post(
+                    self.login_url,
+                    {"username": self.username, "password": "wrong-pass"},
+                    REMOTE_ADDR="198.51.100.1",
+                    HTTP_X_FORWARDED_FOR=f"203.0.113.{10+i}, {self.ip_a}",
+                )
+                self.assertEqual(r.status_code, 200)
+            r = self.client.post(
+                self.login_url,
+                {"username": self.username, "password": self.password},
+                REMOTE_ADDR="198.51.100.1",
+                HTTP_X_FORWARDED_FOR=f"203.0.113.200, {self.ip_a}",
+            )
+            self.assertLockedMessage(r)
 
 
 class AdminLoginRateLimitTests(TestCase):
