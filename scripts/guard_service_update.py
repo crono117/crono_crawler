@@ -31,7 +31,7 @@ def read_state(path):
     try:
         with Path(path).open() as handle:
             state = json.load(handle)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise RecoveryRequired('Rollback state file is unreadable or invalid.') from exc
     if not isinstance(state, dict):
         raise RecoveryRequired('Rollback state file is missing or invalid.')
@@ -51,10 +51,14 @@ def main():
         if not Path(script).is_absolute() or not os.access(script, os.X_OK):
             parser.error('Both scripts must be existing absolute executable paths.')
 
-    guarded_update(args.unit, lambda: subprocess.run([args.change_script], check=True),
-                   lambda: subprocess.run([args.rollback_script], check=True),
-                   lambda state: write_state(args.state_file, state), identity_files=args.identity_file,
-                   read_record=lambda: read_state(args.state_file))
+    try:
+        guarded_update(args.unit, lambda: subprocess.run([args.change_script], check=True),
+                       lambda: subprocess.run([args.rollback_script], check=True),
+                       lambda state: write_state(args.state_file, state), identity_files=args.identity_file,
+                       read_record=lambda: read_state(args.state_file))
+    except RecoveryRequired as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == '__main__':
