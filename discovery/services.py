@@ -1117,15 +1117,15 @@ def process(job):
                 entries.append({"kind": kind, "url": clean,
                                 "priority": 95 if kind == "sitemap" else rank(campaign, clean)[0],
                                 "source_id": source.pk if in_scope(source, clean) else None})
-            # Pages of an approved site that score below the campaign minimum can never be queued;
-            # the sitemap itself is the record, so they aren't saved (they would only fill the limit).
+            # In-scope pages that fail the ordinary gate are not saved from a sitemap; the sitemap
+            # job itself is the record. The gate includes direct intent and treats a yield penalty
+            # as priority, so a direct page is not dropped only because past pages stored no contacts.
             read = len(entries)
-            # Judge with the same score registration stores and queueing uses (it includes the
-            # site's past yield), not the raw path score.
+            # Judge with the same eligibility registration and queueing use, not the raw path score.
             reviewed, yields = reviewed_sources({source.pk}), lookup_origin_yields({origin(source.url)})
             entries = [entry for entry in entries if entry["kind"] == "sitemap" or not entry["source_id"]
-                       or current_candidate_score(campaign, entry["url"], "", "", source, reviewed_source_ids=reviewed,
-                                                  origin_yields=yields)[0] >= campaign.min_score]
+                       or ordinary_page_eligible(campaign, entry["url"], "", "", source, reviewed_source_ids=reviewed,
+                                                 origin_yields=yields)[0]]
             for entry in entries:
                 entry.update(found_on=response.url, method="sitemap",
                              depth=job.depth + 1 if entry["kind"] == "sitemap" else 1,
