@@ -15,6 +15,12 @@ from .ranking import clean_url, rank
 from .turnover import has_room
 
 
+# Title words that name pages listing people. Each maps to a DIRECT_TARGETS/PLURAL_ROLE_TARGETS term in
+# ranking.direct_contact_page_intent, so a result whose title matches is a direct-intent candidate.
+# Brave documents ``intitle:`` as a (still experimental) operator; one bare term each, no nested quotes.
+PRECISION_TITLES = ("team", "staff", "people", "agents", "representatives")
+
+
 def query_pool(campaign):
     queries = [q.strip() for q in campaign.search_queries.splitlines() if q.strip()][:10]
     if campaign.auto_search_queries:
@@ -22,10 +28,15 @@ def query_pool(campaign):
             return " ".join(value.replace('"', "").replace("\\", "").split())[:160]
         industries = list(dict.fromkeys(phrase(k) for k in campaign.keywords.splitlines() if phrase(k)))[:6]
         roles = list(dict.fromkeys(phrase(k) for k in campaign.sales_terms.splitlines() if phrase(k)))[:2]
-        intents = ["our team", "sales team", "contact"] + [f"{role} team" for role in roles]
         region = f' "{phrase(campaign.region)}"' if phrase(campaign.region) else ""
-        # Rotate industry before moving to another intent; no domains or people are invented.
-        queries.extend(f'"{industry}" "{intent}"{region}' for intent in intents for industry in industries)
+        if campaign.search_precision:
+            # Ask for pages whose own title names a team/people listing, not for homepages that merely
+            # mention "contact". Bare "contact" is company-page intent, never direct intent.
+            queries.extend(f'"{industry}" intitle:{word}{region}' for word in PRECISION_TITLES for industry in industries)
+        else:
+            intents = ["our team", "sales team", "contact"] + [f"{role} team" for role in roles]
+            # Rotate industry before moving to another intent; no domains or people are invented.
+            queries.extend(f'"{industry}" "{intent}"{region}' for intent in intents for industry in industries)
     return list(dict.fromkeys(q for q in queries if len(q) <= 600 and len(q.split()) <= 75))
 
 
@@ -109,7 +120,10 @@ def schedule(campaign):
     attempt = None
     if available:
         from .yields import EMPTY, query_yields, search_priority
-        history = query_yields(available)
+        from automation.learning import merge_yields, query_setup_stats
+        # Page yield plus what the sites each query admitted later produced in automatic setup, so a
+        # query that keeps returning homepages with no people stops outranking one that finds contacts.
+        history = merge_yields(query_yields(available), query_setup_stats(available))
         query = max(available, key=lambda q: search_priority(history.get(q, EMPTY)))
         campaign.search_query_cursor = (pool.index(query) + 1) % len(pool)
         attempt = SourceSearch.objects.create(campaign=campaign, query=query)
@@ -184,11 +198,15 @@ def process(attempt):
     if not campaign.active or not campaign.search_enabled:
         complete(attempt, "Campaign or source search is disabled; no request made.", "skipped")
         return
-    if not search_ready() or not query_pool(campaign):
-        defer(attempt, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
-        return
-    if attempt.query not in query_pool(campaign):
+    pool = query_pool(campaign)
+    if attempt.query not in pool:
         complete(attempt, "Search queries changed; no request made.", "skipped")
+        # Invalidation did not consume a search slot. Let the next scheduler tick
+        # select from the current pool, still under all ordinary quota/cooldown gates.
+        Campaign.objects.filter(pk=campaign.pk).update(next_search_at=timezone.now())
+        return
+    if not search_ready():
+        defer(attempt, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
         return
     if not has_room(campaign):
         defer(attempt, timezone.now() + timedelta(hours=1), "Active URL inventory is full; no eligible turnover space.")

@@ -91,7 +91,7 @@ def pause_source(source, message="Paused by operator."):
 
 @transaction.atomic
 def acquire_lease():
-    from discovery.models import DiscoveryJob
+    from discovery.models import DiscoveryJob, DiscoveryRun
     now = timezone.now()
     lease, _ = WorkerLease.objects.get_or_create(key="collector", defaults={"heartbeat_at": now - timedelta(days=1)})
     lease = WorkerLease.objects.select_for_update().get(pk=lease.pk)
@@ -100,9 +100,27 @@ def acquire_lease():
     lease.token = uuid.uuid4().hex
     lease.heartbeat_at = now
     lease.save()
+    # A hard stop between opening a run and registering jobs can leave an empty
+    # open run that schedule_due() will never replace. Only reap old, truly empty
+    # runs; preserve paused campaigns and any run that has checkpointed jobs.
+    from discovery.models import Campaign
+    orphans = DiscoveryRun.objects.filter(status__in=("queued", "running"), campaign__active=True,
+        created_at__lt=now - timedelta(seconds=LEASE_SECONDS), jobs__isnull=True)
+    campaign_ids = list(orphans.values_list("campaign_id", flat=True))
+    # The same transaction closes the orphan and makes its active owner due. The
+    # normal scheduler creates replacement work through all existing scope gates.
+    list(Campaign.objects.select_for_update().filter(pk__in=campaign_ids).values_list("pk", flat=True))
+    recovered_ids = list(orphans.values_list("campaign_id", flat=True))
+    orphans.update(status="completed", finished_at=now, terminal_reason="recovered_empty",
+                   message="Recovered empty run after worker restart; campaign is due now.")
+    Campaign.objects.filter(pk__in=recovered_ids, active=True, next_due_at__gt=now).update(next_due_at=now)
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
-    DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    for job in DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).iterator():
+        job.diagnostics["worker_interruptions"] = job.diagnostics.get("worker_interruptions", 0) + 1
+        job.status, job.available_at = "queued", now
+        job.message = "Worker interrupted; checkpoint requeued after lease recovery."
+        job.save(update_fields=["diagnostics", "status", "available_at", "message"])
     from discovery.models import SourceSearch
     # Preserve durable search reservations and deferrals after an uncertain send.
     SourceSearch.objects.filter(status="processing").update(status="queued")

@@ -28,6 +28,9 @@ SOCIAL_HOSTS = ("facebook.com", "linkedin.com", "x.com", "twitter.com", "instagr
 DOCUMENT_HOSTS = ("docs.google.com", "drive.google.com", "dropbox.com", "box.com", "docsend.com",
                   "slideshare.net", "scribd.com", "notion.site", "notion.so")
 SCHEDULING_HOSTS = ("calendly.com", "cal.com", "acuityscheduling.com", "calendar.google.com", "meetings.hubspot.com")
+# Blog/CMS taxonomy listings (/tag/sales-team/, /category/our-people/) reuse person words in their
+# slugs but list articles, not people. They never establish direct contact-page intent.
+TAXONOMY_SEGMENTS = frozenset({"tag", "tags", "category", "categories", "topic", "topics"})
 
 # Outbound links that are page chrome, not candidate sources. They are recorded as automatically
 # dismissed with the reason (never silently dropped) and never reach the review queue.
@@ -126,6 +129,8 @@ def direct_contact_page_intent(url, label=""):
     host = (parsed.hostname or "").lower().rstrip(".")
     if any(host == domain or host.endswith("." + domain)
            for domain in SOCIAL_HOSTS + DOCUMENT_HOSTS + SCHEDULING_HOSTS):
+        return False
+    if any(segment.lower() in TAXONOMY_SEGMENTS for segment in unquote(parsed.path).split("/")):
         return False
     direct = " ".join((unquote(parsed.path), label))
     if any(phrase_matches(direct, term) for term in DIRECT_NOISE):
@@ -260,7 +265,20 @@ def ordinary_page_eligible(campaign, url, label="", context="", source=None, rev
     score, reasons = current_candidate_score(
         campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
         explicit_start=explicit_start, origin_yields=origin_yields)
-    return score >= campaign.min_score and direct_contact_page_intent(url, label), score, reasons
+    # Same intent gate that parks low-value inventory (see low_value_page); exact-start and
+    # sitemap exemptions stay with the callers that already apply them.
+    return score >= campaign.min_score and not low_value_page(url, label), score, reasons
+
+
+def low_value_page(url, label="", *, kind="page", explicit_start=False):
+    """Whether an in-scope URL can never pass the ordinary page gate, whatever its campaign score.
+
+    This is the intent half of ``ordinary_page_eligible``: sitemaps and exact starting pages are
+    exempt there too. Score/yield are deliberately ignored because they change over time (a
+    yield penalty recovers); missing direct intent does not, for the same URL and label.
+    Nearby context is never consulted, so it cannot rescue or condemn a page.
+    """
+    return kind == "page" and not explicit_start and not direct_contact_page_intent(url, label)
 
 
 def link_priority(url, label=""):

@@ -9,19 +9,19 @@ import httpx
 import soupsieve
 from django.conf import settings
 
-VERSION = "0.4.0"
+VERSION = "0.4.2"
 DEFAULT_SELECTORS = {
     "row": '[itemtype*="schema.org/Person"], .team-member, .team-card, .person-card, .staff-member, .agent-card, .sales-rep',
     "name": '[itemprop="name"], .name, .person-name, .team-name, h2, h3',
     "title": '[itemprop="jobTitle"], .role, .job-title, .title, h4',
-    "email": 'a[href^="mailto:"]', "phone": 'a[href^="tel:"]', "company": '.company',
+    "email": 'a[href^="mailto:" i]', "phone": 'a[href^="tel:" i]', "company": '.company',
     "evidence": "",
 }
 CONTACT_FIELDS = ("email", "phone")
 # Default/generated link selectors. Only these opt a card into visible-contact inference;
 # an explicit recipe selector (including "") keeps exactly its own selection.
-INFERABLE_SELECTORS = {"email": {'a[href^="mailto:"]', "a[href^='mailto:']"},
-                       "phone": {'a[href^="tel:"]', "a[href^='tel:']"}}
+INFERABLE_SELECTORS = {"email": {'a[href^="mailto:"]', "a[href^='mailto:']", DEFAULT_SELECTORS["email"]},
+                       "phone": {'a[href^="tel:"]', "a[href^='tel:']", DEFAULT_SELECTORS["phone"]}}
 NON_CARD_TAGS = {"header", "nav", "footer", "form"}
 REJECTION_LABELS = {
     "evidence_too_long": "evidence container too broad",
@@ -190,6 +190,12 @@ def signature(source):
 def selected_text(row, selector):
     if not selector:
         return ""
+    # Upgrade only the exact historical default/generated selectors. Preserve the
+    # original DOM and every other operator selector, including explicit uppercase.
+    for kind in CONTACT_FIELDS:
+        if selector.strip() in INFERABLE_SELECTORS[kind]:
+            selector = DEFAULT_SELECTORS[kind]
+            break
     node = row.select_one(selector)
     if not node:
         return ""
@@ -390,7 +396,10 @@ def extract_rules(html, source, diagnostics=None):
         if diagnostics is not None:
             diagnostics.update(extractor="rules", rows_checked=stats["matched_cards"],
                                row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"],
-                               shared_contact_records=stats["shared_contact_records"])
+                               shared_contact_records=stats["shared_contact_records"],
+                               candidate_people=stats["signals"].get("name", 0),
+                               candidate_contact_methods=stats.get("candidate_contact_methods", 0),
+                               duplicates=stats["primary_rejections"].get("duplicate_card", 0))
         return records
     soup = soup_for(html)
     selectors = DEFAULT_SELECTORS | validate_recipe(source.recipe or {})
@@ -411,6 +420,9 @@ def extract_rules(html, source, diagnostics=None):
             continue
         cards.append(card_record(row, selectors, evidence_row, chrome))
         evidence_texts.append(contact_evidence(evidence_row))
+    if diagnostics is not None:
+        diagnostics["candidate_people"] = sum(len(r["name"].split()) >= 2 for r, _ in cards)
+        diagnostics["candidate_contact_methods"] = sum(bool(r[k]) for r, _ in cards for k in CONTACT_FIELDS)
     drop_repeated_visible(cards)
     records = []
     shared = shared_company_contact(soup, source) if settings.SHARED_CONTACT_LEADS else None
@@ -477,6 +489,8 @@ def extract(html, source, *, diagnostics=None):
     unique = {}
     for record in records:
         unique[(record["name"].casefold(), record["email"], record["phone"])] = record
+    if diagnostics is not None:
+        diagnostics["duplicates"] = diagnostics.get("duplicates", 0) + len(records) - len(unique)
     records = list(unique.values())
     if diagnostics is not None:
         diagnostics["validated_contacts"] = len(records)

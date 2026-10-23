@@ -1,5 +1,6 @@
 """Persistent discovery jobs, executed by the existing single collector worker."""
 import hashlib
+from collections import Counter
 import logging
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ from leads.services.network import FetchError, Response, fetch, in_scope, origin
 from leads.services.storage import save_records, touch_unchanged
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryJob, DiscoveryRun
 from .providers import BRAVE_ORIGIN, MAX_SITEMAP_BYTES, brave_search, search_ready, sitemap_entries
-from .ranking import (canonical_exact_start, clean_url, current_candidate_score, noise_reason,
+from .ranking import (canonical_exact_start, clean_url, current_candidate_score, low_value_page, noise_reason,
                       ordinary_page_eligible, rank, reviewed_sources)
 from .yields import origin_yields as lookup_origin_yields, safe_origin
 
@@ -156,10 +157,14 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     candidates = {candidate.url: candidate for candidate in
                   campaign.urls.filter(url__in=urls).select_related("source")}
     inventory_count = campaign.saved_url_count()
-    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope", "decision"))
-    known_origins = {item_origin for item_origin, scope, decision in origin_rows
+    origin_rows = list(campaign.urls.values_list("origin", "dismissal_scope", "decision", "archived_at"))
+    known_origins = {item_origin for item_origin, scope, decision, _ in origin_rows
                      if not (decision == "dismissed" and not scope)}
-    dismissed_origins = {item_origin for item_origin, scope, _ in origin_rows if scope == "origin"}
+    dismissed_origins = {item_origin for item_origin, scope, _, _ in origin_rows if scope == "origin"}
+    # Active (counted) rows per origin, for the optional per-origin share. Same query as above.
+    origin_active = Counter(item_origin for item_origin, scope, decision, archived in origin_rows
+                            if archived is None and not (decision == "dismissed" and not scope))
+    origin_cap = campaign.max_active_per_origin
     queue_state = _queue_state(run_state)
     results = []
     duplicate_count = candidate_count = new_domain_count = 0
@@ -167,8 +172,28 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     pending = []
     stats = stats if stats is not None else {}
     for key in ("new_urls", "new_origins", "duplicates", "filtered", "capacity_rejected",
-                "domain_rejected", "archived_ignored", "archived"):
+                "domain_rejected", "archived_ignored", "archived", "parked", "unparked"):
         stats.setdefault(key, 0)
+    baseline = {key: stats[key] for key in ("capacity_rejected", "parked")}  # callers may share stats
+    from .turnover import ORIGIN_CAP_REASON, PARKED_EXTERNAL_REASON, PARKED_REASON
+    parking = campaign.park_low_value_urls
+    # External pages are parked only when an enabled site policy requires intent: then automation
+    # can never admit a page without it, and it would only hold capacity until it went stale.
+    from automation.models import SitePolicy
+    intent_policy = parking and SitePolicy.objects.filter(campaign=campaign, enabled=True,
+                                                          require_page_intent=True).exists()
+
+    def park_new(reason, decision, bound_source):
+        nonlocal candidate_count
+        row = DiscoveredURL.objects.create(
+            campaign=campaign, first_run=run_state, url=url, origin=item_origin,
+            label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
+            search_query=query[:600], score=score, reasons=reasons, kind=kind, decision=decision,
+            source=bound_source, archived_at=timezone.now(), archive_reason=reason)
+        candidates[url] = row
+        candidate_count += 1
+        stats["parked"] += 1
+        results.append(row)
 
     for spec, url in prepared:
         if url is None:
@@ -202,6 +227,18 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 continue
 
         candidate = candidates.get(url)
+        if (candidate and candidate.archived_at and parking and not company_job
+                and ((candidate.archive_reason == PARKED_REASON and candidate.decision == "approved" and source)
+                     or (candidate.archive_reason == PARKED_EXTERNAL_REASON and candidate.decision == "pending"
+                         and not candidate.source_id))
+                and not low_value_page(url, label, kind=candidate.kind) and inventory_count < campaign.max_candidates
+                and not (origin_cap and origin_active[candidate.origin] >= origin_cap)):
+            # Only intent parking is reversible here, and only through the same intent gate.
+            candidate.archived_at, candidate.archive_reason = None, ""
+            candidate.save(update_fields=["archived_at", "archive_reason"])
+            inventory_count += 1
+            origin_active[candidate.origin] += 1
+            stats["unparked"] += 1
         if candidate and candidate.archived_at:
             stats["archived_ignored"] += 1
             results.append(candidate)
@@ -233,6 +270,20 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             inventory_count += int(counted_after) - int(counted_before)
         else:
             automatically_filtered = bool(noise or score < 0)
+            if (parking and not automatically_filtered and source and not seed and not company_job
+                    and low_value_page(url, label, kind=kind)):
+                # In scope, so approval is recorded exactly as before, but the ordinary gate can never
+                # queue it. Park it outside active capacity instead of letting it crowd out team pages.
+                park_new(PARKED_REASON, "approved", source)
+                continue
+            if (intent_policy and not automatically_filtered and not source and not seed and not company_job
+                    and low_value_page(url, label, kind=kind)):
+                park_new(PARKED_EXTERNAL_REASON, "pending", None)
+                continue
+            if (origin_cap and not automatically_filtered and not seed and not company_job and kind == "page"
+                    and origin_active[item_origin] >= origin_cap):
+                park_new(ORIGIN_CAP_REASON, "approved" if source else "pending", source)
+                continue
             new_domain = not automatically_filtered and not source and item_origin not in known_origins
             domains_used = run_state.new_domains if domain_budget is None else 0
             domain_limit = campaign.max_new_domains if domain_budget is None else domain_budget
@@ -263,6 +314,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 label=str(label)[:200], context=str(context)[:600], found_on=found_on[:1500], method=method,
                 search_query=query[:600], score=score, reasons=reasons, kind=kind,
                 decision="dismissed" if score < 0 or noise else ("approved" if source else "pending"), source=source)
+            if not automatically_filtered:
+                origin_active[item_origin] += 1
             candidates[url] = candidate
             if not automatically_filtered:
                 known_origins.add(item_origin)
@@ -305,8 +358,17 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
         updates["candidates_found"] = F("candidates_found") + candidate_count
     if new_domain_count:
         updates["new_domains"] = F("new_domains") + new_domain_count
+    rejected_here = stats["capacity_rejected"] - baseline["capacity_rejected"]
+    parked_here = stats["parked"] - baseline["parked"]
+    if rejected_here:
+        updates["capacity_rejected"] = F("capacity_rejected") + rejected_here
+    if parked_here:
+        updates["parked"] = F("parked") + parked_here
     if inventory_full:
-        updates["message"] = "Active URL limit reached; review inventory or configure eligible source-search turnover."
+        updates["message"] = (
+            f"Active URL limit reached ({inventory_count}/{campaign.max_candidates}); "
+            f"{rejected_here} URL(s) in this batch not saved. Review inventory "
+            "(manage.py discovery_inventory), enable low-value parking or eligible source-search turnover.")[:1000]
     if updates:
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
     if pending:
@@ -556,7 +618,7 @@ def start(campaign):
     campaign.next_due_at = timezone.now() + timedelta(hours=campaign.interval_hours)
     campaign.save()
     if run:
-        run.status, run.message = "queued", "Resumed by operator."
+        run.status, run.message, run.terminal_reason = "queued", "Resumed by operator.", ""
         run.save()
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
@@ -642,8 +704,9 @@ def start(campaign):
 
 @transaction.atomic
 def pause(campaign, message="Paused by operator."):
+    message = message.strip() or "Campaign paused; queued work retained."
     Campaign.objects.filter(pk=campaign.pk).update(active=False, last_error=message)
-    campaign.runs.filter(status__in=("queued", "running")).update(status="paused", message=message)
+    campaign.runs.filter(status__in=("queued", "running")).update(status="paused", message=message, terminal_reason="campaign_paused")
 
 
 def pause_for_source(source, message="A source used by this campaign was paused or edited."):
@@ -714,13 +777,28 @@ def import_collector_backlog(campaign):
         return 0
     run = campaign.runs.filter(status__in=OPEN).first()
     opened_run = run is None
+    if opened_run and campaign.saved_url_count() >= campaign.max_candidates:
+        # Every pending/new external link would be rejected for capacity. Opening a run only to
+        # finish it with zero pages every five minutes hides the real bottleneck. The rows stay
+        # "new" and are offered again once there is room; nothing is lost.
+        logger.info("Campaign %s intake skipped: active URL inventory full (%s links waiting).",
+                    campaign.pk, len(specs))
+        return 0
     if opened_run:
-        run = DiscoveryRun.objects.create(campaign=campaign)
+        run = DiscoveryRun.objects.create(campaign=campaign, intake_only=True)
     reviewed_source_ids = reviewed_sources(source.pk for source in sources)
     before = campaign.urls.count()
-    results = register_batch(run, specs, campaign=campaign, approved_sources=sources, reviewed_source_ids=reviewed_source_ids)
+    stats = {}
+    results = register_batch(run, specs, campaign=campaign, approved_sources=sources,
+                             reviewed_source_ids=reviewed_source_ids, stats=stats)
     mark_collector_candidates_handled(specs, results)
     if opened_run:
+        queued = run.jobs.exclude(kind="search").count()
+        DiscoveryRun.objects.filter(pk=run.pk).update(message=(
+            f"Collector link intake only: {stats['new_urls']} new URL(s), {stats['parked']} parked, "
+            f"{stats['filtered']} filtered, {stats['duplicates']} already known, "
+            f"{stats['capacity_rejected']} rejected at capacity; {queued} page job(s) queued. "
+            "Not a crawl run; zero pages here is not a worker failure.")[:1000])
         finish(run)
     return campaign.urls.count() - before
 
@@ -841,6 +919,12 @@ def save_page(job, response):
             "content_hash": content_hash, "extraction_signature": sig, "last_checked": timezone.now()})
         record_links(job, response.text, response.url)
         DiscoveryRun.objects.filter(pk=job.run_id).update(pages_done=F("pages_done") + 1, contacts_seen=F("contacts_seen") + count, new_contacts=F("new_contacts") + created)
+        from .diagnostics import extraction_counts
+        if not cached:
+            job.diagnostics.update(extraction_counts(metrics if source.setup_mode == "automatic" else diagnostics,
+                                                    automatic=source.setup_mode == "automatic"))
+        job.diagnostics.update(extraction_measured=not cached, creation_measured=True, pages_fetched=1,
+            new_non_synthetic_leads=created if source.collector != "demo" else 0)
         job.contacts_seen, job.new_contacts = count, created
         message = f"{count} contact(s); {created} new." if count else "No validated contacts; review page suitability and CSS recipe."
         if diagnostics:
@@ -852,6 +936,8 @@ def save_page(job, response):
 
 def done(job, message, status="done"):
     job.status, job.message = status, message[:1000]
+    if status == "failed" and not job.failure_code:
+        job.failure_code = "legacy_unknown"
     job.save()
     from leads.services.activity import emit
     emit("result" if status == "done" else status, f"{job.url}: {job.message}", url=job.url)
@@ -861,9 +947,14 @@ def done(job, message, status="done"):
 
 def finish(run):
     if not run.jobs.filter(status__in=("queued", "processing")).exists():
-        failed = run.jobs.filter(status="failed").count()
+        from .diagnostics import terminal
+        code, message, stats = terminal(run)
+        # Preserve intake-specific capacity explanations when no crawl was performed.
+        if not stats["failures"] and not run.pages_done and run.message:
+            message = run.message
         DiscoveryRun.objects.filter(pk=run.pk, status__in=("queued", "running")).update(
-            status="failed" if failed else "completed", finished_at=timezone.now())
+            status="failed" if stats["failures"] else "completed", finished_at=timezone.now(),
+            terminal_reason=code, message=message, diagnostics=stats)
 
 
 # Per-run allowances that keep the shared daily budget for sites that can still yield.
@@ -909,6 +1000,10 @@ def process(job):
         if job.kind == "search":
             if not campaign.active or not campaign.search_enabled:
                 done(job, "Campaign or search was disabled after this job was claimed; no search made.", "skipped")
+                return
+            from .acquisition import query_pool
+            if job.url not in query_pool(campaign):
+                done(job, "Search queries changed; no request made.", "skipped")
                 return
             if not search_ready():
                 defer(job, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
@@ -1002,6 +1097,9 @@ def process(job):
         if job.kind == "sitemap" and response.status in (404, 410):
             done(job, "No sitemap at this address.", "skipped")
             return
+        if job.kind == "page":
+            job.diagnostics["pages_fetched"] = 1
+            job.save(update_fields=["diagnostics"])
         require_success(response)
         if any(marker in response.text.lower() for marker in ("cf-chl-", "verify you are human", "g-recaptcha", "hcaptcha-container")):
             raise FetchError("Access challenge detected; source paused for review.", status=403)
@@ -1041,7 +1139,12 @@ def process(job):
         job.attempts += 1
         job.save(update_fields=["attempts"])
         # Messages never include request headers, API keys, or provider response bodies.
-        message = str(exc)[:1000]
+        from .diagnostics import failure_category
+        job.failure_code = failure_category(exc)
+        transport = f" HTTP {exc.status}." if isinstance(exc, FetchError) and isinstance(exc.status, int) else ""
+        policy = " robots.txt policy denied or invalid." if job.failure_code.startswith("robots_") else ""
+        message = f"{job.failure_code}:{transport}{policy} Request or processing stopped; review source and configuration."
+        job.save(update_fields=["failure_code"])
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
                 defer(job, timezone.now() + timedelta(hours=24),

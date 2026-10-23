@@ -183,3 +183,16 @@ class PackPipelineTests(AutomationCase):
         self.assertEqual(job.state, 'active', job.message)
         self.assertEqual(job.current_recipe.recipe['row'], '.w-dyn-item')
         self.assertEqual(set(Lead.objects.values_list('name', flat=True)), {'Robin Demo', 'Morgan Sample'})
+
+
+@override_settings(EXTRACTION_PACKS_ENABLED=True)
+class StructuredDuplicateDiagnosticsTests(SimpleTestCase):
+    def test_rules_only_duplicate_count_matches_structured_rejection_count(self):
+        from discovery.diagnostics import extraction_counts
+        source = Source(url='https://fixture.example.test/team', company='Example Payments', recipe=RECIPE)
+        diagnostics = {}
+        records, _ = extract(html(person(), person()), source, diagnostics=diagnostics)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(diagnostics['rejected']['duplicate_card'], 1)
+        self.assertEqual(diagnostics['duplicates'], 1)
+        self.assertEqual(extraction_counts(diagnostics)['duplicates'], 1)

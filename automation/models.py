@@ -26,6 +26,14 @@ class SitePolicy(models.Model):
     )
     denied_domains = models.TextField(default=DEFAULT_DENY, max_length=3000)
     max_sites_per_day = bounded(3, 1, 25)
+    # Admission-only (see policy.ADMISSION_FIELDS). Percent of max_sites_per_day that candidates WITHOUT
+    # direct team/person-page intent (about/contact pages and bare homepages) may take. 100 keeps the
+    # historical first-eligible behavior; lower values reserve the rest for direct-intent pages and
+    # hand the exploratory slots to the best-ranked sites instead of whichever arrived first.
+    explore_share = models.PositiveIntegerField(
+        default=100, validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Percent of the daily automatic-setup allowance open to candidates without direct team/person-page "
+                  "intent. 100 = no reservation (first eligible wins).")
     probe_pages = bounded(3, 1, 5)
     canary_pages = bounded(5, 1, 10)
     delay_seconds = bounded(5, 2, 3600)
@@ -55,6 +63,18 @@ class SiteAutomationJob(models.Model):
     next_probe_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     message = models.CharField(max_length=1000, blank=True)
+    # Canonical onboarding: the URL the policy originally authorized, and how many times setup
+    # rebound the source to a same-site canonical form (http->https, www<->bare). Bounded.
+    original_url = models.URLField(max_length=1500, blank=True)
+    canonical_rebinds = models.PositiveSmallIntegerField(default=0)
+    # Why this site took a daily setup slot: intake tier (direct/company/generic, blank for jobs admitted
+    # before ranking existed), how it was found, and the explainable rank. Durable outcomes are joined back
+    # to these so query and tier yield can be learned from (see automation.learning).
+    admission_tier = models.CharField(max_length=10, blank=True)
+    admission_method = models.CharField(max_length=20, blank=True)
+    admission_query = models.CharField(max_length=600, blank=True)
+    admission_rank = models.IntegerField(null=True, blank=True)
+    admission_reasons = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

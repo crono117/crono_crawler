@@ -29,10 +29,22 @@ class Campaign(models.Model):
     search_queries = models.TextField(blank=True, max_length=6000, help_text="One exact search query per line, up to 10. Include a location here to target it in search.")
     daily_search_limit = bounded(5, 1, 100)
     auto_search_queries = models.BooleanField(default=False, help_text="Rotate team/contact searches built from campaign industry phrases, sales roles and region, alongside your exact queries.")
+    search_precision = models.BooleanField(default=False, help_text="Generated queries ask for pages whose title names a team, staff, people, agents or representatives (intitle:) instead of generic 'contact' pages, so results land on person-listing pages rather than homepages. Exact queries are never rewritten.")
     search_interval_minutes = bounded(60, 15, 1440)
     next_search_at = models.DateTimeField(default=timezone.now)
     search_query_cursor = models.PositiveIntegerField(default=0)
     auto_archive_candidates = models.BooleanField(default=False, help_text="When search needs space, archive eligible dismissed, stale or repeatedly unproductive URLs. Keeps their history and review decisions.")
+    max_active_per_origin = bounded(
+        0, 0, 10_000,
+        help_text="Most active (counted) page URLs one origin may hold; 0 means no per-origin limit. "
+                  "Further new pages from that origin are parked outside the active URL limit, so one "
+                  "large site cannot fill the inventory. Seeds, sitemaps and company follow-ups are exempt.")
+    park_low_value_urls = models.BooleanField(
+        default=False,
+        help_text="Record newly found in-scope pages without direct team/profile/contact-page intent as parked: "
+                  "kept for history and deduplication, never queued, and not counted toward the active URL limit. "
+                  "Approval and source bindings are unchanged; a parked URL rediscovered with a direct-intent "
+                  "label returns to active inventory when there is room.")
     active = models.BooleanField(default=False)
     next_due_at = models.DateTimeField(default=timezone.now)
     next_intake_at = models.DateTimeField(
@@ -68,7 +80,21 @@ class DiscoveryRun(models.Model):
     candidates_found = models.PositiveIntegerField(default=0)
     new_domains = models.PositiveIntegerField(default=0)
     duplicates_seen = models.PositiveIntegerField(default=0)
+    capacity_rejected = models.PositiveIntegerField(default=0)
+    parked = models.PositiveIntegerField(default=0)
+    intake_only = models.BooleanField(default=False)
     message = models.CharField(max_length=1000, blank=True)
+
+    terminal_reason = models.CharField(max_length=64, blank=True)
+    diagnostics = models.JSONField(default=dict)
+
+    def save(self, *args, **kwargs):
+        if self.status in ("failed", "paused"):
+            self.terminal_reason = self.terminal_reason or "legacy_unknown"
+            self.message = self.message or "Run stopped; no historical reason recorded."
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"terminal_reason", "message"}
+        return super().save(*args, **kwargs)
 
     @property
     def needs_recipe_review(self):
@@ -76,7 +102,9 @@ class DiscoveryRun(models.Model):
 
     class Meta:
         ordering = ["-id"]
-        constraints = [models.UniqueConstraint(fields=["campaign"], condition=Q(status__in=["queued", "running", "paused"]), name="one_open_discovery_run")]
+        constraints = [models.UniqueConstraint(fields=["campaign"], condition=Q(status__in=["queued", "running", "paused"]), name="one_open_discovery_run"),
+            models.CheckConstraint(condition=~Q(status__in=["failed", "paused"]) |
+                (~Q(terminal_reason="") & ~Q(message="")), name="discovery_terminal_reason_required")]
 
 
 class DiscoveredURL(models.Model):
@@ -122,6 +150,8 @@ class DiscoveryJob(models.Model):
     message = models.CharField(max_length=1000, blank=True)
     contacts_seen = models.PositiveIntegerField(default=0)
     new_contacts = models.PositiveIntegerField(default=0)
+    failure_code = models.CharField(max_length=64, blank=True)
+    diagnostics = models.JSONField(default=dict)
 
     class Meta:
         ordering = ["-priority", "id"]

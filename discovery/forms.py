@@ -7,7 +7,22 @@ from .providers import search_ready
 from .ranking import CONTACT_EXCLUSIONS, lines
 
 
-class CampaignForm(forms.ModelForm):
+class OriginShareMixin:
+    """Optional field: an omitted value keeps the stored share (0, unlimited, for new campaigns)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "max_active_per_origin" in self.fields:
+            self.fields["max_active_per_origin"].required = False
+
+    def clean_max_active_per_origin(self):
+        value = self.cleaned_data.get("max_active_per_origin")
+        if value is None:
+            return self.instance.max_active_per_origin if self.instance.pk else 0
+        return value
+
+
+class CampaignForm(OriginShareMixin, forms.ModelForm):
     add_contact_exclusions = forms.BooleanField(required=False, label="Add contact discovery exclusions",
         help_text="Adds path filters for blogs, articles, products, software and card machines, plus Facebook, LinkedIn and X domains. Keeps your other exclusions. Review before using on software reseller directories.")
     class Meta:
@@ -15,7 +30,7 @@ class CampaignForm(forms.ModelForm):
         fields = ["name", "category", "sources", "keywords", "sales_terms", "exclusions", "add_contact_exclusions", "region", "use_sitemaps",
                   "max_pages", "max_depth", "max_candidates", "max_new_domains", "daily_requests", "min_score",
                   "interval_hours", "search_enabled", "search_queries", "daily_search_limit",
-                  "auto_search_queries", "search_interval_minutes", "auto_archive_candidates"]
+                  "auto_search_queries", "search_interval_minutes", "auto_archive_candidates", "park_low_value_urls", "max_active_per_origin"]
         widgets = {name: forms.Textarea(attrs={"rows": 4}) for name in ("keywords", "sales_terms", "exclusions", "search_queries")}
         labels = {"category": "Campaign focus", "sources": "Approved starting sources", "daily_requests": "Daily fetch attempts",
                   "min_score": "Minimum page priority", "search_enabled": "Use Brave web search"}
@@ -62,16 +77,19 @@ class CampaignForm(forms.ModelForm):
         return data
 
 
-class SourceSearchForm(forms.ModelForm):
+class SourceSearchForm(OriginShareMixin, forms.ModelForm):
     """These controls never cancel a crawl or change its fetch budget."""
     class Meta:
         model = Campaign
-        fields = ["search_enabled", "auto_search_queries", "search_queries", "search_interval_minutes",
-                  "daily_search_limit", "auto_archive_candidates"]
+        fields = ["search_enabled", "auto_search_queries", "search_precision", "search_queries", "search_interval_minutes",
+                  "daily_search_limit", "auto_archive_candidates", "park_low_value_urls", "max_active_per_origin"]
         widgets = {"search_queries": forms.Textarea(attrs={"rows": 4})}
         labels = {"search_enabled": "Find new sources with Brave search",
                   "auto_search_queries": "Generate and rotate queries",
-                  "auto_archive_candidates": "Allow reversible inventory turnover"}
+                  "search_precision": "Generated queries target team/people page titles",
+                  "auto_archive_candidates": "Allow reversible inventory turnover",
+                  "park_low_value_urls": "Park in-scope pages without contact-page intent",
+                  "max_active_per_origin": "Active URL share per origin (0 = unlimited)"}
 
     def clean(self):
         data = super().clean()

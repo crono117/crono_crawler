@@ -17,6 +17,7 @@ NOT_ABOUT_THE_SITE = (
 )
 
 FAILURE_OUTCOMES = (
+    ("canonical origin conflict", "canonical_conflict"),
     ("access challenge", "blocked"), ("403", "blocked"), ("401", "blocked"), ("blocked", "blocked"),
     ("robots", "robots_disallowed"),
     ("collection restriction", "collection_prohibited"),

@@ -47,11 +47,19 @@ def policy(request, campaign_id):
     instance = SitePolicy.objects.filter(campaign=campaign).first() or SitePolicy(campaign=campaign)
     form = PolicyForm(request.POST or None, instance=instance)
     if request.method == "POST" and form.is_valid():
+        from .policy import SETUP_FIELDS
+        before = SitePolicy.objects.filter(pk=instance.pk).values("enabled", *SETUP_FIELDS).first() if instance.pk else None
         with transaction.atomic():
-            form.save()
-            for job in campaign.automation_jobs.select_related("source"):
-                pause_job(job, "Campaign automation policy changed; setup requires revalidation.", rollback=False)
-        messages.success(request, "Automation policy saved. New qualifying sites use it when the campaign runs. Existing setup jobs are paused for policy review.")
+            saved = form.save()
+            after = {name: getattr(saved, name) for name in ("enabled",) + SETUP_FIELDS}
+            setup_changed = before != after
+            if setup_changed:
+                for job in campaign.automation_jobs.select_related("source"):
+                    pause_job(job, "Campaign automation policy changed; setup requires revalidation.", rollback=False)
+        if setup_changed:
+            messages.success(request, "Automation policy saved. New qualifying sites use it when the campaign runs. Existing setup jobs are paused for policy review.")
+        else:
+            messages.success(request, "Admission settings saved. They apply to new sites; existing setups continue unchanged.")
         return redirect("automation:home")
     return render(request, "automation/policy.html", {"campaign": campaign, "form": form})
 
