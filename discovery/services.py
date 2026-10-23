@@ -605,7 +605,7 @@ def queue_activated_source(source, campaign):
 
 
 @transaction.atomic
-def start(campaign):
+def start(campaign, *, priority_specs=None):
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     if not campaign.sources.filter(approved=True).exists() and not campaign.search_enabled:
         raise ValueError("Choose at least one approved starting source or enable configured search.")
@@ -650,6 +650,10 @@ def start(campaign):
         collector_results = register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
                                            reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
         mark_collector_candidates_handled(collector_specs, collector_results)
+    # Admit the current index batch before remembered inventory claims the run cap.
+    # Registration applies the same scope, approval, exclusion and scoring gates.
+    if priority_specs:
+        register_batch(run, priority_specs, campaign=campaign, order=True, queue_jobs=False)
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
     origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
