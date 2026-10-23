@@ -94,7 +94,8 @@ class CommonCrawlDiscoveryTests(TestCase):
         specs, counts = common_crawl_specs(self.campaign, "CC-MAIN-2026-35", lookup=lookup, pause=0)
         self.assertEqual(len(specs), 2)
         self.assertEqual(counts["Agent site"], 2)
-        self.assertIn("Busy site (index error: HTTP 504; retry scheduled.)", counts)
+        self.assertIn("Busy site (index error: HTTP 504; skipped after one retry)", counts)
+        self.assertNotIn("retry scheduled", " ".join(counts))
         self.assertEqual(asked.count("busy.example"), 2)  # one retry, then skipped
         self.assertNotIn("blocked.example", asked)  # blocked sources are not looked up
 

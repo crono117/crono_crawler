@@ -392,51 +392,73 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
     }])[0]
 
 
+# Eligible work that did not fit this run. The URL stays approved for a later run.
+QUEUE_FULL_RESULT = (
+    "Deferred: this run is already at its page limit. "
+    "The URL stays approved and can join a later run."
+)
+
+
+def _mark_queue_deferred(candidate):
+    if candidate.last_result != QUEUE_FULL_RESULT:
+        candidate.last_result = QUEUE_FULL_RESULT
+        candidate.save(update_fields=["last_result"])
+
+
 def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None,
                     reviewed_source_ids=None, job_priority=None, capacity=None, origin_yields=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
     if candidate.manual_review_required or candidate.archived_at:
-        return
+        return "rejected"
     if company_job:
         from classification.routing import can_queue
         if not can_queue(company_job, candidate.url, depth):
-            return
+            return "rejected"
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
-        return
-    exact_start = bool(candidate.source and canonical_exact_start(candidate.url, candidate.source.url))
+        return "rejected"
+    source = candidate.source
+    # A blocked or unapproved source must not occupy a slot. Inactive sources stay eligible:
+    # discovery-only sources intentionally leave regular collection off.
+    if source is None or not source.approved or source.blocked_at:
+        return "rejected"
+    exact_start = bool(source and canonical_exact_start(candidate.url, source.url))
     eligible, score, reasons = ordinary_page_eligible(
-        campaign, candidate.url, candidate.label, candidate.context, candidate.source,
+        campaign, candidate.url, candidate.label, candidate.context, source,
         reviewed_source_ids=reviewed_source_ids, origin_yields=origin_yields,
         explicit_start=(candidate.method == "seed" and exact_start))
     if (candidate.score, candidate.reasons) != (score, reasons):
         candidate.score, candidate.reasons = score, reasons
         candidate.save(update_fields=["score", "reasons"])
     if score < 0 or (kind == "page" and not exact_start and not eligible):
-        return
+        return "ineligible"
     allowed = None if capacity is None else capacity["collection_allowed"].get(candidate.source_id)
     if allowed is None:
-        allowed = collection_allowed(candidate.source)
+        allowed = collection_allowed(source)
         if capacity is not None:
             capacity["collection_allowed"][candidate.source_id] = allowed
     if not allowed:
-        return
+        return "rejected"
     if depth > (3 if kind == "sitemap" else campaign.max_depth):
-        return
-    if capacity is None:
-        if run.jobs.exclude(kind="search").count() >= campaign.max_pages:
-            return
-    elif capacity["count"] >= campaign.max_pages:
-        return
+        return "rejected"
     key = (kind, candidate.url)
     if capacity is not None and key in capacity["keys"]:
-        return
+        return "present"
+    full = (run.jobs.exclude(kind="search").count() >= campaign.max_pages if capacity is None
+            else capacity["count"] >= campaign.max_pages)
+    if full:
+        _mark_queue_deferred(candidate)
+        return "deferred"
     _, created = DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
-        "candidate": candidate, "source": candidate.source, "depth": depth, "company_job": company_job,
+        "candidate": candidate, "source": source, "depth": depth, "company_job": company_job,
         "priority": job_priority if job_priority is not None else (95 if kind == "sitemap" else score)})
+    if created and candidate.last_result == QUEUE_FULL_RESULT:
+        candidate.last_result = ""
+        candidate.save(update_fields=["last_result"])
     if capacity is not None:
         capacity["keys"].add(key)
         capacity["count"] += int(created)
+    return "queued" if created else "present"
 
 
 COMMON_CRAWL_MAX_SOURCES = 25
@@ -471,7 +493,11 @@ def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
                 break
             except FetchError as exc:
                 if not exc.retryable or attempt:
-                    counts[f"{source.name or host} (index error: {exc})"] = 0
+                    # The fetch error's own text says "retry scheduled" for any retryable status.
+                    # Nothing is persisted for a later index attempt, so say that this host was skipped.
+                    status = f"HTTP {exc.status}; " if isinstance(exc.status, int) else ""
+                    outcome = "skipped after one retry" if exc.retryable else "skipped"
+                    counts[f"{source.name or host} (index error: {status}{outcome})"] = 0
                 elif pause:
                     time.sleep(pause * 5)
         if raws is None:
@@ -620,6 +646,10 @@ def start(campaign, *, priority_specs=None):
     if run:
         run.status, run.message, run.terminal_reason = "queued", "Resumed by operator.", ""
         run.save()
+        # A caller that already holds fresh index URLs must not drop them when another
+        # transaction created this run first. Append through the ordinary gates.
+        if priority_specs:
+            register_batch(run, priority_specs, campaign=campaign, order=True)
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
         return run
@@ -652,8 +682,12 @@ def start(campaign, *, priority_specs=None):
         mark_collector_candidates_handled(collector_specs, collector_results)
     # Admit the current index batch before remembered inventory claims the run cap.
     # Registration applies the same scope, approval, exclusion and scoring gates.
+    priority_results = []
     if priority_specs:
-        register_batch(run, priority_specs, campaign=campaign, order=True, queue_jobs=False)
+        priority_results = register_batch(
+            run, priority_specs, campaign=campaign, order=True, approved_sources=sources,
+            reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
+    priority_ids = {candidate.pk for candidate in priority_results if candidate is not None}
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
     origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
@@ -676,12 +710,22 @@ def start(campaign, *, priority_specs=None):
     novel = [candidate for candidate in page_candidates
              if (candidate.source_id, candidate.url) not in fetched]
     reserved = (campaign.max_pages + 1) // 2
-    for candidate in order_discovery_batch(novel, url=lambda item: item.url,
-                                           source_id=lambda item: item.source_id, priority=lambda item: item.score):
-        if queue_state["count"] >= reserved:
-            break
-        queue_candidate(run, candidate, kind="page", reviewed_source_ids=reviewed_source_ids,
-                        capacity=queue_state, origin_yields=origin_yields)
+    # Index URLs registered for this run claim the novelty reservation before older
+    # remembered pages and before seeds. Leftover reservation still rotates other origins.
+    priority_novel = [candidate for candidate in novel if candidate.pk in priority_ids]
+    other_novel = [candidate for candidate in novel if candidate.pk not in priority_ids]
+
+    def queue_novel(candidates):
+        for candidate in order_discovery_batch(candidates, url=lambda item: item.url,
+                                               source_id=lambda item: item.source_id,
+                                               priority=lambda item: item.score):
+            if queue_state["count"] >= reserved:
+                break
+            queue_candidate(run, candidate, kind="page", reviewed_source_ids=reviewed_source_ids,
+                            capacity=queue_state, origin_yields=origin_yields)
+
+    queue_novel(priority_novel)
+    queue_novel(other_novel)
     # Keep starting-page refreshes ahead of sitemap spillover. Sitemaps do not get
     # PageSnapshots, so treating them as perpetually novel would starve these refreshes.
     seed_candidates = [candidate for candidate in seed_candidates if candidate is not None]
