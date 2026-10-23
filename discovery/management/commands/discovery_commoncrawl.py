@@ -43,12 +43,14 @@ class Command(BaseCommand):
             from django.db import transaction
             from discovery.services import start
             with transaction.atomic():
+                before = campaign.urls.count()
                 run = start(campaign, priority_specs=specs)
                 started_with_specs = True
+                started_added = campaign.urls.count() - before
             self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
         try:
-            added = 0 if started_with_specs else register_common_crawl(campaign, specs)
+            added = started_added if started_with_specs else register_common_crawl(campaign, specs)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
-        self.stdout.write(f"Processed {len(specs)} index URL(s); {added} newly registered into an existing run. 
+        self.stdout.write(f"Processed {len(specs)} index URL(s); {added} newly registered to the campaign. 
                           "Data: Common Crawl (CC BY 4.0).")
