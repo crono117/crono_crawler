@@ -953,7 +953,7 @@ def finish(run):
         if not stats["failures"] and not run.pages_done and run.message:
             message = run.message
         DiscoveryRun.objects.filter(pk=run.pk, status__in=("queued", "running")).update(
-            status="failed" if stats["failures"] else "completed", finished_at=timezone.now(),
+            status="failed" if stats["failures"] and not run.pages_done else "completed", finished_at=timezone.now(),
             terminal_reason=code, message=message, diagnostics=stats)
 
 
