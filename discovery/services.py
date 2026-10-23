@@ -75,7 +75,7 @@ def hinted_source(campaign, url, source_hint):
 
 def refresh_priorities(campaign, reviewed_source_ids=None, origin_yields=None):
     """Re-score saved URLs without changing operator approvals or dismissals."""
-    candidates = list(campaign.urls.select_related("source")[:10000])
+    candidates = list(campaign.urls.filter(archived_at__isnull=True).select_related("source")[:10000])
     if reviewed_source_ids is None:
         reviewed_source_ids = reviewed_sources(candidate.source_id for candidate in candidates if candidate.source_id)
     if origin_yields is None:
@@ -111,7 +111,8 @@ def _queue_state(run):
 
 @transaction.atomic
 def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
-                   approved_sources=None, reviewed_source_ids=None, queue_jobs=True):
+                   approved_sources=None, reviewed_source_ids=None, queue_jobs=True,
+                   allow_turnover=False, domain_budget=None, stats=None):
     """Register an ordered batch while holding one campaign capacity lock."""
     prepared = []
     for original in specs:
@@ -164,6 +165,10 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     duplicate_count = candidate_count = new_domain_count = 0
     inventory_full = False
     pending = []
+    stats = stats if stats is not None else {}
+    for key in ("new_urls", "new_origins", "duplicates", "filtered", "capacity_rejected",
+                "domain_rejected", "archived_ignored", "archived"):
+        stats.setdefault(key, 0)
 
     for spec, url in prepared:
         if url is None:
@@ -197,6 +202,10 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 continue
 
         candidate = candidates.get(url)
+        if candidate and candidate.archived_at:
+            stats["archived_ignored"] += 1
+            results.append(candidate)
+            continue
         preserve_existing_approval = bool(candidate and candidate.decision == "approved")
         item_origin = origin(url)
         if source and not preserve_existing_approval and item_origin in dismissed_origins:
@@ -204,6 +213,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             continue
         if candidate:
             duplicate_count += 1
+            stats["duplicates"] += 1
             counted_before = not (candidate.decision == "dismissed" and not candidate.dismissal_scope)
             candidate.last_seen = timezone.now()
             candidate.score, candidate.reasons = score, reasons
@@ -223,12 +233,24 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             inventory_count += int(counted_after) - int(counted_before)
         else:
             automatically_filtered = bool(noise or score < 0)
-            if not automatically_filtered and inventory_count >= campaign.max_candidates:
-                inventory_full = True
+            new_domain = not automatically_filtered and not source and item_origin not in known_origins
+            domains_used = run_state.new_domains if domain_budget is None else 0
+            domain_limit = campaign.max_new_domains if domain_budget is None else domain_budget
+            if new_domain and domains_used + new_domain_count >= domain_limit:
+                stats["domain_rejected"] += 1
                 results.append(None)
                 continue
-            new_domain = not automatically_filtered and not source and item_origin not in known_origins
-            if new_domain and run_state.new_domains + new_domain_count >= campaign.max_new_domains:
+            if not automatically_filtered and inventory_count >= campaign.max_candidates and allow_turnover:
+                from .ranking import direct_contact_page_intent
+                from .turnover import ARCHIVE_BATCH_LIMIT, archive_for_result
+                slots = inventory_count - campaign.max_candidates + 1
+                if slots + stats["archived"] <= ARCHIVE_BATCH_LIMIT and direct_contact_page_intent(url, label):
+                    archived = archive_for_result(campaign, incoming_score=score, exclude_urls=urls, slots=slots)
+                    inventory_count -= len(archived)
+                    stats["archived"] += len(archived)
+            if not automatically_filtered and inventory_count >= campaign.max_candidates:
+                inventory_full = True
+                stats["capacity_rejected"] += 1
                 results.append(None)
                 continue
             from leads.services.activity import emit
@@ -247,6 +269,9 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                 inventory_count += 1
             candidate_count += 1
             new_domain_count += int(new_domain)
+            stats["filtered"] += int(automatically_filtered)
+            stats["new_urls"] += int(not automatically_filtered)
+            stats["new_origins"] += int(new_domain)
         if manual and not preserve_existing_approval:
             candidate.manual_review_required = True
             if candidate.decision != "dismissed":
@@ -281,7 +306,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
     if new_domain_count:
         updates["new_domains"] = F("new_domains") + new_domain_count
     if inventory_full:
-        updates["message"] = "Saved URL limit reached; raise the campaign limit to expand further."
+        updates["message"] = "Active URL limit reached; review inventory or configure eligible source-search turnover."
     if updates:
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
     if pending:
@@ -309,7 +334,7 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
                     reviewed_source_ids=None, job_priority=None, capacity=None, origin_yields=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
-    if candidate.manual_review_required:
+    if candidate.manual_review_required or candidate.archived_at:
         return
     if company_job:
         from classification.routing import can_queue
@@ -496,7 +521,8 @@ def queue_activated_source(source, campaign):
     run.campaign = campaign
     checked = set(PageSnapshot.objects.filter(source=source).values_list("url", flat=True))
     candidates = [candidate for candidate in
-                  campaign.urls.filter(source=source, decision="approved", manual_review_required=False)
+                  campaign.urls.filter(source=source, decision="approved", manual_review_required=False,
+                                       archived_at__isnull=True)
                   .select_related("source")
                   if candidate.url not in checked and in_scope(source, candidate.url) and
                   (candidate.kind != "sitemap" or campaign.use_sitemaps)]
@@ -521,7 +547,9 @@ def start(campaign):
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     if not campaign.sources.filter(approved=True).exists() and not campaign.search_enabled:
         raise ValueError("Choose at least one approved starting source or enable configured search.")
-    if campaign.search_enabled and (not search_ready() or not campaign.search_queries.strip()):
+    from .acquisition import query_pool, schedule
+    if (campaign.search_enabled and not campaign.sources.filter(approved=True).exists()
+            and (not search_ready() or not query_pool(campaign))):
         raise ValueError("Configure Brave search and add a query, or turn search off.")
     run = campaign.runs.filter(status__in=OPEN).first()
     campaign.active, campaign.last_error = True, ""
@@ -531,6 +559,7 @@ def start(campaign):
         run.status, run.message = "queued", "Resumed by operator."
         run.save()
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
+        schedule(campaign)
         return run
     run = DiscoveryRun.objects.create(campaign=campaign)
     # Sources that blocked automated access are not re-seeded until an operator runs them again.
@@ -606,17 +635,7 @@ def start(campaign):
             continue
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
                         capacity=queue_state, origin_yields=origin_yields)
-    if campaign.search_enabled:
-        from .yields import EMPTY, query_yields, search_priority
-        queries = list(dict.fromkeys(q.strip() for q in campaign.search_queries.splitlines() if q.strip()))[:10]
-        history = query_yields(queries)
-        for query in queries:
-            stats = history.get(query, EMPTY)
-            priority = search_priority(stats)
-            DiscoveryJob.objects.create(
-                run=run, kind="search", url=query, priority=priority,
-                message=(f"Query history: {stats.productive}/{stats.fetched} fetched result pages stored contacts; "
-                         f"sampled priority {priority}.")[:1000])
+    schedule(campaign)
     finish(run)
     return run
 
@@ -634,6 +653,8 @@ def pause_for_source(source, message="A source used by this campaign was paused 
 
 @transaction.atomic
 def approve(candidate, source):
+    if candidate.archived_at:
+        raise ValueError("Restore this archived URL before approving it.")
     if not source.approved or not in_scope(source, candidate.url):
         raise ValueError("Choose a reviewed source whose approved scope contains this exact URL.")
     from leads.services.activity import emit
@@ -653,7 +674,8 @@ def approve(candidate, source):
     active = bool(run and candidate.campaign.active)
     reviewed_source_ids = reviewed_sources({source.pk}) if active else None
     origin_yields = lookup_origin_yields({origin(source.url)}) if active else None
-    for sibling in candidate.campaign.urls.filter(origin=origin(source.url), manual_review_required=False).exclude(decision="dismissed"):
+    for sibling in candidate.campaign.urls.filter(origin=origin(source.url), manual_review_required=False,
+                                                  archived_at__isnull=True).exclude(decision="dismissed"):
         if in_scope(source, sibling.url):
             sibling.decision, sibling.source = "approved", source
             sibling.save(update_fields=["decision", "source"])
@@ -663,6 +685,8 @@ def approve(candidate, source):
 
 
 def schedule_due():
+    from .acquisition import schedule_due as schedule_searches
+    schedule_searches()
     for campaign in Campaign.objects.filter(active=True, next_due_at__lte=timezone.now()):
         if not campaign.runs.filter(status__in=OPEN).exists():
             try:
@@ -887,8 +911,7 @@ def process(job):
                 done(job, "Campaign or search was disabled after this job was claimed; no search made.", "skipped")
                 return
             if not search_ready():
-                pause(campaign, "Search disabled or missing API key; turn search off or configure it before resuming.")
-                defer(job, timezone.now(), "Search configuration required.")
+                defer(job, timezone.now() + timedelta(hours=1), "Search configuration required; page collection can continue.")
                 return
             state, _ = DomainState.objects.get_or_create(origin=BRAVE_ORIGIN)
             if state.next_allowed_at > timezone.now():
@@ -898,23 +921,18 @@ def process(job):
                 return
             state.next_allowed_at = timezone.now() + timedelta(seconds=2)
             state.save()
-            results = []
-            for result in brave_search(job.url):
-                if not isinstance(result, dict) or not isinstance(result.get("url"), str):
-                    continue
-                try:
-                    result_url = clean_url(result["url"])
-                except (ValueError, UnicodeError):
-                    continue
-                raw_title = result.get("title", "")
-                raw_description = result.get("description", "")
-                label = soup_for(raw_title if isinstance(raw_title, str) else "").get_text(" ", strip=True)
-                context = soup_for(raw_description if isinstance(raw_description, str) else "").get_text(" ", strip=True)
-                results.append({"url": result_url, "label": label, "context": context,
-                                "query": job.url, "method": "search",
-                                "priority": rank(campaign, result_url, label, context)[0]})
-            register_batch(job.run, results, cleaned=True, order=True)
-            done(job, "Search results saved; new domains await source review.")
+            from .acquisition import result_specs
+            results = brave_search(job.url)
+            with transaction.atomic():
+                campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
+                if not campaign.active or not campaign.search_enabled:
+                    done(job, "Campaign or search paused during request; results were not admitted.", "skipped")
+                    return
+                stats = {}
+                register_batch(job.run, result_specs(campaign, job.url, results), campaign=campaign,
+                               cleaned=True, order=True, stats=stats)
+                done(job, f"{stats['new_urls']} new URLs; {stats['duplicates']} duplicates; "
+                     f"{stats['capacity_rejected']} capacity-rejected. New domains await source review.")
             return
         source = Source.objects.filter(pk=job.source_id).first() if job.source_id else None
         if not source or not source.approved or not campaign.sources.filter(pk=source.pk).exists() or not in_scope(source, job.url):
@@ -930,8 +948,8 @@ def process(job):
             return
         if job.candidate:
             job.candidate.refresh_from_db()
-        if not job.candidate or job.candidate.decision != "approved":
-            done(job, "URL was dismissed or is awaiting review.", "skipped")
+        if not job.candidate or job.candidate.archived_at or job.candidate.decision != "approved":
+            done(job, "URL is archived, dismissed or awaiting review.", "skipped")
             return
         exact_start = canonical_exact_start(job.url, source.url)
         eligible, score, reasons = ordinary_page_eligible(
@@ -1026,8 +1044,8 @@ def process(job):
         message = str(exc)[:1000]
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
-                pause(campaign, "Search provider denied access; review API configuration.")
-                defer(job, timezone.now() + timedelta(hours=1), message)
+                defer(job, timezone.now() + timedelta(hours=24),
+                      "Search provider denied access; review API configuration. Page collection can continue.")
             else:
                 # Only this source stops; the run carries on with the others and it is not retried.
                 done(job, "Access blocked: " + message, "failed")
@@ -1046,6 +1064,9 @@ def process(job):
 
 def tick():
     """Caller must hold the collector lease; no network I/O in a DB transaction."""
+    from .acquisition import tick as search_tick
+    if search_tick():
+        return True
     with transaction.atomic():
         job = DiscoveryJob.objects.select_related("run__campaign", "source", "candidate").filter(
             status="queued", available_at__lte=timezone.now(), run__status__in=("queued", "running"),

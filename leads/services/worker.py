@@ -103,6 +103,9 @@ def acquire_lease():
     # Checkpointed pages survive hard stops. Repeating an unfinished page is idempotent.
     PageJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
     DiscoveryJob.objects.filter(status="processing", run__status__in=OPEN_STATUSES).update(status="queued", available_at=now)
+    from discovery.models import SourceSearch
+    # Preserve durable search reservations and deferrals after an uncertain send.
+    SourceSearch.objects.filter(status="processing").update(status="queued")
     from automation.models import SiteAutomationJob
     SiteAutomationJob.objects.filter(processing=True).update(processing=False)
     from classification.models import Evaluation
@@ -387,8 +390,10 @@ def idle_note():
     """Explain an idle worker in the activity feed: when the next queued item becomes available."""
     from automation.models import SiteAutomationJob
     from automation.services import RUNNABLE
-    from discovery.models import DiscoveryJob
+    from discovery.models import DiscoveryJob, SourceSearch
     upcoming = [value for value in (
+        SourceSearch.objects.filter(status="queued", campaign__active=True, campaign__search_enabled=True)
+            .order_by("available_at").values_list("available_at", flat=True).first(),
         PageJob.objects.filter(status="queued", run__status__in=("queued", "running"), run__source__active=True,
                                run__source__approved=True).order_by("available_at").values_list("available_at", flat=True).first(),
         DiscoveryJob.objects.filter(status="queued", run__status__in=("queued", "running"), run__campaign__active=True)

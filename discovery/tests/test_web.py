@@ -20,7 +20,7 @@ class DiscoveryWebTests(TestCase):
         data = {"name": "New campaign", "category": "merchant_services", "sources": [self.source.pk],
                 "keywords": "merchant services", "sales_terms": "sales", "exclusions": "", "region": "",
                 "max_pages": 25, "max_depth": 2, "max_candidates": 500, "max_new_domains": 10,
-                "daily_requests": 100, "min_score": 10, "interval_hours": 24, "daily_search_limit": 5}
+                "daily_requests": 100, "min_score": 10, "interval_hours": 24, "daily_search_limit": 5, "search_interval_minutes": 60}
         data.update(overrides)
         return data
 

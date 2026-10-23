@@ -337,7 +337,7 @@ class SearchQueryAllocationTests(TestCase):
         self.assertGreater(len(set(new)), 3)
 
     @override_settings(BRAVE_SEARCH_ENABLED=True, BRAVE_SEARCH_API_KEY="synthetic-key")
-    def test_start_orders_search_jobs_by_sampled_yield(self):
+    def test_start_selects_independent_search_by_sampled_yield(self):
         from unittest.mock import patch
         from discovery.services import start
         self.history()
@@ -347,9 +347,8 @@ class SearchQueryAllocationTests(TestCase):
         mean = lambda stats, rng=None: 80 + round(10 * stats.rate)  # deterministic stand-in for sampling
         with patch("discovery.yields.search_priority", side_effect=mean):
             run = start(self.campaign)
-        jobs = list(run.jobs.filter(kind="search").order_by("-priority", "id").values_list("url", "priority", "message"))
-        self.assertEqual([url for url, _, _ in jobs], [self.Q_GOOD, self.Q_NEW, self.Q_BAD])
-        self.assertIn("4/4 fetched result pages", jobs[0][2])
+        self.assertFalse(run.jobs.filter(kind="search").exists())
+        self.assertEqual(self.campaign.source_searches.get().query, self.Q_GOOD)
 
 
 class RunAllowanceTests(TestCase):

@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 from leads.views import staff_required
 from leads.services.health import recipe_review_runs
-from .forms import ApproveURLForm, CampaignForm
+from .forms import ApproveURLForm, CampaignForm, SourceSearchForm
 from .models import Campaign, DailyUsage, DiscoveredURL, DiscoveryRun
 from .providers import search_ready
 from .services import OPEN, approve, pause, refresh_priorities, start
@@ -17,7 +17,7 @@ from .services import OPEN, approve, pause, refresh_priorities, start
 def home(request):
     return render(request, "discovery/home.html", {
         "campaigns": Campaign.objects.prefetch_related("sources"),
-        "pending_count": DiscoveredURL.objects.filter(decision="pending").count(),
+        "pending_count": DiscoveredURL.objects.filter(decision="pending", archived_at__isnull=True).count(),
         "url_count": DiscoveredURL.objects.count(),
         "active_count": Campaign.objects.filter(active=True).count(),
         "today": DailyUsage.objects.filter(day=timezone.now().date()).aggregate(requests=Sum("requests"), searches=Sum("searches")),
@@ -46,12 +46,32 @@ def campaign_form(request, pk=None):
 
 @staff_required
 def campaign_detail(request, pk):
+    from .acquisition import search_status
     campaign = get_object_or_404(Campaign.objects.prefetch_related("sources"), pk=pk)
     return render(request, "discovery/campaign.html", {"campaign": campaign, "runs": campaign.runs.all()[:20],
         "discovery_alerts": recipe_review_runs(DiscoveryRun, "campaign").filter(campaign=campaign),
         "url_count": campaign.saved_url_count(),
-        "filtered_count": campaign.urls.filter(decision="dismissed", dismissal_scope="").count(), "pending_count": campaign.urls.filter(decision="pending").count(),
+        "source_search": search_status(campaign), "search_history": campaign.source_searches.all()[:10],
+        "filtered_count": campaign.urls.filter(decision="dismissed", dismissal_scope="").count(), "pending_count": campaign.urls.filter(decision="pending", archived_at__isnull=True).count(),
         "today": campaign.usage.filter(day=timezone.now().date()).first()})
+
+
+@staff_required
+def source_search_settings(request, pk):
+    campaign = get_object_or_404(Campaign, pk=pk)
+    form = SourceSearchForm(request.POST or None, instance=campaign)
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            current = Campaign.objects.select_for_update().get(pk=pk)
+            for field in form.Meta.fields:
+                setattr(current, field, form.cleaned_data[field])
+            current.next_search_at = timezone.now()
+            current.save(update_fields=[*form.Meta.fields, "next_search_at"])
+        messages.success(request, "Source search settings saved. Existing crawl work and fetch budgets are preserved.")
+        return redirect("discovery:campaign", pk=pk)
+    from .acquisition import query_pool
+    return render(request, "discovery/search_settings.html", {"campaign": campaign, "form": form,
+        "queries": query_pool(campaign)})
 
 
 @require_POST
@@ -80,6 +100,10 @@ def campaign_action(request, pk):
 def candidates(request):
     urls = DiscoveredURL.objects.select_related("campaign", "source")
     decision = request.GET.get("decision", "pending")
+    if decision == "archived":
+        urls = urls.filter(archived_at__isnull=False)
+    else:
+        urls = urls.filter(archived_at__isnull=True)
     if decision in ("pending", "approved", "dismissed"):
         urls = urls.filter(decision=decision)
     if request.GET.get("campaign", "").isdigit():
@@ -99,6 +123,14 @@ def candidate_detail(request, pk):
     form = ApproveURLForm(candidate, request.POST or None)
     if request.method == "POST":
         action = request.POST.get("action")
+        if action == "restore":
+            from .turnover import restore
+            try:
+                restore(candidate)
+                messages.success(request, "URL restored to inventory. Its review decision is unchanged.")
+            except ValueError as exc:
+                messages.error(request, str(exc))
+            return redirect("discovery:candidate", pk=pk)
         if action in ("dismiss", "dismiss_origin"):
             targets = DiscoveredURL.objects.filter(pk=pk) if action == "dismiss" else candidate.campaign.urls.filter(origin=candidate.origin)
             targets.update(decision="dismissed", dismissal_scope="origin" if action == "dismiss_origin" else "url")
@@ -108,7 +140,11 @@ def candidate_detail(request, pk):
             messages.success(request, "Dismissed. Queued requests for these URLs will be skipped.")
             return redirect("discovery:candidates")
         if action == "approve" and form.is_valid():
-            approve(candidate, form.cleaned_data["source"])
+            try:
+                approve(candidate, form.cleaned_data["source"])
+            except ValueError as exc:
+                messages.error(request, str(exc))
+                return redirect("discovery:candidate", pk=pk)
             messages.success(request, "Approved scope attached to this campaign. Eligible URLs enter the current run if capacity remains, or the next run.")
             return redirect("discovery:campaign", pk=candidate.campaign_id)
     return render(request, "discovery/candidate.html", {"candidate": candidate, "form": form, "jobs": candidate.jobs.select_related("run")[:15]})

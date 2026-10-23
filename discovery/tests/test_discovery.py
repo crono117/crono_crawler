@@ -1029,7 +1029,7 @@ class RankingAndProviderTests(TestCase):
                          ("Valid Team", "Valid description", "merchant services", "search"))
 
     @override_settings(BRAVE_SEARCH_ENABLED=True, BRAVE_SEARCH_API_KEY="synthetic-key", BRAVE_DAILY_SEARCH_LIMIT=1)
-    @patch("discovery.services.brave_search")
+    @patch("discovery.acquisition.brave_search")
     def test_search_budget_is_shared_and_results_stay_unfetched(self, search):
         search.return_value = [{"url": "https://new.example.org/reps/alex", "title": "Payment processing sales representative"}]
         first = Campaign.objects.create(name="Search A", search_enabled=True, search_queries="merchant services")
@@ -1045,10 +1045,10 @@ class RankingAndProviderTests(TestCase):
         self.assertEqual(search.call_count, 1)
         self.assertEqual(DiscoveredURL.objects.get().decision, "pending")
         self.assertFalse(DiscoveredURL.objects.get().jobs.exists())
-        self.assertIn("budget", run_b.jobs.get().message)
+        self.assertIn("budget", second.source_searches.get().message)
 
     @override_settings(BRAVE_SEARCH_ENABLED=True, BRAVE_SEARCH_API_KEY="synthetic-key")
-    @patch("discovery.services.brave_search", side_effect=FetchError("Rate limit", retryable=True, status=429, retry_after="120"))
+    @patch("discovery.acquisition.brave_search", side_effect=FetchError("Rate limit", retryable=True, status=429, retry_after="120"))
     def test_search_rate_limit_uses_persisted_backoff(self, search):
         campaign = Campaign.objects.create(name="Search", search_enabled=True, search_queries="POS sales")
         run = start(campaign)
@@ -1057,7 +1057,7 @@ class RankingAndProviderTests(TestCase):
             tick(token, prefer_discovery=True)
         finally:
             release_lease(token)
-        job = run.jobs.get()
+        job = campaign.source_searches.get()
         self.assertEqual(job.status, "queued")
         self.assertEqual(job.attempts, 1)
         self.assertGreater(job.available_at, timezone.now() + timedelta(seconds=100))

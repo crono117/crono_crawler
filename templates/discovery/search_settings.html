@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block title %}Source search{% endblock %}{% block location %}Discovery / Source search{% endblock %}{% block content %}
+<header class="page-heading"><div><h1>Find new sources</h1><p>{{ campaign.name }} · Searches run independently of page collection, under the existing daily search limits.</p></div><a class="button" href="{% url 'discovery:campaign' campaign.pk %}">Back to campaign</a></header>
+<section class="panel"><div class="panel-body"><p>Generated searches use this campaign's industry phrases, sales roles and region. New websites follow your source review and automation policy before collection. Queries that add no new origins rest for seven days; queries that add new origins rest for one day.</p><p>Inventory turnover keeps history and review decisions. It protects active jobs, manual imports, starting pages and sources with contact evidence. Eligible dismissed, stale or zero-yield URLs can be archived when a relevant search result needs space.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button class="button primary">Save source search settings</button></form></div></section>
+{% if queries %}<details class="panel spaced"><summary>Current query rotation ({{ queries|length }})</summary><ul>{% for query in queries %}<li>{{ query }}</li>{% endfor %}</ul></details>{% endif %}
+{% endblock %}

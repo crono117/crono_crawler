@@ -561,6 +561,21 @@
         reviewRest.textContent = "(" + review.low_signal + " low-signal · " + review.auto_filtered + " auto-filtered)";
         boardText.setText(String(review.worth_a_look));
         LANES.forEach(function(l){ describeQueue(consoles[l.key], data.queues[l.key]); });
+        var sourcePanel = document.getElementById("lab-source-searches");
+        if (sourcePanel) {
+          sourcePanel.replaceChildren();
+          (data.source_searches || []).forEach(function(item) {
+            var row = document.createElement("li"), link = document.createElement("a"), detail = document.createElement("span");
+            link.href = item.href;
+            link.textContent = item.name;
+            detail.className = "meta";
+            detail.textContent = item.reason + " " + item.searches_today + "/" + item.daily_limit + " searches today; " +
+              item.active_urls + "/" + item.url_limit + " active URLs; " + item.archived_urls + " archived." +
+              (item.latest ? " Latest: " + item.latest.message : "");
+            link.appendChild(detail); row.appendChild(link); sourcePanel.appendChild(row);
+          });
+          if (!sourcePanel.children.length) sourcePanel.textContent = "No discovery campaigns configured.";
+        }
         var now = Date.now() / 1000;
         data.entries.forEach(function(e){
           after = Math.max(after, e.t);

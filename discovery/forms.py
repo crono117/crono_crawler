@@ -14,7 +14,8 @@ class CampaignForm(forms.ModelForm):
         model = Campaign
         fields = ["name", "category", "sources", "keywords", "sales_terms", "exclusions", "add_contact_exclusions", "region", "use_sitemaps",
                   "max_pages", "max_depth", "max_candidates", "max_new_domains", "daily_requests", "min_score",
-                  "interval_hours", "search_enabled", "search_queries", "daily_search_limit"]
+                  "interval_hours", "search_enabled", "search_queries", "daily_search_limit",
+                  "auto_search_queries", "search_interval_minutes", "auto_archive_candidates"]
         widgets = {name: forms.Textarea(attrs={"rows": 4}) for name in ("keywords", "sales_terms", "exclusions", "search_queries")}
         labels = {"category": "Campaign focus", "sources": "Approved starting sources", "daily_requests": "Daily fetch attempts",
                   "min_score": "Minimum page priority", "search_enabled": "Use Brave web search"}
@@ -24,7 +25,7 @@ class CampaignForm(forms.ModelForm):
             "sales_terms": "One sales role or business role per line.",
             "exclusions": "One rule per line. path:blog matches blog/blogs in the URL path only; domain:x.com matches that domain and subdomains. Plain phrases match path, hostname, link label or local context. Filters never grant source approval.",
             "min_score": "After reviewing exclusions, try 35 for a small contact-focused run. Reviewed starting pages are still visited; other page URLs must meet this score.",
-            "region": "Optional ranking hint, not verified geography. Add the location to search queries for search targeting.",
+            "region": "Optional ranking hint and generated-query location, not verified geography. Exact queries are not rewritten.",
             "use_sitemaps": "Read bounded XML sitemaps only within each source's approved scope.",
             "search_enabled": "Requires server configuration and an API key. Off by default; normal discovery needs no key.",
             "max_depth": "Page link depth from a starting source; sitemap entries start at depth 1.",
@@ -56,8 +57,32 @@ class CampaignForm(forms.ModelForm):
         if data.get("search_enabled"):
             if not search_ready():
                 self.add_error("search_enabled", "Brave search must be enabled with an API key in the server environment first.")
-            if not queries:
+            if not queries and not (data.get("auto_search_queries") and data.get("keywords", "").strip()):
                 self.add_error("search_queries", "Add at least one query.")
+        return data
+
+
+class SourceSearchForm(forms.ModelForm):
+    """These controls never cancel a crawl or change its fetch budget."""
+    class Meta:
+        model = Campaign
+        fields = ["search_enabled", "auto_search_queries", "search_queries", "search_interval_minutes",
+                  "daily_search_limit", "auto_archive_candidates"]
+        widgets = {"search_queries": forms.Textarea(attrs={"rows": 4})}
+        labels = {"search_enabled": "Find new sources with Brave search",
+                  "auto_search_queries": "Generate and rotate queries",
+                  "auto_archive_candidates": "Allow reversible inventory turnover"}
+
+    def clean(self):
+        data = super().clean()
+        queries = [q.strip() for q in data.get("search_queries", "").splitlines() if q.strip()]
+        if len(queries) > 10 or any(len(q) > 600 or len(q.split()) > 75 for q in queries):
+            self.add_error("search_queries", "Use up to 10 queries; each must be at most 600 characters and 75 words.")
+        if data.get("search_enabled"):
+            if not search_ready():
+                self.add_error("search_enabled", "Enable Brave and configure its API key in the server environment first.")
+            if not queries and not (data.get("auto_search_queries") and self.instance.keywords.strip()):
+                self.add_error("search_queries", "Add an exact query or enable generated queries with campaign industry phrases.")
         return data
 
 
