@@ -21,6 +21,9 @@ class Source(models.Model):
     approval_notes = models.TextField(blank=True)
     collector = models.CharField(max_length=12, choices=[("http", "HTML"), ("browser", "Browser"), ("demo", "Demo")], default="http")
     extractor = models.CharField(max_length=12, choices=[("rules", "CSS / structured HTML"), ("ollama", "Local Ollama")], default="rules")
+    # Milliseconds to wait after DOMContentLoaded when using the Browser collector.
+    # Keeps the global 100s render cap in the renderer path.
+    render_wait_ms = models.PositiveIntegerField(default=1500)
     require_sales_role = models.BooleanField(default=True)
     recipe = models.JSONField(default=dict, blank=True)
     setup_mode = models.CharField(max_length=16, default="rules_only", choices=[("rules_only", "Operator-configured rules"), ("automatic", "Automated recipe setup")])
