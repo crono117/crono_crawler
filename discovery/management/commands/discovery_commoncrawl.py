@@ -52,5 +52,5 @@ class Command(BaseCommand):
             added = started_added if started_with_specs else register_common_crawl(campaign, specs)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
-        self.stdout.write(f"Processed {len(specs)} index URL(s); {added} newly registered to the campaign. 
+        self.stdout.write(f"Processed {len(specs)} index URL(s); {added} newly registered to the campaign. "
                           "Data: Common Crawl (CC BY 4.0).")
