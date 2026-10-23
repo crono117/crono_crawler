@@ -38,15 +38,17 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {spec['url']}")
             self.stdout.write(f"Dry run: {len(specs)} URL(s) not registered.")
             return
+        started_with_specs = False
         if options["start_if_idle"] and campaign.active and not campaign.runs.filter(status__in=("queued", "running")).exists():
             from django.db import transaction
             from discovery.services import start
             with transaction.atomic():
-                run = start(campaign)
+                run = start(campaign, priority_specs=specs)
+                started_with_specs = True
             self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
         try:
-            added = register_common_crawl(campaign, specs)
+            added = 0 if started_with_specs else register_common_crawl(campaign, specs)
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
-        self.stdout.write(f"Registered {len(specs)} URL(s); {added} new to this campaign. "
+        self.stdout.write(f"Processed {len(specs)} index URL(s); {added} newly registered into an existing run. 
                           "Data: Common Crawl (CC BY 4.0).")
