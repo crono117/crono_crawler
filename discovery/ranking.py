@@ -246,6 +246,10 @@ def current_candidate_score(campaign, url, label="", context="", source=None, re
         delta, reason = yield_adjustment(stats)
         if delta:
             score = max(0, min(100, score + delta))
+            # A zero-yield origin must not veto an otherwise eligible direct people page.
+            # Preserve negative exclusions and the ordinary direct-intent requirement.
+            if delta < 0 and rank(campaign, url, label, context)[0] >= campaign.min_score and direct_contact_page_intent(url, label):
+                score = max(score, campaign.min_score)
             reasons = reasons + [reason]
     if source and score >= 0:
         reviewed = (source.pk in reviewed_source_ids if reviewed_source_ids is not None else
