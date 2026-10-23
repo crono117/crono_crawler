@@ -44,6 +44,42 @@ class RunDiagnosticsTests(TestCase):
                 self.assertNotIn('secret', self.run.message + self.job.message)
                 self.assertEqual(self.run.diagnostics['failures'][code], 1)
 
+    def test_saved_pages_keep_failure_diagnostics_without_failing_the_run(self):
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(pages_done=41, contacts_seen=0, new_contacts=0)
+        DiscoveryJob.objects.filter(pk=self.job.pk).update(status='failed', failure_code='fetch_error',
+                                                          diagnostics={'http_status': 404, 'exception_category': 'fetch_error'})
+        finish(self.run)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.status, 'completed')
+        self.assertEqual(self.run.terminal_reason, 'job_failures')
+        self.assertEqual(self.run.diagnostics['failures']['fetch_error'], 1)
+        self.assertEqual(self.run.diagnostics['pages_saved'], 41)
+        self.assertIn('41 pages saved', self.run.message)
+        self.assertNotIn('secret', self.run.message)
+
+    def test_fetch_failure_stores_status_and_category_without_a_body(self):
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(status='running')
+        DiscoveryJob.objects.filter(pk=self.job.pk).update(status='processing', attempts=3)
+        with patch('discovery.services.demo_response', side_effect=FetchError('HTTP 404. secret body', status=404)):
+            process(self.job)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.failure_code, 'fetch_error')
+        self.assertEqual(self.job.diagnostics.get('http_status'), 404)
+        self.assertEqual(self.job.diagnostics.get('exception_category'), 'fetch_error')
+        self.assertNotIn('secret', json.dumps(self.job.diagnostics))
+        self.assertNotIn('secret', self.job.message)
+
+    def test_retryable_http_status_stays_a_scheduled_retry(self):
+        DiscoveryRun.objects.filter(pk=self.run.pk).update(status='running')
+        DiscoveryJob.objects.filter(pk=self.job.pk).update(status='processing', attempts=0)
+        with patch('discovery.services.demo_response', side_effect=FetchError('HTTP 504. secret body', status=504, retryable=True)):
+            process(self.job)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, 'queued')
+        self.assertEqual(self.job.diagnostics.get('http_status'), 504)
+        self.assertEqual(self.job.diagnostics.get('exception_category'), 'http_unavailable')
+        self.assertNotIn('secret', json.dumps(self.job.diagnostics))
+
     def test_successful_refresh_with_failure_explains_zero_novelty(self):
         DiscoveryRun.objects.filter(pk=self.run.pk).update(pages_done=35, contacts_seen=8, new_contacts=0)
         DiscoveryJob.objects.filter(pk=self.job.pk).update(status='failed', failure_code='timeout')

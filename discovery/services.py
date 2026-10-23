@@ -1189,10 +1189,14 @@ def process(job):
         # Messages never include request headers, API keys, or provider response bodies.
         from .diagnostics import failure_category
         job.failure_code = failure_category(exc)
+        # Persist the status code and category only. The exception text can echo a response body.
+        if isinstance(exc, FetchError) and isinstance(exc.status, int):
+            job.diagnostics["http_status"] = exc.status
+        job.diagnostics["exception_category"] = job.failure_code
         transport = f" HTTP {exc.status}." if isinstance(exc, FetchError) and isinstance(exc.status, int) else ""
         policy = " robots.txt policy denied or invalid." if job.failure_code.startswith("robots_") else ""
         message = f"{job.failure_code}:{transport}{policy} Request or processing stopped; review source and configuration."
-        job.save(update_fields=["failure_code"])
+        job.save(update_fields=["failure_code", "diagnostics"])
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
                 defer(job, timezone.now() + timedelta(hours=24),
