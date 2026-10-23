@@ -66,7 +66,13 @@ def diagnostic_message(diagnostics):
     if not count:
         return "No person cards matched the row selector; review the page and CSS recipe."
     reasons = [f"{value} {REJECTION_LABELS.get(key, key.replace('_', ' '))}" for key, value in diagnostics.get("rejected", {}).items()]
-    return f"Checked {count} person card(s). " + ("; ".join(reasons) + "." if reasons else "")
+    recovered = diagnostics.get("shared_contact_records", 0)
+    message = f"Checked {count} person card(s)."
+    if reasons:
+        message += (" Initial checks: " if recovered else " ") + "; ".join(reasons) + "."
+    if recovered:
+        message += f" {recovered} accepted using shared company contact fallback."
+    return message
 TAG_PATTERNS = {
     "merchant_services": r"merchant (?:services|accounts?)|payment processing|credit card processing|card payments",
     "pos": r"point[ -]of[ -]sale|\bPOS\b",
@@ -383,7 +389,8 @@ def extract_rules(html, source, diagnostics=None):
         records, _, stats = evaluate(html, source, source.recipe)
         if diagnostics is not None:
             diagnostics.update(extractor="rules", rows_checked=stats["matched_cards"],
-                               row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"])
+                               row_limit_reached=stats["row_limit_reached"], rejected=stats["primary_rejections"],
+                               shared_contact_records=stats["shared_contact_records"])
         return records
     soup = soup_for(html)
     selectors = DEFAULT_SELECTORS | validate_recipe(source.recipe or {})
@@ -413,6 +420,8 @@ def extract_rules(html, source, diagnostics=None):
             accepted = shared_contact_lead(record, evidence, shared, source)
             if accepted:
                 provenance = {}
+                if diagnostics is not None:
+                    diagnostics["shared_contact_records"] = diagnostics.get("shared_contact_records", 0) + 1
         if accepted:
             accepted["contact_provenance"] = {kind: provenance[kind] for kind in CONTACT_FIELDS
                                               if accepted[kind] and kind in provenance}

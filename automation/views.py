@@ -59,7 +59,11 @@ def policy(request, campaign_id):
 @staff_required
 def job_detail(request, pk):
     job = get_object_or_404(SiteAutomationJob.objects.select_related("source", "campaign", "current_recipe"), pk=pk)
-    return render(request, "automation/job.html", {"job": job, "versions": job.recipes.all()[:20],
+    versions = list(job.recipes.all()[:20])
+    for version in versions:
+        version.shared_contact_records = sum(
+            stats.get("shared_contact_records", 0) for stats in version.validation.get("pages", {}).values())
+    return render(request, "automation/job.html", {"job": job, "versions": versions,
         "events": job.events.all()[:30], "recon_json": json.dumps(job.recon, indent=2),
         "pages": job.pages.filter(generation=job.generation),
         "form": CandidateForm(initial={"recipe": job.current_recipe.recipe if job.current_recipe else {}})})
@@ -159,9 +163,9 @@ def lab(request):
 
 def lead_totals(Lead, since):
     """Real leads only: records from offline demo fixtures are not counted."""
-    real = Lead.objects.exclude(observations__source__collector="demo").distinct()
-    return {"total": real.count(), "today": real.filter(first_seen__gte=since).count(),
-            "shared": real.filter(contact_scope="shared").count()}
+    from leads.services.reporting import production_totals
+    totals = production_totals(since)
+    return {"total": totals["total"], "today": totals["new"], "shared": totals["shared"]}
 
 
 def recent_leads(Lead, limit=12):
@@ -169,14 +173,18 @@ def recent_leads(Lead, limit=12):
     from the activity feed, which carries no names)."""
     from urllib.parse import urlsplit
     from django.urls import reverse
+    from leads.services.reporting import production_leads
     rows = []
-    real = (Lead.objects.exclude(observations__source__collector="demo").distinct()
+    real = (production_leads()
             .order_by("-first_seen", "-pk").prefetch_related("observations__source")[:limit])
     for lead in real:
-        observation = next(iter(lead.observations.all()), None)
+        observation = lead.published_observation
         rows.append({"name": lead.name, "title": lead.title, "company": lead.company,
-                     "site": urlsplit(observation.source.url).hostname if observation else "",
+                     "site": urlsplit(observation.page_url).hostname if observation else "",
                      "scope": lead.get_contact_scope_display(), "shared": lead.contact_scope == "shared",
+                     "scope_key": lead.contact_scope,
+                     "source_url": observation.page_url if observation else "",
+                     "source_present": observation.present if observation else False,
                      "status": lead.get_status_display(), "found": lead.first_seen.timestamp(),
                      "href": reverse("lead_detail", args=[lead.pk])})
     return rows

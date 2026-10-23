@@ -1,6 +1,9 @@
+from urllib.parse import urlsplit
+
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.functional import cached_property
 
 CATEGORIES = [
     ("merchant_services", "Merchant services"), ("pos", "Point of sale"), ("payroll", "Payroll & HR"),
@@ -110,6 +113,25 @@ class Lead(models.Model):
     last_seen = models.DateTimeField(default=timezone.now)
     class Meta:
         ordering = ["-last_seen", "name"]
+
+    @cached_property
+    def published_observation(self):
+        """Prefer current real evidence, then the latest older evidence for a source link.
+
+        Console callers prefetch observations and sources. Only public-web URL schemes
+        are linkable, including when an old/imported observation contains invalid data.
+        """
+        observations = sorted(self.observations.all(), key=lambda item: (
+            item.source.collector != "demo", item.present, item.last_seen, item.pk), reverse=True)
+        for observation in observations:
+            try:
+                parsed = urlsplit(observation.page_url)
+                if (parsed.scheme.lower() in ("http", "https") and parsed.hostname and
+                        parsed.username is None and parsed.password is None):
+                    return observation
+            except ValueError:
+                continue
+        return None
 
 class Observation(models.Model):
     lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="observations")

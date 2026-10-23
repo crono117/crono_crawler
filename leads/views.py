@@ -15,6 +15,7 @@ from .models import CATEGORIES, Lead, Observation, PageJob, Run, Source, SourceC
 from .services.storage import record_review
 from .services.worker import enqueue, pause_source
 from .services.health import recipe_review_runs
+from .services.reporting import production_leads, production_totals
 
 staff_required = user_passes_test(lambda u: u.is_authenticated and u.is_active and u.is_staff)
 
@@ -29,12 +30,14 @@ def console_context(request):
 @staff_required
 def dashboard(request):
     from discovery.models import DiscoveredURL, DiscoveryRun
+    totals = production_totals(timezone.now() - timedelta(hours=24))
     return render(request, "leads/dashboard.html", {
-        "lead_count": Lead.objects.exclude(status__in=("rejected", "suppressed")).count(),
-        "review_count": Lead.objects.filter(status="new").count(),
+        "lead_count": totals["available"],
+        "review_count": totals["needs_review"],
+        "production_totals": totals,
         "active_sources": Source.objects.filter(active=True, approved=True).count(),
         "candidate_count": SourceCandidate.objects.filter(status="new").count() + DiscoveredURL.objects.filter(decision="pending").count(),
-        "recent_leads": Lead.objects.prefetch_related("observations__source")[:5],
+        "recent_leads": production_leads().order_by("-first_seen", "-pk").prefetch_related("observations__source")[:5],
         "recent_runs": Run.objects.select_related("source")[:6],
         "source_count": Source.objects.count(),
         "collection_alerts": recipe_review_runs(Run, "source")[:5],
