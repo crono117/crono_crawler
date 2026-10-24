@@ -2,6 +2,7 @@ from django.urls import path
 from . import bulk_views, views
 
 urlpatterns = [
+    path("healthz", views.healthz, name="healthz"),
     path("", views.dashboard, name="dashboard"),
     path("sources/", views.sources, name="sources"),
     path("sources/import/", bulk_views.source_import, name="source_import"),
