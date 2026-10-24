@@ -113,7 +113,7 @@ def _queue_state(run):
 @transaction.atomic
 def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                    approved_sources=None, reviewed_source_ids=None, queue_jobs=True,
-                   allow_turnover=False, domain_budget=None, stats=None):
+                   allow_turnover=False, domain_budget=None, stats=None, deferred_urls=None):
     """Register an ordered batch while holding one campaign capacity lock."""
     prepared = []
     for original in specs:
@@ -371,7 +371,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             "(manage.py discovery_inventory), enable low-value parking or eligible source-search turnover.")[:1000]
     if updates:
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
-    stats["deferred_urls"] = set(queue_state["deferred"])
+    if deferred_urls is not None:
+        deferred_urls.update(queue_state["deferred"])
     if pending:
         from automation.policy import consider
         # Best-scored candidates claim the daily automation budget first; weak ones only
@@ -547,10 +548,7 @@ def register_common_crawl(campaign, specs, deferred_urls=None):
     if not campaign.active or not run:
         raise ValueError("Start the campaign first; Common Crawl URLs join an open run.")
     before = campaign.urls.count()
-    stats = {}
-    register_batch(run, specs, campaign=campaign, order=True, stats=stats)
-    if deferred_urls is not None:
-        deferred_urls.update(stats.get("deferred_urls", ()))
+    register_batch(run, specs, campaign=campaign, order=True, deferred_urls=deferred_urls)
     return campaign.urls.count() - before
 
 
@@ -672,10 +670,7 @@ def start(campaign, *, priority_specs=None, deferred_urls=None):
         # A caller that already holds fresh index URLs must not drop them when another
         # transaction created this run first. Append through the ordinary gates.
         if priority_specs:
-            stats = {}
-            register_batch(run, priority_specs, campaign=campaign, order=True, stats=stats)
-            if deferred_urls is not None:
-                deferred_urls.update(stats.get("deferred_urls", ()))
+            register_batch(run, priority_specs, campaign=campaign, order=True, deferred_urls=deferred_urls)
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
         return run
