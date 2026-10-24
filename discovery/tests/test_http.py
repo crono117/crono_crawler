@@ -123,7 +123,7 @@ class DiscoveryHTTPTests(TestCase):
         nested = run.jobs.get(url="http://fixture.example.test/nested.xml")
         self.assertIn("Read 3 sitemap entries; kept 1", nested.message)
 
-    def test_sitemap_filter_uses_the_stored_score_including_site_yield(self):
+    def test_sitemap_keeps_a_penalized_direct_page_and_drops_a_negative_score(self):
         # The sitemap gate is the same eligibility check as queueing. A direct page whose
         # pre-yield rank already met the minimum stays saved when a yield penalty drops the
         # stored score; the penalty remains on the row as priority. A negative score still
