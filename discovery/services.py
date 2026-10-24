@@ -107,7 +107,7 @@ def _source_for_url(sources, source_map, url, source_hint=None):
 
 def _queue_state(run):
     keys = set(run.jobs.exclude(kind="search").values_list("kind", "url"))
-    return {"count": len(keys), "keys": keys, "collection_allowed": {}}
+    return {"count": len(keys), "keys": keys, "collection_allowed": {}, "deferred": set()}
 
 
 @transaction.atomic
@@ -371,6 +371,7 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             "(manage.py discovery_inventory), enable low-value parking or eligible source-search turnover.")[:1000]
     if updates:
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
+    stats["deferred_urls"] = set(queue_state["deferred"])
     if pending:
         from automation.policy import consider
         # Best-scored candidates claim the daily automation budget first; weak ones only
@@ -400,8 +401,17 @@ QUEUE_FULL_RESULT = (
 
 
 def _mark_queue_deferred(candidate):
-    if candidate.last_result != QUEUE_FULL_RESULT:
-        candidate.last_result = QUEUE_FULL_RESULT
+    # A stored fetch summary stays. The deferred sentence is only the explanation
+    # for an approved URL that has no result yet.
+    if candidate.last_result:
+        return
+    candidate.last_result = QUEUE_FULL_RESULT
+    candidate.save(update_fields=["last_result"])
+
+
+def _clear_stale_deferral(candidate):
+    if candidate.last_result == QUEUE_FULL_RESULT:
+        candidate.last_result = ""
         candidate.save(update_fields=["last_result"])
 
 
@@ -409,19 +419,23 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
                     reviewed_source_ids=None, job_priority=None, capacity=None, origin_yields=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
-    if candidate.manual_review_required or candidate.archived_at:
+    def reject():
+        _clear_stale_deferral(candidate)
         return "rejected"
+
+    if candidate.manual_review_required or candidate.archived_at:
+        return reject()
     if company_job:
         from classification.routing import can_queue
         if not can_queue(company_job, candidate.url, depth):
-            return "rejected"
+            return reject()
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
-        return "rejected"
+        return reject()
     source = candidate.source
     # A blocked or unapproved source must not occupy a slot. Inactive sources stay eligible:
     # discovery-only sources intentionally leave regular collection off.
     if source is None or not source.approved or source.blocked_at:
-        return "rejected"
+        return reject()
     exact_start = bool(source and canonical_exact_start(candidate.url, source.url))
     eligible, score, reasons = ordinary_page_eligible(
         campaign, candidate.url, candidate.label, candidate.context, source,
@@ -438,9 +452,9 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
         if capacity is not None:
             capacity["collection_allowed"][candidate.source_id] = allowed
     if not allowed:
-        return "rejected"
+        return reject()
     if depth > (3 if kind == "sitemap" else campaign.max_depth):
-        return "rejected"
+        return reject()
     key = (kind, candidate.url)
     if capacity is not None and key in capacity["keys"]:
         return "present"
@@ -448,6 +462,8 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
             else capacity["count"] >= campaign.max_pages)
     if full:
         _mark_queue_deferred(candidate)
+        if capacity is not None:
+            capacity["deferred"].add(candidate.url)
         return "deferred"
     _, created = DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
         "candidate": candidate, "source": source, "depth": depth, "company_job": company_job,
@@ -520,14 +536,21 @@ def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
 
 
 @transaction.atomic
-def register_common_crawl(campaign, specs):
-    """Register index URLs into the campaign's open run through the ordinary gates."""
+def register_common_crawl(campaign, specs, deferred_urls=None):
+    """Register index URLs into the campaign's open run through the ordinary gates.
+
+    ``deferred_urls``, when given, receives the exact URLs this call left without a job
+    because the run was already full. It does not include URLs rejected for another reason.
+    """
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     run = campaign.runs.filter(status__in=("queued", "running")).first()
     if not campaign.active or not run:
         raise ValueError("Start the campaign first; Common Crawl URLs join an open run.")
     before = campaign.urls.count()
-    register_batch(run, specs, campaign=campaign, order=True)
+    stats = {}
+    register_batch(run, specs, campaign=campaign, order=True, stats=stats)
+    if deferred_urls is not None:
+        deferred_urls.update(stats.get("deferred_urls", ()))
     return campaign.urls.count() - before
 
 
@@ -631,7 +654,7 @@ def queue_activated_source(source, campaign):
 
 
 @transaction.atomic
-def start(campaign, *, priority_specs=None):
+def start(campaign, *, priority_specs=None, deferred_urls=None):
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     if not campaign.sources.filter(approved=True).exists() and not campaign.search_enabled:
         raise ValueError("Choose at least one approved starting source or enable configured search.")
@@ -649,7 +672,10 @@ def start(campaign, *, priority_specs=None):
         # A caller that already holds fresh index URLs must not drop them when another
         # transaction created this run first. Append through the ordinary gates.
         if priority_specs:
-            register_batch(run, priority_specs, campaign=campaign, order=True)
+            stats = {}
+            register_batch(run, priority_specs, campaign=campaign, order=True, stats=stats)
+            if deferred_urls is not None:
+                deferred_urls.update(stats.get("deferred_urls", ()))
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
         return run
@@ -745,6 +771,17 @@ def start(campaign, *, priority_specs=None):
             continue
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
                         capacity=queue_state, origin_yields=origin_yields)
+    # The loops above stop once the reservation or the page cap is reached, so a
+    # later eligible index URL never enters queue_candidate. Offer those leftovers
+    # now: a full run records the deferral, and any slot that is still open can
+    # still take the URL. Ineligible and rejected URLs are not marked deferred.
+    for candidate in priority_results:
+        if candidate is None or (candidate.kind, candidate.url) in queue_state["keys"]:
+            continue
+        queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
+                        capacity=queue_state, origin_yields=origin_yields)
+    if deferred_urls is not None:
+        deferred_urls.update(queue_state["deferred"])
     schedule(campaign)
     finish(run)
     return run

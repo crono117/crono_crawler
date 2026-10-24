@@ -5,7 +5,7 @@ from django.db import transaction
 from discovery.models import Campaign
 from discovery.providers import common_crawl_collection, common_crawl_ready
 from discovery.ranking import clean_url
-from discovery.services import QUEUE_FULL_RESULT, common_crawl_specs, register_common_crawl, start
+from discovery.services import common_crawl_specs, register_common_crawl, start
 from leads.services.network import FetchError
 
 
@@ -61,17 +61,20 @@ class Command(BaseCommand):
                           if spec_urls else set())
                 idle = (options["start_if_idle"] and campaign.active and not
                         campaign.runs.filter(status__in=("queued", "running")).exists())
+                # Count URLs this call actually deferred. A stale marker, or a fetch
+                # summary left in place, is not this call's result.
+                deferred_urls = set()
                 if idle:
-                    run = start(campaign, priority_specs=specs)
+                    run = start(campaign, priority_specs=specs, deferred_urls=deferred_urls)
                     self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
                 else:
-                    register_common_crawl(campaign, specs)
+                    register_common_crawl(campaign, specs, deferred_urls=deferred_urls)
                     run = campaign.runs.filter(status__in=("queued", "running")).order_by("-id").first()
                 present = set(campaign.urls.filter(url__in=spec_urls).values_list("url", flat=True))
                 added = len(present - before)
                 approved = campaign.urls.filter(url__in=spec_urls, decision="approved").count()
                 queued = run.jobs.filter(kind="page", url__in=spec_urls).count() if run else 0
-                deferred = campaign.urls.filter(url__in=spec_urls, last_result=QUEUE_FULL_RESULT).count()
+                deferred = len(set(spec_urls).intersection(deferred_urls))
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
         self.stdout.write(

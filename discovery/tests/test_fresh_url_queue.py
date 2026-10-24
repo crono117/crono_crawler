@@ -1,5 +1,6 @@
 """Fresh index URLs must be able to enter a run, and a full run must say so."""
 import threading
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ from discovery.models import Campaign, DiscoveredURL, DiscoveryJob, DiscoveryRun
 from discovery.services import register_common_crawl, start
 from leads.models import Source, WorkerLease
 from leads.services.network import FetchError
-from leads.services.worker import acquire_lease, release_lease
+from leads.services.worker import acquire_lease, release_lease, tick
 
 ENABLED = dict(COMMON_CRAWL_ENABLED=True, COMMON_CRAWL_COLLECTION="")
 
@@ -86,6 +87,27 @@ class FreshUrlAdmissionTests(QueueFixture):
         self.assertEqual(candidate.decision, "approved")
         self.assertIn("already at its page limit", candidate.last_result)
         self.assertFalse(candidate.jobs.exists())
+        self.assertEqual(run.jobs.count(), 1)
+
+    @override_settings(**ENABLED)
+    def test_a_full_run_keeps_a_stored_fetch_summary(self):
+        campaign = self.make_campaign("Summary", max_pages=1, min_score=0)
+        source = self.make_source(campaign, "summary.example.test")
+        run = DiscoveryRun.objects.create(campaign=campaign, status="running")
+        DiscoveryJob.objects.create(run=run, source=source, kind="page", url="https://summary.example.test/our-team/held/")
+        url = "https://summary.example.test/our-team/known/"
+        known = DiscoveredURL.objects.create(
+            campaign=campaign, source=source, url=url, origin="https://summary.example.test",
+            decision="approved", method="commoncrawl", last_result="2 contact(s); 1 new.")
+        out = StringIO()
+        with patch("discovery.management.commands.discovery_commoncrawl.common_crawl_specs",
+                   return_value=([spec(url)], {"Summary": 1})):
+            call_command("discovery_commoncrawl", campaign=campaign.pk, collection="CC-MAIN-2026-35",
+                         start_if_idle=True, stdout=out)
+        self.assertIn("Processed 1 index URL(s); 0 newly registered; 1 approved; 0 queued; 1 deferred.", out.getvalue())
+        known.refresh_from_db()
+        self.assertEqual(known.last_result, "2 contact(s); 1 new.")
+        self.assertFalse(run.jobs.filter(url=url).exists())
         self.assertEqual(run.jobs.count(), 1)
 
     def test_five_hundred_jobs_defer_every_new_eligible_url_without_duplicates(self):
@@ -262,6 +284,52 @@ class CommonCrawlCommandQueueTests(QueueFixture):
         self.assertIn("Processed 1 index URL(s); 1 newly registered; 1 approved; 0 queued; 1 deferred.", out.getvalue())
         self.assertFalse(run.jobs.filter(url=url).exists())
 
+    def test_start_if_idle_marks_index_urls_that_do_not_fit(self):
+        campaign = self.make_campaign("Spill", max_pages=2, min_score=0)
+        self.make_source(campaign, "spill.example.test")
+        urls = [f"https://spill.example.test/our-team/{index}/" for index in range(4)]
+        urls.append("https://spill.example.test/contact/")
+        out = StringIO()
+        with patch("discovery.management.commands.discovery_commoncrawl.common_crawl_specs",
+                   return_value=([spec(url) for url in urls], {"Spill": len(urls)})):
+            call_command("discovery_commoncrawl", campaign=campaign.pk, collection="CC-MAIN-2026-35",
+                         start_if_idle=True, stdout=out)
+        text = out.getvalue()
+        self.assertIn("Started run", text)
+        self.assertIn("Processed 5 index URL(s); 5 newly registered; 5 approved; 1 queued; 3 deferred.", text)
+        run = campaign.runs.get()
+        self.assertEqual(run.jobs.exclude(kind="search").count(), 2)
+        queued = [url for url in urls if run.jobs.filter(url=url).exists()]
+        self.assertEqual(len(queued), 1)
+        contact = campaign.urls.get(url="https://spill.example.test/contact/")
+        self.assertEqual(contact.last_result, "")
+        self.assertFalse(run.jobs.filter(url=contact.url).exists())
+        for url in urls:
+            if url == contact.url or url in queued:
+                continue
+            self.assertIn("already at its page limit", campaign.urls.get(url=url).last_result)
+
+    def test_a_blocked_url_is_not_counted_as_deferred(self):
+        from discovery.services import QUEUE_FULL_RESULT
+        campaign = self.make_campaign("Stale", max_pages=5, min_score=0)
+        source = self.make_source(campaign, "stale.example.test")
+        source.blocked_at = timezone.now()
+        source.save(update_fields=["blocked_at"])
+        run = DiscoveryRun.objects.create(campaign=campaign, status="running")
+        url = "https://stale.example.test/our-team/"
+        row = DiscoveredURL.objects.create(
+            campaign=campaign, source=source, url=url, origin="https://stale.example.test",
+            decision="approved", method="commoncrawl", last_result=QUEUE_FULL_RESULT)
+        out = StringIO()
+        with patch("discovery.management.commands.discovery_commoncrawl.common_crawl_specs",
+                   return_value=([spec(url)], {"Stale": 1})):
+            call_command("discovery_commoncrawl", campaign=campaign.pk, collection="CC-MAIN-2026-35",
+                         start_if_idle=True, stdout=out)
+        self.assertIn("Processed 1 index URL(s); 0 newly registered; 1 approved; 0 queued; 0 deferred.", out.getvalue())
+        row.refresh_from_db()
+        self.assertEqual(row.last_result, "")
+        self.assertEqual(run.jobs.count(), 0)
+
     def test_an_inactive_campaign_is_not_started(self):
         campaign = self.make_campaign("Inactive", max_pages=5, min_score=0)
         campaign.active = False
@@ -324,7 +392,61 @@ class ConcurrentRegistrationTests(TransactionTestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        self.assertTrue(all(isinstance(error, OperationalError) for error in errors))
-        register_common_crawl(campaign, [spec(url)])
+        self.assertLess(len(errors), 2, errors)
+        self.assertTrue(all(isinstance(error, OperationalError) for error in errors), errors)
         self.assertEqual(DiscoveryJob.objects.filter(run=run, url=url).count(), 1)
         self.assertEqual(campaign.urls.filter(url=url).count(), 1)
+
+    def test_tick_beside_registration_keeps_one_job_and_the_processing_row(self):
+        later = timezone.now() + timedelta(days=1)
+        campaign = Campaign.objects.create(
+            name="Lease tick", keywords="", sales_terms="", min_score=0, max_pages=5,
+            use_sitemaps=False, active=True, next_due_at=later, next_intake_at=later)
+        source = Source.objects.create(
+            name="Lease tick", url="https://lease-tick.example.test/", approved=True,
+            allow_homepage=True, collector="demo")
+        campaign.sources.add(source)
+        run = DiscoveryRun.objects.create(campaign=campaign, status="running")
+        token = acquire_lease()
+        self.assertIsNotNone(token)
+        held_url = "https://lease-tick.example.test/our-team/held/"
+        held = DiscoveryJob.objects.create(
+            run=run, source=source, kind="page", url=held_url, status="processing")
+        url = "https://lease-tick.example.test/staff/added/"
+        register_common_crawl(campaign, [spec(url)])
+        started, release = threading.Event(), threading.Event()
+        from discovery.services import demo_response
+
+        def offline_page(page_url):
+            if page_url == url:
+                started.set()
+                self.assertTrue(release.wait(8))
+            return demo_response(page_url)
+
+        errors = []
+
+        def run_tick():
+            connection.close()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("PRAGMA busy_timeout = 5000")
+                tick(token, prefer_discovery=True)
+            except Exception as exc:  # noqa: BLE001 - the assertion reports the thread error
+                errors.append(exc)
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=run_tick)
+        with patch("discovery.services.demo_response", side_effect=offline_page):
+            thread.start()
+            self.assertTrue(started.wait(8))
+            register_common_crawl(campaign, [spec(url)])
+            release.set()
+            thread.join(8)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        held.refresh_from_db()
+        self.assertEqual(held.status, "processing")
+        self.assertEqual(DiscoveryJob.objects.filter(run=run, url=url).count(), 1)
+        self.assertEqual(WorkerLease.objects.get(key="collector").token, token)
+        release_lease(token)
