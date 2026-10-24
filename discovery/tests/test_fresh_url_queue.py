@@ -11,7 +11,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from discovery.models import Campaign, DiscoveredURL, DiscoveryJob, DiscoveryRun
-from discovery.services import register_common_crawl, start
+from discovery.services import QUEUE_FULL_RESULT, queue_candidate, register_common_crawl, start
 from leads.models import Source, WorkerLease
 from leads.services.network import FetchError
 from leads.services.worker import acquire_lease, release_lease, tick
@@ -109,6 +109,32 @@ class FreshUrlAdmissionTests(QueueFixture):
         self.assertEqual(known.last_result, "2 contact(s); 1 new.")
         self.assertFalse(run.jobs.filter(url=url).exists())
         self.assertEqual(run.jobs.count(), 1)
+
+    def test_an_ineligible_url_clears_a_stale_deferral(self):
+        campaign = self.make_campaign("Ineligible deferral")
+        source = self.make_source(campaign, "ineligible.example.test")
+        run = DiscoveryRun.objects.create(campaign=campaign, status="queued")
+        candidate = self.remember(campaign, source, "/contact/", label="")
+        candidate.last_result = QUEUE_FULL_RESULT
+        candidate.save(update_fields=["last_result"])
+
+        self.assertEqual(queue_candidate(run, candidate), "ineligible")
+        self.assertEqual(run.jobs.count(), 0)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.last_result, "")
+
+    def test_an_ineligible_url_keeps_a_stored_fetch_summary(self):
+        campaign = self.make_campaign("Ineligible summary")
+        source = self.make_source(campaign, "ineligible.example.test")
+        run = DiscoveryRun.objects.create(campaign=campaign, status="queued")
+        candidate = self.remember(campaign, source, "/contact/", label="")
+        candidate.last_result = "2 contact(s); 1 new."
+        candidate.save(update_fields=["last_result"])
+
+        self.assertEqual(queue_candidate(run, candidate), "ineligible")
+        self.assertEqual(run.jobs.count(), 0)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.last_result, "2 contact(s); 1 new.")
 
     def test_five_hundred_jobs_defer_every_new_eligible_url_without_duplicates(self):
         campaign = self.make_campaign("Saturated", max_pages=500, min_score=0)

@@ -66,6 +66,17 @@ class RunDiagnosticsTests(TestCase):
         self.assertIn('41 pages saved', self.run.message)
         self.assertNotIn('secret', self.run.message)
 
+    def test_newer_partial_failure_keeps_older_recipe_review_alert(self):
+        from leads.services.health import recipe_review_runs
+        quiet = DiscoveryRun.objects.create(
+            campaign=self.campaign, status='completed', pages_done=3, contacts_seen=0,
+            terminal_reason='no_accepted_contacts')
+        partial = DiscoveryRun.objects.create(
+            campaign=self.campaign, status='completed', pages_done=4, contacts_seen=0,
+            terminal_reason='job_failures')
+        self.assertFalse(partial.needs_recipe_review)
+        self.assertEqual(list(recipe_review_runs(DiscoveryRun, 'campaign')), [quiet])
+
     def test_fetch_failure_stores_status_and_category_without_a_body(self):
         DiscoveryRun.objects.filter(pk=self.run.pk).update(status='running')
         DiscoveryJob.objects.filter(pk=self.job.pk).update(status='processing', attempts=3)

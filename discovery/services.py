@@ -446,6 +446,7 @@ def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company
         candidate.score, candidate.reasons = score, reasons
         candidate.save(update_fields=["score", "reasons"])
     if score < 0 or (kind == "page" and not exact_start and not eligible):
+        _clear_stale_deferral(candidate)
         return "ineligible"
     allowed = None if capacity is None else capacity["collection_allowed"].get(candidate.source_id)
     if allowed is None:
