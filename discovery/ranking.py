@@ -245,6 +245,8 @@ def current_candidate_score(campaign, url, label="", context="", source=None, re
         stats = (origin_yields if origin_yields is not None else lookup({item_origin})).get(item_origin, EMPTY)
         delta, reason = yield_adjustment(stats)
         if delta:
+            # Keep the penalty in the stored score so it still changes queue priority.
+            # Eligibility, not this number, decides whether a direct page may be fetched.
             score = max(0, min(100, score + delta))
             reasons = reasons + [reason]
     if source and score >= 0:
@@ -262,12 +264,17 @@ def current_candidate_score(campaign, url, label="", context="", source=None, re
 
 def ordinary_page_eligible(campaign, url, label="", context="", source=None, reviewed_source_ids=None,
                            explicit_start=False, origin_yields=None):
+    raw, _ = rank(campaign, url, label, context)
     score, reasons = current_candidate_score(
         campaign, url, label, context, source, reviewed_source_ids=reviewed_source_ids,
         explicit_start=explicit_start, origin_yields=origin_yields)
-    # Same intent gate that parks low-value inventory (see low_value_page); exact-start and
-    # sitemap exemptions stay with the callers that already apply them.
-    return score >= campaign.min_score and not low_value_page(url, label), score, reasons
+    # A negative yield adjustment lowers priority. It does not veto a direct contact page
+    # whose rank, before that adjustment, already met the campaign minimum. Exclusions stay
+    # negative, and a page without direct intent still cannot pass. Exact-start and sitemap
+    # exemptions stay with the callers that already apply them.
+    score_eligible = score >= campaign.min_score or (
+        score >= 0 and raw >= campaign.min_score and direct_contact_page_intent(url, label))
+    return score_eligible and not low_value_page(url, label), score, reasons
 
 
 def low_value_page(url, label="", *, kind="page", explicit_start=False):

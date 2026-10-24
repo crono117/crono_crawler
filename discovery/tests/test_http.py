@@ -123,22 +123,41 @@ class DiscoveryHTTPTests(TestCase):
         nested = run.jobs.get(url="http://fixture.example.test/nested.xml")
         self.assertIn("Read 3 sitemap entries; kept 1", nested.message)
 
-    def test_sitemap_filter_uses_the_stored_score_including_site_yield(self):
-        # A path can pass on its raw score yet fall below the minimum once the site's zero past
-        # yield is applied; it must not be saved, because it could never be queued.
-        from discovery import services
-        real = services.current_candidate_score
+    def test_sitemap_keeps_a_penalized_direct_page_and_drops_a_negative_score(self):
+        # The sitemap gate is the same eligibility check as queueing. A direct page whose
+        # pre-yield rank already met the minimum stays saved when a yield penalty drops the
+        # stored score; the penalty remains on the row as priority. A negative score still
+        # cannot be saved, because that page can never be queued.
+        from discovery import ranking, services
+        real = ranking.current_candidate_score
 
         def yield_penalised(campaign, url, *args, **kwargs):
             score, reasons = real(campaign, url, *args, **kwargs)
-            return (score - 30, reasons) if url.endswith("/team/hidden") else (score, reasons)
+            if url.endswith("/team/hidden"):
+                return score - 30, reasons + ["Synthetic zero-yield penalty"]
+            if url.endswith("/team/rejected"):
+                return -100, ["Synthetic exclusion"]
+            return score, reasons
 
+        self.server.pages["/nested.xml"] = (
+            200, "application/xml",
+            b"<urlset>"
+            b"<url><loc>http://fixture.example.test/team/hidden</loc></url>"
+            b"<url><loc>http://fixture.example.test/team/rejected</loc></url>"
+            b"</urlset>")
         self.campaign.min_score = 35
         self.campaign.save()
-        with patch.object(services, "current_candidate_score", side_effect=yield_penalised):
+        with (patch.object(ranking, "current_candidate_score", side_effect=yield_penalised),
+              patch.object(services, "current_candidate_score", side_effect=yield_penalised)):
             run = start(self.campaign)
             self.finish(run)
-        self.assertFalse(self.campaign.urls.filter(url="http://fixture.example.test/team/hidden").exists())
+        hidden = self.campaign.urls.get(url="http://fixture.example.test/team/hidden")
+        self.assertEqual(hidden.score, 5)  # +35 direct, then -30; not raised back to the minimum
+        self.assertLess(hidden.score, self.campaign.min_score)
+        self.assertTrue(run.jobs.filter(url=hidden.url, kind="page").exists())
+        self.assertFalse(self.campaign.urls.filter(url="http://fixture.example.test/team/rejected").exists())
+        nested = run.jobs.get(url="http://fixture.example.test/nested.xml")
+        self.assertIn("Read 2 sitemap entries; kept 1", nested.message)
 
     def test_403_blocks_only_the_source_records_it_and_is_not_retried(self):
         self.server.pages["/"] = (403, "text/plain", b"Forbidden")

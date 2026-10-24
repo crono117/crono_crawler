@@ -107,13 +107,13 @@ def _source_for_url(sources, source_map, url, source_hint=None):
 
 def _queue_state(run):
     keys = set(run.jobs.exclude(kind="search").values_list("kind", "url"))
-    return {"count": len(keys), "keys": keys, "collection_allowed": {}}
+    return {"count": len(keys), "keys": keys, "collection_allowed": {}, "deferred": set()}
 
 
 @transaction.atomic
 def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
                    approved_sources=None, reviewed_source_ids=None, queue_jobs=True,
-                   allow_turnover=False, domain_budget=None, stats=None):
+                   allow_turnover=False, domain_budget=None, stats=None, deferred_urls=None):
     """Register an ordered batch while holding one campaign capacity lock."""
     prepared = []
     for original in specs:
@@ -371,6 +371,8 @@ def register_batch(run, specs, *, cleaned=False, campaign=None, order=False,
             "(manage.py discovery_inventory), enable low-value parking or eligible source-search turnover.")[:1000]
     if updates:
         DiscoveryRun.objects.filter(pk=run.pk).update(**updates)
+    if deferred_urls is not None:
+        deferred_urls.update(queue_state["deferred"])
     if pending:
         from automation.policy import consider
         # Best-scored candidates claim the daily automation budget first; weak ones only
@@ -392,51 +394,89 @@ def register(run, raw_url, *, label="", context="", found_on="", method="link", 
     }])[0]
 
 
+# Eligible work that did not fit this run. The URL stays approved for a later run.
+QUEUE_FULL_RESULT = (
+    "Deferred: this run is already at its page limit. "
+    "The URL stays approved and can join a later run."
+)
+
+
+def _mark_queue_deferred(candidate):
+    # A stored fetch summary stays. The deferred sentence is only the explanation
+    # for an approved URL that has no result yet.
+    if candidate.last_result:
+        return
+    candidate.last_result = QUEUE_FULL_RESULT
+    candidate.save(update_fields=["last_result"])
+
+
+def _clear_stale_deferral(candidate):
+    if candidate.last_result == QUEUE_FULL_RESULT:
+        candidate.last_result = ""
+        candidate.save(update_fields=["last_result"])
+
+
 def queue_candidate(run, candidate, *, depth=0, kind="page", seed=False, company_job=None,
                     reviewed_source_ids=None, job_priority=None, capacity=None, origin_yields=None):
     from automation.policy import collection_allowed
     campaign = run.campaign
+    def reject():
+        _clear_stale_deferral(candidate)
+        return "rejected"
+
     if candidate.manual_review_required or candidate.archived_at:
-        return
+        return reject()
     if company_job:
         from classification.routing import can_queue
         if not can_queue(company_job, candidate.url, depth):
-            return
+            return reject()
     if run.status not in ("queued", "running") or candidate.decision != "approved" or not candidate.source_id:
-        return
-    exact_start = bool(candidate.source and canonical_exact_start(candidate.url, candidate.source.url))
+        return reject()
+    source = candidate.source
+    # A blocked or unapproved source must not occupy a slot. Inactive sources stay eligible:
+    # discovery-only sources intentionally leave regular collection off.
+    if source is None or not source.approved or source.blocked_at:
+        return reject()
+    exact_start = bool(source and canonical_exact_start(candidate.url, source.url))
     eligible, score, reasons = ordinary_page_eligible(
-        campaign, candidate.url, candidate.label, candidate.context, candidate.source,
+        campaign, candidate.url, candidate.label, candidate.context, source,
         reviewed_source_ids=reviewed_source_ids, origin_yields=origin_yields,
         explicit_start=(candidate.method == "seed" and exact_start))
     if (candidate.score, candidate.reasons) != (score, reasons):
         candidate.score, candidate.reasons = score, reasons
         candidate.save(update_fields=["score", "reasons"])
     if score < 0 or (kind == "page" and not exact_start and not eligible):
-        return
+        _clear_stale_deferral(candidate)
+        return "ineligible"
     allowed = None if capacity is None else capacity["collection_allowed"].get(candidate.source_id)
     if allowed is None:
-        allowed = collection_allowed(candidate.source)
+        allowed = collection_allowed(source)
         if capacity is not None:
             capacity["collection_allowed"][candidate.source_id] = allowed
     if not allowed:
-        return
+        return reject()
     if depth > (3 if kind == "sitemap" else campaign.max_depth):
-        return
-    if capacity is None:
-        if run.jobs.exclude(kind="search").count() >= campaign.max_pages:
-            return
-    elif capacity["count"] >= campaign.max_pages:
-        return
+        return reject()
     key = (kind, candidate.url)
     if capacity is not None and key in capacity["keys"]:
-        return
+        return "present"
+    full = (run.jobs.exclude(kind="search").count() >= campaign.max_pages if capacity is None
+            else capacity["count"] >= campaign.max_pages)
+    if full:
+        _mark_queue_deferred(candidate)
+        if capacity is not None:
+            capacity["deferred"].add(candidate.url)
+        return "deferred"
     _, created = DiscoveryJob.objects.get_or_create(run=run, kind=kind, url=candidate.url, defaults={
-        "candidate": candidate, "source": candidate.source, "depth": depth, "company_job": company_job,
+        "candidate": candidate, "source": source, "depth": depth, "company_job": company_job,
         "priority": job_priority if job_priority is not None else (95 if kind == "sitemap" else score)})
+    if created and candidate.last_result == QUEUE_FULL_RESULT:
+        candidate.last_result = ""
+        candidate.save(update_fields=["last_result"])
     if capacity is not None:
         capacity["keys"].add(key)
         capacity["count"] += int(created)
+    return "queued" if created else "present"
 
 
 COMMON_CRAWL_MAX_SOURCES = 25
@@ -471,7 +511,11 @@ def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
                 break
             except FetchError as exc:
                 if not exc.retryable or attempt:
-                    counts[f"{source.name or host} (index error: {exc})"] = 0
+                    # The fetch error's own text says "retry scheduled" for any retryable status.
+                    # Nothing is persisted for a later index attempt, so say that this host was skipped.
+                    status = f"HTTP {exc.status}; " if isinstance(exc.status, int) else ""
+                    outcome = "skipped after one retry" if exc.retryable else "skipped"
+                    counts[f"{source.name or host} (index error: {status}{outcome})"] = 0
                 elif pause:
                     time.sleep(pause * 5)
         if raws is None:
@@ -494,14 +538,18 @@ def common_crawl_specs(campaign, collection, lookup=None, pause=1.0):
 
 
 @transaction.atomic
-def register_common_crawl(campaign, specs):
-    """Register index URLs into the campaign's open run through the ordinary gates."""
+def register_common_crawl(campaign, specs, deferred_urls=None):
+    """Register index URLs into the campaign's open run through the ordinary gates.
+
+    ``deferred_urls``, when given, receives the exact URLs this call left without a job
+    because the run was already full. It does not include URLs rejected for another reason.
+    """
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     run = campaign.runs.filter(status__in=("queued", "running")).first()
     if not campaign.active or not run:
         raise ValueError("Start the campaign first; Common Crawl URLs join an open run.")
     before = campaign.urls.count()
-    register_batch(run, specs, campaign=campaign, order=True)
+    register_batch(run, specs, campaign=campaign, order=True, deferred_urls=deferred_urls)
     return campaign.urls.count() - before
 
 
@@ -605,7 +653,7 @@ def queue_activated_source(source, campaign):
 
 
 @transaction.atomic
-def start(campaign):
+def start(campaign, *, priority_specs=None, deferred_urls=None):
     campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
     if not campaign.sources.filter(approved=True).exists() and not campaign.search_enabled:
         raise ValueError("Choose at least one approved starting source or enable configured search.")
@@ -620,6 +668,10 @@ def start(campaign):
     if run:
         run.status, run.message, run.terminal_reason = "queued", "Resumed by operator.", ""
         run.save()
+        # A caller that already holds fresh index URLs must not drop them when another
+        # transaction created this run first. Append through the ordinary gates.
+        if priority_specs:
+            register_batch(run, priority_specs, campaign=campaign, order=True, deferred_urls=deferred_urls)
         # Preserve retry, rate-limit, and budget deferrals across pause/resume.
         schedule(campaign)
         return run
@@ -650,6 +702,14 @@ def start(campaign):
         collector_results = register_batch(run, collector_specs, campaign=campaign, approved_sources=sources,
                                            reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
         mark_collector_candidates_handled(collector_specs, collector_results)
+    # Admit the current index batch before remembered inventory claims the run cap.
+    # Registration applies the same scope, approval, exclusion and scoring gates.
+    priority_results = []
+    if priority_specs:
+        priority_results = register_batch(
+            run, priority_specs, campaign=campaign, order=True, approved_sources=sources,
+            reviewed_source_ids=reviewed_source_ids, queue_jobs=False)
+    priority_ids = {candidate.pk for candidate in priority_results if candidate is not None}
     # Reviewed deeper paths remain useful even if their original directory disappears.
     saved = refresh_priorities(campaign, reviewed_source_ids=reviewed_source_ids)
     origin_yields = lookup_origin_yields(candidate.origin for candidate in saved)
@@ -672,12 +732,22 @@ def start(campaign):
     novel = [candidate for candidate in page_candidates
              if (candidate.source_id, candidate.url) not in fetched]
     reserved = (campaign.max_pages + 1) // 2
-    for candidate in order_discovery_batch(novel, url=lambda item: item.url,
-                                           source_id=lambda item: item.source_id, priority=lambda item: item.score):
-        if queue_state["count"] >= reserved:
-            break
-        queue_candidate(run, candidate, kind="page", reviewed_source_ids=reviewed_source_ids,
-                        capacity=queue_state, origin_yields=origin_yields)
+    # Index URLs registered for this run claim the novelty reservation before older
+    # remembered pages and before seeds. Leftover reservation still rotates other origins.
+    priority_novel = [candidate for candidate in novel if candidate.pk in priority_ids]
+    other_novel = [candidate for candidate in novel if candidate.pk not in priority_ids]
+
+    def queue_novel(candidates):
+        for candidate in order_discovery_batch(candidates, url=lambda item: item.url,
+                                               source_id=lambda item: item.source_id,
+                                               priority=lambda item: item.score):
+            if queue_state["count"] >= reserved:
+                break
+            queue_candidate(run, candidate, kind="page", reviewed_source_ids=reviewed_source_ids,
+                            capacity=queue_state, origin_yields=origin_yields)
+
+    queue_novel(priority_novel)
+    queue_novel(other_novel)
     # Keep starting-page refreshes ahead of sitemap spillover. Sitemaps do not get
     # PageSnapshots, so treating them as perpetually novel would starve these refreshes.
     seed_candidates = [candidate for candidate in seed_candidates if candidate is not None]
@@ -697,6 +767,17 @@ def start(campaign):
             continue
         queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
                         capacity=queue_state, origin_yields=origin_yields)
+    # The loops above stop once the reservation or the page cap is reached, so a
+    # later eligible index URL never enters queue_candidate. Offer those leftovers
+    # now: a full run records the deferral, and any slot that is still open can
+    # still take the URL. Ineligible and rejected URLs are not marked deferred.
+    for candidate in priority_results:
+        if candidate is None or (candidate.kind, candidate.url) in queue_state["keys"]:
+            continue
+        queue_candidate(run, candidate, kind=candidate.kind, reviewed_source_ids=reviewed_source_ids,
+                        capacity=queue_state, origin_yields=origin_yields)
+    if deferred_urls is not None:
+        deferred_urls.update(queue_state["deferred"])
     schedule(campaign)
     finish(run)
     return run
@@ -953,7 +1034,7 @@ def finish(run):
         if not stats["failures"] and not run.pages_done and run.message:
             message = run.message
         DiscoveryRun.objects.filter(pk=run.pk, status__in=("queued", "running")).update(
-            status="failed" if stats["failures"] else "completed", finished_at=timezone.now(),
+            status="failed" if stats["failures"] and not run.pages_done else "completed", finished_at=timezone.now(),
             terminal_reason=code, message=message, diagnostics=stats)
 
 
@@ -1113,15 +1194,15 @@ def process(job):
                 entries.append({"kind": kind, "url": clean,
                                 "priority": 95 if kind == "sitemap" else rank(campaign, clean)[0],
                                 "source_id": source.pk if in_scope(source, clean) else None})
-            # Pages of an approved site that score below the campaign minimum can never be queued;
-            # the sitemap itself is the record, so they aren't saved (they would only fill the limit).
+            # In-scope pages that fail the ordinary gate are not saved from a sitemap; the sitemap
+            # job itself is the record. The gate includes direct intent and treats a yield penalty
+            # as priority, so a direct page is not dropped only because past pages stored no contacts.
             read = len(entries)
-            # Judge with the same score registration stores and queueing uses (it includes the
-            # site's past yield), not the raw path score.
+            # Judge with the same eligibility registration and queueing use, not the raw path score.
             reviewed, yields = reviewed_sources({source.pk}), lookup_origin_yields({origin(source.url)})
             entries = [entry for entry in entries if entry["kind"] == "sitemap" or not entry["source_id"]
-                       or current_candidate_score(campaign, entry["url"], "", "", source, reviewed_source_ids=reviewed,
-                                                  origin_yields=yields)[0] >= campaign.min_score]
+                       or ordinary_page_eligible(campaign, entry["url"], "", "", source, reviewed_source_ids=reviewed,
+                                                 origin_yields=yields)[0]]
             for entry in entries:
                 entry.update(found_on=response.url, method="sitemap",
                              depth=job.depth + 1 if entry["kind"] == "sitemap" else 1,
@@ -1141,10 +1222,14 @@ def process(job):
         # Messages never include request headers, API keys, or provider response bodies.
         from .diagnostics import failure_category
         job.failure_code = failure_category(exc)
+        # Persist the status code and category only. The exception text can echo a response body.
+        if isinstance(exc, FetchError) and isinstance(exc.status, int):
+            job.diagnostics["http_status"] = exc.status
+        job.diagnostics["exception_category"] = job.failure_code
         transport = f" HTTP {exc.status}." if isinstance(exc, FetchError) and isinstance(exc.status, int) else ""
         policy = " robots.txt policy denied or invalid." if job.failure_code.startswith("robots_") else ""
         message = f"{job.failure_code}:{transport}{policy} Request or processing stopped; review source and configuration."
-        job.save(update_fields=["failure_code"])
+        job.save(update_fields=["failure_code", "diagnostics"])
         if isinstance(exc, FetchError) and exc.status in (401, 403):
             if job.kind == "search":
                 defer(job, timezone.now() + timedelta(hours=24),

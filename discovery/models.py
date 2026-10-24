@@ -98,7 +98,10 @@ class DiscoveryRun(models.Model):
 
     @property
     def needs_recipe_review(self):
-        return self.status == "completed" and self.pages_done > 0 and self.contacts_seen == 0
+        # Job failures are transport or worker errors. A saved run that also had
+        # failed jobs is not evidence that the CSS recipe matched nothing.
+        return (self.status == "completed" and self.pages_done > 0 and self.contacts_seen == 0
+                and self.terminal_reason != "job_failures")
 
     class Meta:
         ordering = ["-id"]

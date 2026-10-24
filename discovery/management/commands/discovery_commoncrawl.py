@@ -1,10 +1,22 @@
 """Find contact pages on approved sources via the Common Crawl index (index only)."""
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from discovery.models import Campaign
 from discovery.providers import common_crawl_collection, common_crawl_ready
-from discovery.services import common_crawl_specs, register_common_crawl
+from discovery.ranking import clean_url
+from discovery.services import common_crawl_specs, register_common_crawl, start
 from leads.services.network import FetchError
+
+
+def _spec_urls(specs):
+    urls = []
+    for item in specs:
+        try:
+            urls.append(clean_url(item["url"]))
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            continue
+    return urls
 
 
 class Command(BaseCommand):
@@ -38,15 +50,34 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {spec['url']}")
             self.stdout.write(f"Dry run: {len(specs)} URL(s) not registered.")
             return
-        if options["start_if_idle"] and campaign.active and not campaign.runs.filter(status__in=("queued", "running")).exists():
-            from django.db import transaction
-            from discovery.services import start
-            with transaction.atomic():
-                run = start(campaign)
-            self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
+        # One campaign lock covers the idle check, run creation, and registration.
+        # The collector's own start() takes the same lock, so the two cannot interleave
+        # a queue fill. This command does not take the collector lease and does not fetch.
+        spec_urls = _spec_urls(specs)
         try:
-            added = register_common_crawl(campaign, specs)
+            with transaction.atomic():
+                campaign = Campaign.objects.select_for_update().get(pk=campaign.pk)
+                before = (set(campaign.urls.filter(url__in=spec_urls).values_list("url", flat=True))
+                          if spec_urls else set())
+                idle = (options["start_if_idle"] and campaign.active and not
+                        campaign.runs.filter(status__in=("queued", "running")).exists())
+                # Count URLs this call actually deferred. A stale marker, or a fetch
+                # summary left in place, is not this call's result.
+                deferred_urls = set()
+                if idle:
+                    run = start(campaign, priority_specs=specs, deferred_urls=deferred_urls)
+                    self.stdout.write(f"Started run #{run.pk} so the index URLs can join it.")
+                else:
+                    register_common_crawl(campaign, specs, deferred_urls=deferred_urls)
+                    run = campaign.runs.filter(status__in=("queued", "running")).order_by("-id").first()
+                present = set(campaign.urls.filter(url__in=spec_urls).values_list("url", flat=True))
+                added = len(present - before)
+                approved = campaign.urls.filter(url__in=spec_urls, decision="approved").count()
+                queued = run.jobs.filter(kind="page", url__in=spec_urls).count() if run else 0
+                deferred = len(set(spec_urls).intersection(deferred_urls))
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
-        self.stdout.write(f"Registered {len(specs)} URL(s); {added} new to this campaign. "
-                          "Data: Common Crawl (CC BY 4.0).")
+        self.stdout.write(
+            f"Processed {len(specs)} index URL(s); {added} newly registered; "
+            f"{approved} approved; {queued} queued; {deferred} deferred. "
+            "Data: Common Crawl (CC BY 4.0).")
