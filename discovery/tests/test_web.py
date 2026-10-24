@@ -112,6 +112,17 @@ class DiscoveryWebTests(TestCase):
         self.assertEqual(list(self.client.get(reverse("discovery:home")).context["discovery_alerts"]), [])
         self.assertTrue(run.needs_recipe_review)  # Historical detail still reports what happened.
 
+    def test_saved_pages_with_job_failures_do_not_raise_recipe_review(self):
+        self.client.force_login(self.user)
+        run = DiscoveryRun.objects.create(
+            campaign=self.campaign, status="completed", pages_done=41, contacts_seen=0,
+            terminal_reason="job_failures", message="22 job(s) failed. 41 pages saved.")
+        self.assertFalse(run.needs_recipe_review)
+        for url in (reverse("dashboard"), reverse("discovery:home"),
+                    reverse("discovery:campaign", args=[self.campaign.pk]),
+                    reverse("discovery:run", args=[run.pk])):
+            self.assertNotContains(self.client.get(url), "Recipe review needed")
+
     def test_search_only_failed_and_in_progress_runs_do_not_raise_recipe_alert(self):
         self.client.force_login(self.user)
         DiscoveryRun.objects.create(campaign=self.campaign, status="completed", pages_done=0, contacts_seen=0)

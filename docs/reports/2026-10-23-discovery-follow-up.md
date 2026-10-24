@@ -53,7 +53,8 @@ change was not required to get index URLs into the queue.
 
 ## Run reason versus run status
 
-A run that saved pages and also had failed jobs now finishes `completed` and keeps
-`terminal_reason=job_failures` plus the failure counts. Readers that treat every
-`job_failures` reason as a failed run will still need to look at `status`. Renaming the reason
-would be a separate compatibility change.
+A run that saved pages and also had failed jobs finishes `completed` and keeps
+`terminal_reason=job_failures` plus the failure counts. Recipe review
+(`DiscoveryRun.needs_recipe_review`, `recipe_review_runs`, and the run-list and dashboard
+warnings that use them) ignores that reason. `crawler_status` still prints the reason next
+to `status`. Renaming the reason would be a separate compatibility change.

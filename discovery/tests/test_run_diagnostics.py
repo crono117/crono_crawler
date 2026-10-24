@@ -52,6 +52,15 @@ class RunDiagnosticsTests(TestCase):
         self.run.refresh_from_db()
         self.assertEqual(self.run.status, 'completed')
         self.assertEqual(self.run.terminal_reason, 'job_failures')
+        self.assertFalse(self.run.needs_recipe_review)
+        from leads.services.health import recipe_review_runs
+        self.assertFalse(recipe_review_runs(DiscoveryRun, 'campaign').filter(pk=self.run.pk).exists())
+        quiet_campaign = Campaign.objects.create(name='Quiet zero contacts', active=True, use_sitemaps=False)
+        quiet = DiscoveryRun.objects.create(
+            campaign=quiet_campaign, status='completed', pages_done=3, contacts_seen=0,
+            terminal_reason='no_accepted_contacts', message='3 pages saved; 0 accepted observations.')
+        self.assertTrue(quiet.needs_recipe_review)
+        self.assertTrue(recipe_review_runs(DiscoveryRun, 'campaign').filter(pk=quiet.pk).exists())
         self.assertEqual(self.run.diagnostics['failures']['fetch_error'], 1)
         self.assertEqual(self.run.diagnostics['pages_saved'], 41)
         self.assertIn('41 pages saved', self.run.message)
