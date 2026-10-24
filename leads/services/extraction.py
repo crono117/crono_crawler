@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup, NavigableString
 import httpx
 import soupsieve
 from django.conf import settings
+from .network import FetchError
 
 VERSION = "0.4.2"
 DEFAULT_SELECTORS = {
@@ -459,13 +460,23 @@ def extract_ollama(html, source):
         "and associated email or phone. Never attach a footer or general office contact to a person. "
         "Copy field values exactly. Missing values are empty strings. If attribution is unclear, omit the person."
     )
-    with httpx.Client(timeout=180, trust_env=False) as client:
-        response = client.post(settings.OLLAMA_URL + "/api/chat", json={
-            "model": settings.OLLAMA_MODEL, "stream": False, "format": schema,
-            "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": text}],
-            "options": {"temperature": 0, "num_ctx": 16384},
-        })
-        response.raise_for_status()
+    try:
+        with httpx.Client(timeout=180, trust_env=False) as client:
+            response = client.post(settings.OLLAMA_URL + "/api/chat", json={
+                "model": settings.OLLAMA_MODEL, "stream": False, "format": schema,
+                "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": text}],
+                "options": {"temperature": 0, "num_ctx": 16384},
+            })
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = getattr(exc.response, "status_code", None)
+        if status in (502, 503, 504):
+            raise FetchError(f"Local model HTTP {status}; retry scheduled.", retryable=True,
+                             status=status, retry_after=exc.response.headers.get("retry-after")) from exc
+        raise
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.TransportError) as exc:
+        # Local model connectivity/timeout/transport failures are retryable fetch errors.
+        raise FetchError(f"Local model request failed: {type(exc).__name__}.", retryable=True) from exc
     result = json.loads(response.json()["message"]["content"])
     if not isinstance(result, dict) or not isinstance(result.get("people"), list):
         raise ValueError("Local model returned an invalid response.")
