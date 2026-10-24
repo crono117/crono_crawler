@@ -19,6 +19,15 @@ def main():
     root = Path(__file__).resolve().parent
     os.chdir(root)
     if not (root / ".venv").exists():
+        # Fail fast with a clear message if ensurepip is unavailable on this system.
+        try:
+            import ensurepip  # noqa: F401
+        except Exception:
+            raise SystemExit(
+                f"ensurepip is unavailable for Python {sys.version_info.major}.{sys.version_info.minor}. "
+                f"Install python{sys.version_info.major}.{sys.version_info.minor}-venv (or python3-venv), "
+                "delete any partial .venv, and rerun."
+            )
         venv.EnvBuilder(with_pip=True).create(root / ".venv")
     python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run([str(python), "-m", "pip", "install", "-r", "requirements-browser.txt" if args.browser else "requirements.txt"], check=True)

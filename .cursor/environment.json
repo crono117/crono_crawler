@@ -1,6 +1,6 @@
 {
   "name": "Lead Console",
-  "install": "python3 setup.py --no-user",
+  "install": "(python3 -c 'import ensurepip' 2>/dev/null || (sudo apt-get update -y && (sudo apt-get install -y python3.12-venv || sudo apt-get install -y python3-venv))) && python3 setup.py --no-user",
   "start": ".venv/bin/python manage.py migrate --noinput",
   "terminals": [
     {"name": "Web console", "command": ".venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload"},
