@@ -6,19 +6,18 @@ from urllib.parse import unquote, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 # Deliberately small .env reader; inherited environment variables take priority.
+from .env import parse_dotenv  # noqa: E402  (local import to keep this file single-module)
 env_file = BASE_DIR / ".env"
 if env_file.exists():
-    for raw in env_file.read_text().splitlines():
-        line = raw.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+    for key, value in parse_dotenv(env_file.read_text()).items():
+        os.environ.setdefault(key, value)
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
 if not SECRET_KEY or SECRET_KEY == "replace-with-a-long-random-secret":
     raise RuntimeError("Run python3 setup.py first, or supply DJANGO_SECRET_KEY.")
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",")
+_hosts = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]")
+ALLOWED_HOSTS = [x.strip() for x in _hosts.split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS = [x for x in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if x]
 INSTALLED_APPS = [
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
